@@ -158,6 +158,35 @@ class TestMqttPublishAction:
         result = await MqttPublishAction(publisher=_FakePublisher(fail=True)).run(_signal(), _context())
         assert result.ok is False
 
+    async def test_both_edges_of_one_event_publish_to_the_same_topic(self):
+        """A template routing on `{subject}` must not split an event across two topics.
+
+        The subject is the watcher's opinion and it is revised while the event runs — an
+        event that opened on the group root closes named after a variant. Rendered fresh
+        each edge, START would land on `.../person` and END on `.../alice`, so an
+        automation waiting for the end of the event it saw begin would wait forever.
+        """
+        publisher = _FakePublisher()
+        action = MqttPublishAction(publisher=publisher, topic_template="cats/{rule}/{subject}")
+        await action.run(_signal(phase=EventPhase.START, subject_name="Person", instance_id="rule-1:1"), _context())
+        await action.run(_signal(phase=EventPhase.END, subject_name="Alice", instance_id="rule-1:1"), _context())
+
+        topics = [m[0] for m in publisher.messages]
+        assert topics[0] == topics[1] == "cats/cat-using-litter-box/person"
+        # ...but the payload still reports the correction, for a subscriber routing on it.
+        assert publisher.messages[1][1]["subjectName"] == "Alice"
+
+    async def test_a_later_event_is_not_stuck_on_the_previous_one_s_topic(self):
+        """The pin is per event, not per rule — it is dropped by the END that closes it,
+        or one mislabelled visit would rename every visit after it."""
+        publisher = _FakePublisher()
+        action = MqttPublishAction(publisher=publisher, topic_template="cats/{rule}/{subject}")
+        await action.run(_signal(phase=EventPhase.START, subject_name="Person", instance_id="rule-1:1"), _context())
+        await action.run(_signal(phase=EventPhase.END, subject_name="Person", instance_id="rule-1:1"), _context())
+        await action.run(_signal(phase=EventPhase.START, subject_name="Alice", instance_id="rule-1:2"), _context())
+
+        assert publisher.messages[-1][0] == "cats/cat-using-litter-box/alice"
+
 
 def _det(x1=10, y1=10, x2=40, y2=40, label_uuid="lab-1", name="tabby", confidence=0.8):
     return Detection(bbox=(x1, y1, x2, y2), label_uuid=label_uuid, label_name=name, confidence=confidence)

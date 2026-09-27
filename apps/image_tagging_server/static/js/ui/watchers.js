@@ -54,6 +54,15 @@ const RULE_TRIGGERS = [
   { key: 'on_exit', text: 'Event the moment it ends' },
 ];
 
+// How many events the rule holds at once. Terse because it shares the summary line with
+// the trigger select and a line of prose — the tooltip carries the long form. Worded
+// around what the user gets (a card and a clip each, or one between them) rather than
+// around "granularity", which names the field and not the choice.
+const RULE_GRANULARITIES = [
+  { key: 'subject', text: 'one each' },
+  { key: 'rule', text: 'one in total' },
+];
+
 /** Fraction of a region that must change for a motion rule to hold, by default.
  *  2% of the frame is roughly a person at mid-distance; the geometric relations' 0.6
  *  would demand most of the picture change and could never fire. */
@@ -1681,6 +1690,20 @@ function buildRuleRow(rule, ctx) {
     + 'believing the subject really left, and only fires if it had been there for the start '
     + 'delay first.';
 
+  // Orthogonal to the trigger: it says how many events, not when each fires. Hidden for
+  // `motion`, which measures pixels and has no objects to count.
+  const ruleGranularity = select(RULE_GRANULARITIES, rule.eventGranularity || 'subject', () => {
+    syncTrigger();
+    ctx.onAnyChange();
+  });
+  ruleGranularity.dataset.testid = 'watch-rule-granularity';
+  ruleGranularity.title =
+    'Whether two subjects doing this at once are two events or one. “one each” gives every '
+    + 'animal its own card and its own clip, so two cats at the same bowl are two visits. '
+    + '“one in total” holds a single event for as long as any of them qualifies, which is '
+    + 'what you want when the recording shows the whole scene anyway — otherwise three cats '
+    + 'in shot means three near-identical videos.';
+
   const motionInWord = el('span', null, 'in');
   sentence.append(el('span', null, 'When'), subjectAHost, relation, motionInWord, motionZoneHost, subjectBKind, subjectBHost);
   sentence.append(el('span', null, 'on'), sourceScopeHost);
@@ -1691,6 +1714,9 @@ function buildRuleRow(rule, ctx) {
     // of it would promise a filter the engine never applies.
     const isMotion = relation.value === 'motion';
     subjectAHost.hidden = isMotion;
+    // Motion counts changed pixels in a region, so there are no objects to hold separate
+    // events for and the choice would be a control that does nothing.
+    ruleGranularity.hidden = isMotion;
     motionInWord.hidden = !isMotion;
     motionZoneHost.hidden = !isMotion;
     // `present` is arity 1; showing a second subject for it would imply a
@@ -1869,7 +1895,7 @@ function buildRuleRow(rule, ctx) {
   // seconds for an evening: the behaviour was on screen the whole time, spelled as two
   // numbers whose interaction nothing stated.
   const summary = el('div', 'watch-rule-summary');
-  summary.append(ruleTrigger);
+  summary.append(ruleTrigger, ruleGranularity);
   const summaryText = el('span', 'watch-rule-summary__text');
   summaryText.dataset.testid = 'watch-rule-summary';
   summary.append(summaryText);
@@ -1984,6 +2010,9 @@ function buildRuleRow(rule, ctx) {
         // value — so a sensitivity typed under motion cannot leak into a geometric rule.
         motionSensitivity: isMotion ? num(sensitivity, MOTION_DEFAULT_SENSITIVITY) : 0,
         trigger: ruleTrigger.value,
+        // Meaningless for motion (no objects to separate), and the control is hidden
+        // there — so it is pinned rather than read, for the same reason `margin` is.
+        eventGranularity: isMotion ? 'rule' : ruleGranularity.value,
         // These three defaults are not arbitrary: without them a raw threshold flaps
         // into an MQTT storm and a dozen clips for one visit.
         minDurationS: num(minDuration, 2),

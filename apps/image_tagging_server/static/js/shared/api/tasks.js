@@ -292,15 +292,16 @@ export async function fetchRunningWatcherUuid(profileUuid) {
  * opened repeatedly on a long event leaks a video per open.
  *
  * @param {string} taskUuid - the running watcher instance
- * @param {{sourceUuid: string, ruleUuid: string, subjectRef?: string, targetRef?: string}} event
+ * @param {{uuid: string}} event - the persisted event row being previewed
  * @returns {Promise<?{url: string, frames: number, durationS: number, sourceSpanS: number,
  *   partial: boolean}>} null when nothing is buffered yet, or the watcher has stopped
  * @throws {Error} only on a transport failure
  */
-export async function fetchTimelapsePreview(taskUuid, { sourceUuid, ruleUuid, subjectRef = '', targetRef = '' }) {
-  const params = new URLSearchParams({ source_uuid: sourceUuid, rule_uuid: ruleUuid });
-  if (subjectRef) params.set('subject_ref', subjectRef);
-  if (targetRef) params.set('target_ref', targetRef);
+export async function fetchTimelapsePreview(taskUuid, { uuid }) {
+  // The event's own uuid, not its rule and slots: the watcher files a buffer under the
+  // engine's live instance id, which is deliberately persisted nowhere, so the server
+  // resolves the row to it.
+  const params = new URLSearchParams({ event_uuid: uuid });
 
   const res = await apiFetch(`/api/tasks/instances/${encodeURIComponent(taskUuid)}/timelapse-preview?${params}`);
   // 404 is the ordinary "not yet" — too few frames, or the event closed while the modal

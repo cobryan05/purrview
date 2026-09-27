@@ -559,7 +559,16 @@ class StreamWatcherTask(Task):
             # ones scoped to it (empty scope = all). Filtering there rather than here
             # keeps "which rules run on this camera" a single answer, so a preview or a
             # future second caller cannot get it subtly wrong.
-            engine = WatchEngine(rules=rule_specs, zones=zones, source_uuid=src.source_uuid)
+            # `label_groups` is the same `exclusive_variants` map the tracker associates
+            # detections with. The engine needs it to decide whether a cluster appearing
+            # during another event's rearm window is a plausible continuation of it or a
+            # different animal — see `RuleMachine._compatible`.
+            engine = WatchEngine(
+                rules=rule_specs,
+                zones=zones,
+                source_uuid=src.source_uuid,
+                label_groups=self._label_groups,
+            )
             skipped = len(rule_specs) - len(engine.rule_uuids)
             if skipped:
                 self.log(f"Source {src.source_uuid} skips {skipped} rule(s) scoped to other sources")
@@ -2651,10 +2660,10 @@ class StreamWatcherTask(Task):
         open_events = {}
         for pipeline in self._pipelines:
             for entry in pipeline.engine.open_events():
-                # Keyed on the slot, not just the rule: a multi-ref rule holds one event
-                # per label, and keying on the rule alone would silently report the last
-                # cat written rather than all of them.
-                slot = ":".join(str(entry.get(k) or "") for k in ("ruleUuid", "subjectRef", "targetRef"))
+                # Keyed on the instance, not just the rule: a rule holds one event per
+                # object, and keying on the rule alone would silently report the last one
+                # written rather than all of them.
+                slot = ":".join(str(entry.get(k) or "") for k in ("ruleUuid", "instanceId"))
                 open_events[f"{pipeline.source_uuid}:{slot}"] = entry["startedAt"]
         return {
             "open_event_uuids": self._open_event_uuids,
@@ -2955,10 +2964,7 @@ class StreamWatcherTask(Task):
 
     async def get_timelapse_preview(
         self,
-        source_uuid: str,
-        rule_uuid: str,
-        subject_ref: str = "",
-        target_ref: str = "",
+        event_uuid: str,
     ) -> Optional[dict[str, Any]]:
         """A playable video of what an in-progress event timelapse has collected so far.
 
@@ -2968,14 +2974,17 @@ class StreamWatcherTask(Task):
         compiles the frames on disk into a throwaway mp4 and hands it over, leaving the
         session untouched and still sampling.
 
-        Keyed the same way the action keys its sessions, so an event identifies its own
-        buffer rather than "whatever this camera is recording" — two rules can hold on
-        one camera at once and each has its own video.
+        Addressed by the event's own uuid and resolved through the recorder's open map,
+        because the key an action files a buffer under includes the engine's instance id,
+        which is live-only and appears in no row. Asking the caller for it would mean
+        persisting it for no other reason.
 
-        Returns None when nothing is buffering for that key, which is the ordinary case:
-        the event closed while the modal was open, or the watcher never held one.
+        Returns None when nothing is buffering for that event, which is the ordinary
+        case: it closed while the modal was open, or the watcher never held a buffer.
         """
-        key = (source_uuid or "", rule_uuid or "", subject_ref or "", target_ref or "")
+        key = self._recorder.key_for_event_uuid(event_uuid)
+        if key is None:
+            return None
         for _row, action in self._actions:
             preview_fn = getattr(action, "preview", None)
             if preview_fn is None:

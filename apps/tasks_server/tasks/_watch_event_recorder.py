@@ -119,7 +119,7 @@ MEDIA_METADATA_KEYS = ("frames", "sourceSpanS", "intervalS", "lowFps", "stillsOn
 #: what identifies the event. This is the *engine's* current identity — one open event
 #: per rule per source. When per-pair identity lands (WATCH_OUTPUTS_PLAN §2) the refs
 #: already in the key make it correct with no change here.
-EventKey = Tuple[str, str, str, str]
+EventKey = Tuple[str, str, str]
 
 
 def _payload_models() -> Tuple[Any, Any, Any]:
@@ -166,11 +166,18 @@ class _PendingEvent:
 
 
 def _event_key(signal: WatchEventSignal) -> EventKey:
+    """The open row a signal belongs to.
+
+    `instance_id`, never the slot refs. The refs are mutable facts about the subject —
+    the detector renames it, it walks to the next bowl — and a key built from them is a
+    key that can change under an open event: the closing edge then hashes to a tuple
+    nothing was filed under, so the row never receives `ended_at` and an action's frame
+    buffer is never found again.
+    """
     return (
         signal.source_uuid or "",
         signal.rule_uuid or "",
-        signal.subject_ref or "",
-        signal.target_ref or "",
+        signal.instance_id or "",
     )
 
 
@@ -238,6 +245,20 @@ class WatchEventRecorder:
     def event_uuid_for(self, signal: WatchEventSignal) -> Optional[str]:
         """The row a still-open signal belongs to, for callers linking artifacts to it."""
         return self._open.get(_event_key(signal))
+
+    def key_for_event_uuid(self, event_uuid: str) -> Optional[EventKey]:
+        """The open key a row was filed under — the inverse of `event_uuid_for`.
+
+        Lets a caller holding only a persisted event (the in-progress preview endpoint,
+        which is handed a row the user is looking at) reach the live buffer an action is
+        filling for it. Nothing persists the instance id, and nothing needs to: it is
+        meaningful only for the life of the watcher that minted it, and this map is
+        exactly as long-lived.
+        """
+        for key, uuid in self._open.items():
+            if uuid == event_uuid:
+                return key
+        return None
 
     def pending_snapshot_bytes(self, signal: WatchEventSignal) -> Optional[bytes]:
         """The card-art bytes already encoded for this event's opening edge, if any.
@@ -346,6 +367,15 @@ class WatchEventRecorder:
             peak_confidence=signal.peak_confidence,
             truncated=signal.truncated,
             close_reason=signal.close_reason.value,
+            # The subject as the whole visit weighed it, which is not necessarily what the
+            # opening edge guessed: a rule asking about one cat may well have watched
+            # another, and saying so is the point rather than an embarrassment. `rule_name`
+            # is a separate column, so the card reads "Cat Drinking Water / saw Willow"
+            # — which is also exactly the correction worth harvesting as training data.
+            subject_ref=signal.subject_ref,
+            subject_name=signal.subject_name,
+            target_ref=signal.target_ref,
+            target_name=signal.target_name,
         )
         response = await asyncio.to_thread(api.update_watch_event, uuid, payload)
         if response.status != JsonValues.SUCCESS:

@@ -531,12 +531,7 @@ export function openEventDetailModal(
         renderInProgressMessage('This watcher is not running, so there is nothing buffered to preview.');
         return;
       }
-      const preview = await fetchTimelapsePreview(taskUuid, {
-        sourceUuid: event.sourceUuid,
-        ruleUuid: event.ruleUuid,
-        subjectRef: event.subjectRef || '',
-        targetRef: event.targetRef || '',
-      });
+      const preview = await fetchTimelapsePreview(taskUuid, { uuid: event.uuid });
       // Navigated away while ffmpeg ran. Revoking here rather than leaking it is the
       // whole reason this is not fire-and-forget.
       if (seq !== loadSeq) {

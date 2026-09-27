@@ -68,6 +68,16 @@ class WatchEventSignal:
     #: turns these into the human names an action's template interpolates.
     subject_ref: Optional[str] = None
     target_ref: Optional[str] = None
+    #: Which of the rule's concurrently open events this is, unique for the life of the
+    #: watcher. **This is the event's identity** — everything that has to find an event
+    #: again keys on it: the recorder's open map, the timelapse action's buffer, the
+    #: in-progress preview endpoint.
+    #:
+    #: The slot refs used to serve that purpose and could not: both are mutable facts
+    #: about the subject, so pinning them was the only thing that kept a closing edge
+    #: able to find its own row, and pinning them is what stopped an event from ever
+    #: being renamed to what it turned out to be.
+    instance_id: Optional[str] = None
     #: Resolved display names for the two slots, filled in above the engine. Kept beside
     #: the uuids rather than replacing them so a consumer can key on a stable id while a
     #: template prints something a human recognises.
@@ -103,6 +113,7 @@ class WatchEventSignal:
             "closeReason": self.close_reason.value,
             "subjectRef": self.subject_ref,
             "targetRef": self.target_ref,
+            "instanceId": self.instance_id,
             "subjectName": self.subject_name,
             "targetName": self.target_name,
             "metadata": dict(self.metadata),

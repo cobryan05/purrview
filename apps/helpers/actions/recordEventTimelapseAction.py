@@ -87,7 +87,7 @@ DEFAULT_MAX_WIDTH = 1280
 #: One `EventKey`, matching `_watch_event_recorder`'s: one open event per rule per source
 #: per matched pair. The subject/target refs are in it so that per-pair identity, when it
 #: lands, separates two cats into two timelapses with no change here.
-SessionKey = Tuple[str, str, str, str]
+SessionKey = Tuple[str, str, str]
 
 
 def open_buffer_dir(prefix: str = BUFFER_PREFIX) -> Path:
@@ -161,11 +161,15 @@ def sweep_frame_buffers(root: Optional[Path] = None) -> int:
 
 
 def _session_key(signal: WatchEventSignal) -> SessionKey:
+    """Which buffer a signal's frames belong in — see `_event_key` for why the instance.
+
+    Deliberately the same shape the recorder keys a row on, so a session and the event
+    row it will be attached to are found by the same three values.
+    """
     return (
         signal.source_uuid or "",
         signal.rule_uuid or "",
-        signal.subject_ref or "",
-        signal.target_ref or "",
+        signal.instance_id or "",
     )
 
 

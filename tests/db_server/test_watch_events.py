@@ -49,6 +49,27 @@ async def _make_event(http_client, profile_uuid: str, **overrides) -> dict:
     return body["event"]
 
 
+async def _close_event(http_client, uuid: str, **fields) -> dict:
+    payload = {"endedAt": datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc).isoformat()}
+    payload.update(fields)
+    r = await http_client.patch(f"/api/watch-events/{uuid}", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return body["event"]
+
+
+async def _make_closed_event(http_client, profile_uuid: str, **overrides) -> dict:
+    """An event that has run its course — the only kind the lifetime tally counts.
+
+    The tally is owed at the closing edge, not at creation, because an open event's
+    subject is still the watcher's running opinion and is revised when it closes.
+    """
+    event = await _make_event(http_client, profile_uuid, **overrides)
+    await _close_event(http_client, event["uuid"])
+    return event
+
+
 async def _list(http_client, **params) -> dict:
     r = await http_client.get("/api/watch-events", params=params)
     assert r.status_code == 200, r.text
@@ -627,8 +648,8 @@ class TestWatchEventCounts:
         cam = await _make_source(http_client)
         rule_a, rule_b = "rule-a", "rule-b"
         for _ in range(3):
-            await _make_event(http_client, profile_uuid, sourceUuid=cam, ruleUuid=rule_a)
-        await _make_event(http_client, profile_uuid, sourceUuid=cam, ruleUuid=rule_b)
+            await _make_closed_event(http_client, profile_uuid, sourceUuid=cam, ruleUuid=rule_a)
+        await _make_closed_event(http_client, profile_uuid, sourceUuid=cam, ruleUuid=rule_b)
 
         counts = {(c["sourceUuid"], c["ruleUuid"]): c["count"] for c in await self._counts(http_client)}
         assert counts[(cam, rule_a)] == 3
@@ -1397,7 +1418,61 @@ class TestLifetimeCounts:
     first time retention runs — which is what `COUNT(*)` over `watch_events` did, and
     why `watch_event_counters` exists. Every test here deletes something and asserts the
     number held.
+
+    The tally is owed at an event's *closing* edge. An open event's subject is the
+    watcher's running opinion and is revised when it closes, so counting at creation
+    would file a visit under a label its own card ends up contradicting — and a
+    `total_increasing` counter cannot be corrected afterwards.
     """
+
+    async def test_an_open_event_is_not_counted_until_it_closes(self, http_client):
+        """Counting at creation is what made the tally and the card able to disagree."""
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
+        event = await _make_event(
+            http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid, subjectRef=subject_ref
+        )
+        key = (source_uuid, rule_uuid, subject_ref)
+        assert _counts_at(await _counts(http_client), key) == 0
+
+        await _close_event(http_client, event["uuid"])
+        assert _counts_at(await _counts(http_client), key) == 1
+
+    async def test_a_closing_edge_counts_the_subject_it_settled_on(self, http_client):
+        """A rule may open on one label and close on another — that is the design, not a
+        fault — and the tally has to follow the label the card ends up showing."""
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid = str(_uuid.uuid4())
+        opened_as, settled_as = str(_uuid.uuid4()), str(_uuid.uuid4())
+        event = await _make_event(
+            http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid, subjectRef=opened_as
+        )
+        await _close_event(http_client, event["uuid"], subjectRef=settled_as)
+
+        counts = await _counts(http_client)
+        assert _counts_at(counts, (source_uuid, rule_uuid, settled_as)) == 1
+        assert _counts_at(counts, (source_uuid, rule_uuid, opened_as)) == 0
+
+    async def test_correcting_a_closed_event_does_not_count_it_twice(self, http_client):
+        """A reviewer relabelling history is not a second visit.
+
+        The tally fires on the open-to-closed transition, so every later write to an
+        already-closed row has to be free — a label correction, a pin, a snapshot path.
+        """
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
+        event = await _make_closed_event(
+            http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid, subjectRef=subject_ref
+        )
+        key = (source_uuid, rule_uuid, subject_ref)
+        assert _counts_at(await _counts(http_client), key) == 1
+
+        await _close_event(http_client, event["uuid"], pinned=True)
+        await _close_event(http_client, event["uuid"], reviewState="confirmed")
+        assert _counts_at(await _counts(http_client), key) == 1
 
     async def test_a_deleted_event_still_counts(self, http_client):
         source_uuid = await _make_source(http_client)
@@ -1405,7 +1480,7 @@ class TestLifetimeCounts:
         rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
         uuids = [
             (
-                await _make_event(
+                await _make_closed_event(
                     http_client,
                     profile_uuid,
                     sourceUuid=source_uuid,
@@ -1432,7 +1507,7 @@ class TestLifetimeCounts:
         profile_uuid = await _make_profile(http_client)
         rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
         for _ in range(2):
-            await _make_event(
+            await _make_closed_event(
                 http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid, subjectRef=subject_ref
             )
 
@@ -1451,7 +1526,7 @@ class TestLifetimeCounts:
         older = datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc)
         newer = datetime(2026, 3, 1, 17, 0, tzinfo=timezone.utc)
         for started in (older, newer):
-            event = await _make_event(
+            event = await _make_closed_event(
                 http_client,
                 profile_uuid,
                 sourceUuid=source_uuid,
@@ -1481,7 +1556,7 @@ class TestLifetimeCounts:
             datetime(2026, 3, 2, 17, 0, tzinfo=timezone.utc),
             datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc),
         ):
-            await _make_event(
+            await _make_closed_event(
                 http_client,
                 profile_uuid,
                 sourceUuid=source_uuid,
@@ -1502,7 +1577,7 @@ class TestLifetimeCounts:
         profile_uuid = await _make_profile(http_client)
         rule_uuid = str(_uuid.uuid4())
         for _ in range(2):
-            await _make_event(http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid)
+            await _make_closed_event(http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid)
 
         rows = await _counts(http_client)
         assert (source_uuid, rule_uuid, "") not in rows
@@ -1513,5 +1588,5 @@ class TestLifetimeCounts:
         uuid has no Home Assistant entity to publish to."""
         profile_uuid = await _make_profile(http_client)
         before = len(await _counts(http_client))
-        await _make_event(http_client, profile_uuid, ruleName="no ids at all")
+        await _make_closed_event(http_client, profile_uuid, ruleName="no ids at all")
         assert len(await _counts(http_client)) == before

@@ -522,10 +522,7 @@ class WebApp:
         )
         async def get_task_timelapse_preview_api(
             task_uuid: str,
-            source_uuid: str,
-            rule_uuid: str,
-            subject_ref: str = "",
-            target_ref: str = "",
+            event_uuid: str,
         ) -> Response:
             """The video an in-progress event timelapse has collected so far.
 
@@ -542,13 +539,7 @@ class WebApp:
             answer is different a minute later.
             """
             try:
-                preview = await self._manager.get_task_timelapse_preview(
-                    task_uuid,
-                    source_uuid=source_uuid,
-                    rule_uuid=rule_uuid,
-                    subject_ref=subject_ref,
-                    target_ref=target_ref,
-                )
+                preview = await self._manager.get_task_timelapse_preview(task_uuid, event_uuid=event_uuid)
             except ValueError as e:
                 # The watcher stopped while the modal was open — ordinary, not a fault.
                 return JSONResponse(status_code=404, content={"status": WebApp.FAILURE_KEY, "message": str(e)})

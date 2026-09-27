@@ -617,7 +617,7 @@ class TestMidEventPreview:
         await _open(action, context)
         await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
 
-        preview = await action.preview(("src-1", "rule-1", "", ""))
+        preview = await action.preview(("src-1", "rule-1", ""))
         assert preview is not None
         # A real mp4, not merely bytes: the point of compiling server-side is that a
         # browser can play the result.
@@ -635,7 +635,7 @@ class TestMidEventPreview:
         await _open(action, context)
         await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
 
-        await action.preview(("src-1", "rule-1", "", ""))
+        await action.preview(("src-1", "rule-1", ""))
         await _feed(action, context, [140.0, 150.0])
         result = await _close(action, context, at=160.0)
 
@@ -650,7 +650,7 @@ class TestMidEventPreview:
         await _open(action, context)
         await _feed(action, context, [100.0, 110.0, 120.0])
 
-        preview = await action.preview(("src-1", "rule-1", "", ""))
+        preview = await action.preview(("src-1", "rule-1", ""))
         assert preview is not None and preview["frames"] == 2
 
     async def test_a_session_with_almost_nothing_previews_nothing(self, action):
@@ -659,13 +659,13 @@ class TestMidEventPreview:
         context = _context()
         await _open(action, context)
         await _feed(action, context, [100.0, 110.0])
-        assert await action.preview(("src-1", "rule-1", "", "")) is None
+        assert await action.preview(("src-1", "rule-1", "")) is None
 
     async def test_an_unknown_event_previews_nothing(self, action):
         context = _context()
         await _open(action, context)
         await _feed(action, context, [100.0, 110.0, 120.0])
-        assert await action.preview(("src-1", "another-rule", "", "")) is None
+        assert await action.preview(("src-1", "another-rule", "")) is None
 
     async def test_two_rules_on_one_camera_preview_their_own_buffers(self, action):
         """Same reason each gets its own video: the key is the event, not the camera."""
@@ -674,8 +674,8 @@ class TestMidEventPreview:
         await _open(action, context, rule_uuid="rule-2", started_at=100.0)
         await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
 
-        first = await action.preview(("src-1", "rule-1", "", ""))
-        second = await action.preview(("src-1", "rule-2", "", ""))
+        first = await action.preview(("src-1", "rule-1", ""))
+        second = await action.preview(("src-1", "rule-2", ""))
         assert first is not None and second is not None
         assert first["frames"] == second["frames"]
 
@@ -688,11 +688,28 @@ class TestMidEventPreview:
         await _open(action, context)
         await _feed(action, context, [100.0 + 10 * i for i in range(12)])
 
-        preview = await action.preview(("src-1", "rule-1", "", ""))
+        preview = await action.preview(("src-1", "rule-1", ""))
         assert preview is not None
         assert preview["frames"] == 4
         # And it says so, so the modal does not present a tail as the whole event.
         assert preview["partial"] is True
+
+    async def test_two_events_of_one_rule_preview_their_own_buffers(self, action):
+        """Two cats at one bowl are two events on the same rule, and two videos.
+
+        The session key used to be the rule plus the matched labels, so two concurrent
+        events that agreed on both — which is what two cats the model cannot tell apart
+        looks like — shared one buffer: whichever closed first compiled both cats' frames
+        and the other found its directory gone.
+        """
+        context = _context()
+        await action.run(_event_signal(EventPhase.START, instance_id="rule-1:1"), context)
+        await action.run(_event_signal(EventPhase.START, instance_id="rule-1:2"), context)
+
+        assert sorted(action.open_session_keys()) == [
+            ("src-1", "rule-1", "rule-1:1"),
+            ("src-1", "rule-1", "rule-1:2"),
+        ]
 
     async def test_a_preview_leaves_no_scratch_behind(self, action):
         """It compiles into a temp directory of its own; leaking one per click on a
@@ -701,7 +718,7 @@ class TestMidEventPreview:
         await _open(action, context)
         await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
 
-        session = action._sessions[("src-1", "rule-1", "", "")]
+        session = action._sessions[("src-1", "rule-1", "")]
 
         # A bare glob is safe again: `_isolate_frame_buffers` gives this test its own
         # temp root, so nothing else can have a scratch dir in flight here. It used to
@@ -709,7 +726,7 @@ class TestMidEventPreview:
         # failed whenever a second xdist worker, a concurrent suite or another agent in
         # the same worktree had one open — and that is routine on this box.
         tmp_root = Path(tempfile.gettempdir())
-        await action.preview(("src-1", "rule-1", "", ""))
+        await action.preview(("src-1", "rule-1", ""))
 
         assert not (session.directory / "preview.txt").exists()
         leaked = sorted(tmp_root.glob("wwtl-preview-*"))

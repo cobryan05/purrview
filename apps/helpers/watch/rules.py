@@ -55,9 +55,9 @@ The cap does not apply to either impulse — see the guard in `step`.
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from ..tracking.tracker import Track
+from ..tracking.tracker import BBox, Track
 from .events import EventCloseReason, EventPhase, WatchEventSignal
 from .geometry import (
     Zone,
@@ -79,6 +79,16 @@ from .motion import MotionField
 TRIGGER_WHILE = "while"
 TRIGGER_ON_ENTER = "on_enter"
 TRIGGER_ON_EXIT = "on_exit"
+
+#: `event_granularity` values, mirrored from `db.types.EventGranularity` — strings, like
+#: the triggers above, because this module holds no DB types.
+#:
+#: Neither is what the engine used to do. An event was per *label*, which is a property
+#: of the detector's guess rather than of anything in the world: it split one person into
+#: two events when the model changed its mind, and merged two cats into one when it did
+#: not. So there is no "as before" option here, and a rule has to say which it meant.
+GRANULARITY_SUBJECT = "subject"  # one event per distinct object
+GRANULARITY_RULE = "rule"  # one event while the predicate holds for anyone
 
 
 class RuleState(str, Enum):
@@ -130,6 +140,10 @@ class RuleSpec:
     #: A plain string, like `relation`, because the engine is pure and holds no enums
     #: from the DB layer.
     trigger: str = "while"
+    #: Whether the rule opens one event per object or one event for the whole rule. See
+    #: the `GRANULARITY_*` constants; `subject` is the default because "one event per
+    #: thing that happened" is the more useful card.
+    event_granularity: str = GRANULARITY_SUBJECT
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -181,6 +195,7 @@ class RuleSpec:
             margin=get("margin", 0.0) or 0.0,
             motion_sensitivity=get("motion_sensitivity", 0.0) or 0.0,
             trigger=get("trigger", "while") or "while",
+            event_granularity=get("event_granularity", GRANULARITY_SUBJECT) or GRANULARITY_SUBJECT,
             min_duration_s=get("min_duration_s", 2.0),
             rearm_delay_s=get("rearm_delay_s", 10.0),
             max_duration_s=get("max_duration_s", 300.0),
@@ -190,37 +205,15 @@ class RuleSpec:
         )
 
     def narrowed(self, subject_a_ref: Optional[str], subject_b_ref: Optional[str]) -> "RuleSpec":
-        """This rule restricted to one member of each slot — the unit an event is per.
+        """This rule restricted to one member of each slot.
 
-        A multi-ref rule is a convenience for the person writing it ("any of these three
-        cats"), not a statement that the three should share one event. They should not:
-        Two different cats are two visits, with their own spans, their own cards and
-        their own recordings, and collapsing them into whichever was seen most clearly
-        silently drops the other.
+        Used for the two slots that still deserve a machine of their own, and only those:
+        a `motion` rule's subject (which names a *place* to measure, not an object) and an
+        impulse rule's target (entering the second bowl is a second arrival). Everything
+        else keys on the rule alone and separates objects inside the machine, because a
+        label is a guess about the subject rather than an identity for it.
 
-        So the engine gives every member its own machine, built from a spec narrowed to
-        that member, and `evaluate_predicate` needs no knowledge of any of this — it is
-        simply asked about one cat at a time.
-
-        What it deliberately does *not* do is split by track. "Any Cat is present" stays
-        one event however many cats are in shot and however often each comes and goes,
-        because the recording is the whole frame either way: three tracks sharing a label
-        would mean three near-identical videos of one scene. One event per *label* is the
-        line, and the machine matches on `label_uuid` and never on track identity.
-
-        ⚠️ That last property was once argued to make a relabel harmless on its own — a
-        flickering box rejoins its own event inside `rearm_delay_s` while the label it
-        briefly borrowed never clears `min_duration_s`. **The reasoning is sound and the
-        premise was wrong.** Observed wrong-label runs lasted 2.4 s and 7.5 s against a
-        2 s `min_duration_s`, and one person crossing a yard opened three events and
-        recorded three clips. Nothing here can fix that: by the time a machine sees two
-        labels there are already two identities. Stability is the tracker's job, and a
-        track now reports a vote across its frames rather than the label of whichever
-        detection started it — see `tracking.LabelVote`.
-
-        `None` leaves a slot alone, which is how a rule with nothing to enumerate — a
-        subject-less `present`, an `any` subject, a `motion` rule with no zones — keeps
-        the single machine it has always had.
+        `None` leaves a slot alone.
         """
         return replace(
             self,
@@ -275,6 +268,28 @@ def expand_descendants(spec: RuleSpec, ancestry: Dict[str, Sequence[str]]) -> Ru
     )
 
 
+@dataclass(frozen=True)
+class PredicateMatch:
+    """One (subject, target) pair that fired on one frame.
+
+    The aggregate fields on `PredicateResult` answer "did anything match"; these answer
+    "what, individually". An event is per *object*, so the machine has to see the pairs
+    separately — a result that reports only the strongest pair cannot tell one cat at two
+    bowls from two cats at one bowl, and those are one event and two.
+
+    `bbox` rides along because associating this frame's matches to the events already
+    open is a geometric question, and the machine holds no tracks of its own to look it
+    up in.
+    """
+
+    track_id: int
+    bbox: BBox
+    subject_ref: Optional[str]
+    target_ref: Optional[str]
+    score: float
+    confidence: float
+
+
 @dataclass
 class PredicateResult:
     """Whether a rule's condition holds right now, and which tracks satisfied it."""
@@ -289,6 +304,9 @@ class PredicateResult:
     #: knows that.
     subject_ref: Optional[str] = None
     target_ref: Optional[str] = None
+    #: Every pair that fired, not just the strongest. Empty for a `motion` rule, which
+    #: measures pixels and has no tracks to report by construction.
+    matches: List[PredicateMatch] = field(default_factory=list)
 
 
 def _matching_tracks(tracks: Sequence[Track], kind: str, refs: Sequence[str]) -> List[Track]:
@@ -341,12 +359,27 @@ def evaluate_predicate(
     if spec.relation == "present":
         best = max(subjects_a, key=lambda t: t.confidence)
         holds = best.confidence >= spec.threshold
+        firing = [t for t in subjects_a if t.confidence >= spec.threshold]
         return PredicateResult(
             holds=holds,
-            track_ids=[t.track_id for t in subjects_a if t.confidence >= spec.threshold],
+            track_ids=[t.track_id for t in firing],
             score=best.confidence,
             confidence=best.confidence,
             subject_ref=best.label_uuid if holds else None,
+            # Each track's own label, not the best one's: three cats in shot are three
+            # matches under three names, and collapsing them to the clearest is exactly
+            # what loses the other two.
+            matches=[
+                PredicateMatch(
+                    track_id=t.track_id,
+                    bbox=t.bbox,
+                    subject_ref=t.label_uuid,
+                    target_ref=None,
+                    score=t.confidence,
+                    confidence=t.confidence,
+                )
+                for t in firing
+            ],
         )
 
     # Subject B is either one or more zones (the common, most reliable case) or another
@@ -370,6 +403,7 @@ def evaluate_predicate(
     best_score = 0.0
     best_conf = 0.0
     matched: List[int] = []
+    matches: List[PredicateMatch] = []
     # The slot values reported belong to the best-scoring *matching* pair, tracked
     # separately from `best_score` — which also moves for pairs that never fired, and
     # would otherwise name a cat that failed the threshold.
@@ -443,6 +477,16 @@ def evaluate_predicate(
             fired = score > 0.0 if spec.relation in ("centroid_in", "distance") else score >= spec.threshold
             if fired:
                 matched.append(track_a.track_id)
+                matches.append(
+                    PredicateMatch(
+                        track_id=track_a.track_id,
+                        bbox=track_a.bbox,
+                        subject_ref=track_a.label_uuid,
+                        target_ref=target.uuid if isinstance(target, Zone) else target.label_uuid,
+                        score=score,
+                        confidence=track_a.confidence,
+                    )
+                )
                 if score > best_match_score:
                     best_match_score = score
                     subject_ref = track_a.label_uuid
@@ -458,40 +502,239 @@ def evaluate_predicate(
         confidence=best_conf,
         subject_ref=subject_ref,
         target_ref=target_ref,
+        matches=matches,
     )
 
 
-class RuleMachine:
-    """Per-rule hysteresis state. One instance per (rule, source)."""
+#: How much two boxes must overlap before the event layer calls them one object.
+#:
+#: Deliberately far looser than the tracker's `DUPLICATE_TRACK_IOU_THRESH` (0.85), and
+#: the asymmetry is the point: a false merge inside the tracker corrupts box geometry and
+#: any training frame saved from it, so it has to be strict, while a false merge here
+#: only joins two event cards. Both questions used to be answered by the tracker's single
+#: strict threshold, which meant events inherited a strictness they never wanted and one
+#: body arriving under two track ids became two clips.
+EVENT_CLUSTER_IOU = 0.3
 
-    def __init__(self, spec: RuleSpec, source_uuid: Optional[str] = None) -> None:
+#: Ceiling on concurrent events one machine will hold. A machine is no longer allocated
+#: once at load time — it grows an instance per distinct object — so it needs a bound.
+#: Past the cap a new cluster joins its nearest neighbour instead of opening an event of
+#: its own: over-merging costs a shared card, whereas refusing outright would silently
+#: drop a real event.
+MAX_EVENT_INSTANCES = 16
+
+
+def _bbox_iou(a: BBox, b: BBox) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _best_iou(left: Sequence[BBox], right: Sequence[BBox]) -> float:
+    return max((_bbox_iou(a, b) for a in left for b in right), default=0.0)
+
+
+@dataclass
+class MatchCluster:
+    """One frame's matches, grouped into what is probably a single physical object.
+
+    The unit an event is per. A cluster is not a track: one body routinely arrives as
+    several tracks (a detector dropout breaks association and a new id starts beside the
+    old one), and the whole reason this type exists is that those must be one event.
+    """
+
+    track_ids: Set[int] = field(default_factory=set)
+    boxes: List[BBox] = field(default_factory=list)
+    subject_ref: Optional[str] = None
+    target_ref: Optional[str] = None
+    score: float = 0.0
+    confidence: float = 0.0
+
+
+def cluster_matches(
+    matches: Sequence[PredicateMatch],
+    iou_threshold: float = EVENT_CLUSTER_IOU,
+    collapse: bool = False,
+) -> List[MatchCluster]:
+    """Group a frame's firing pairs by physical object.
+
+    Two passes. First by track id, because one track matching two targets is one object
+    at two bowls, not two objects. Then by overlap, because one object is routinely
+    carried by more than one track id.
+
+    `collapse` is `rule` granularity: every match becomes one cluster, so the rule holds
+    a single event however many objects satisfy it. That is the right answer for
+    "something is in the yard" — where the recording is the whole frame either way — and
+    the wrong one for "a cat drank water", which is per cat.
+    """
+    if not matches:
+        return []
+    if collapse:
+        merged = MatchCluster()
+        for m in matches:
+            _absorb(merged, m)
+        return [merged]
+
+    by_track: Dict[int, MatchCluster] = {}
+    for m in matches:
+        _absorb(by_track.setdefault(m.track_id, MatchCluster()), m)
+
+    clusters: List[MatchCluster] = []
+    for candidate in by_track.values():
+        for existing in clusters:
+            if _best_iou(candidate.boxes, existing.boxes) >= iou_threshold:
+                _join(existing, candidate)
+                break
+        else:
+            clusters.append(candidate)
+    return clusters
+
+
+def _absorb(cluster: MatchCluster, m: PredicateMatch) -> None:
+    """Fold one match into a cluster, keeping the strongest pair's slot values."""
+    cluster.track_ids.add(m.track_id)
+    if m.bbox not in cluster.boxes:
+        cluster.boxes.append(m.bbox)
+    if m.score >= cluster.score or cluster.subject_ref is None:
+        cluster.score = max(cluster.score, m.score)
+        if m.subject_ref is not None:
+            cluster.subject_ref = m.subject_ref
+        if m.target_ref is not None:
+            cluster.target_ref = m.target_ref
+    cluster.confidence = max(cluster.confidence, m.confidence)
+
+
+def _join(into: MatchCluster, other: MatchCluster) -> None:
+    into.track_ids |= other.track_ids
+    into.boxes.extend(b for b in other.boxes if b not in into.boxes)
+    into.confidence = max(into.confidence, other.confidence)
+    if other.score > into.score:
+        into.score = other.score
+        into.subject_ref = other.subject_ref or into.subject_ref
+        into.target_ref = other.target_ref or into.target_ref
+
+
+@dataclass
+class _EventInstance:
+    """One event's hysteresis, anchored to a cluster rather than to a label.
+
+    Everything `RuleMachine` used to hold as fields of itself. The move to a set of these
+    is what takes the subject's *label* out of an event's identity: a relabel inside an
+    exclusive-variants group leaves the same object matching the same rule, so it lands
+    on the same instance and the open event simply carries on.
+    """
+
+    instance_id: str
+    state: RuleState = RuleState.IDLE
+    true_since: Optional[float] = None
+    false_since: Optional[float] = None
+    started_at: Optional[float] = None
+    #: Every track that has ever been part of this event. Unioned, never replaced, so an
+    #: obstruction that drops the subject and hands it back under fresh ids still reports
+    #: one event covering all of them.
+    track_ids: Set[int] = field(default_factory=set)
+    #: Boxes from the most recent frame this instance matched on — what an unassociated
+    #: cluster is compared against.
+    boxes: List[BBox] = field(default_factory=list)
+    peak_confidence: float = 0.0
+    target_ref: Optional[str] = None
+    #: Accumulated confidence per subject label seen over the event's life. The reported
+    #: subject is this pile's leader rather than the latest frame's answer: an event is
+    #: named by the weight of what it saw, so a single odd frame at the closing edge
+    #: cannot rename the whole visit. Undecayed — an event is already bounded by
+    #: `max_duration_s`.
+    label_mass: Dict[str, float] = field(default_factory=dict)
+
+    @property
+    def subject_ref(self) -> Optional[str]:
+        if not self.label_mass:
+            return None
+        return max(self.label_mass.items(), key=lambda kv: kv[1])[0]
+
+    def observe(self, cluster: MatchCluster) -> None:
+        self.track_ids |= cluster.track_ids
+        self.boxes = list(cluster.boxes)
+        self.peak_confidence = max(self.peak_confidence, cluster.confidence)
+        if cluster.subject_ref is not None:
+            mass = self.label_mass.get(cluster.subject_ref, 0.0) + max(0.0, cluster.confidence)
+            # Floored so a zero-confidence match still records *which* label matched.
+            # Without it an event whose every observation scored 0 could not be named.
+            self.label_mass[cluster.subject_ref] = mass or 1e-9
+        if cluster.target_ref is not None:
+            self.target_ref = cluster.target_ref
+
+    def reset(self) -> None:
+        self.state = RuleState.IDLE
+        self.true_since = None
+        self.false_since = None
+        self.started_at = None
+        self.track_ids = set()
+        self.boxes = []
+        self.peak_confidence = 0.0
+        self.target_ref = None
+        self.label_mass = {}
+
+    @property
+    def spent(self) -> bool:
+        return self.state is RuleState.SPENT
+
+    @property
+    def retired(self) -> bool:
+        """Nothing left to remember — safe to drop from the machine's table."""
+        return self.state is RuleState.IDLE
+
+
+class RuleMachine:
+    """One rule's state on one source: a set of concurrently open events.
+
+    Was one event's worth of hysteresis per `(rule, subject label, target)` triple. Both
+    of those refs were mutable facts about the subject rather than identities, so a
+    person the detector renamed mid-crossing, and a cat that moved from one bowl to the
+    next, each ended one event and opened another. The machine now keys on nothing but
+    the rule and holds an instance per object — see `_EventInstance`.
+    """
+
+    def __init__(
+        self,
+        spec: RuleSpec,
+        source_uuid: Optional[str] = None,
+        label_groups: Optional[Mapping[str, str]] = None,
+        cluster_iou: float = EVENT_CLUSTER_IOU,
+    ) -> None:
         self.spec = spec
         self.source_uuid = source_uuid
-        self.state = RuleState.IDLE
-        #: When the predicate most recently became true (the event's real start).
-        self._true_since: Optional[float] = None
-        #: When the predicate most recently became false (the rearm countdown's start).
-        self._false_since: Optional[float] = None
-        self._event_started_at: Optional[float] = None
-        self._track_ids: List[int] = []
-        self._peak_confidence: float = 0.0
-        #: Slot values from the strongest observation seen *before* this event opened,
-        #: and fixed from that moment on. Latched against `_peak_confidence` rather than
-        #: taken from the first frame, so a rule spanning several cats still names the
-        #: one it saw most clearly during the lead-in rather than whichever tripped
-        #: `min_duration_s` — but pinned at the opening edge, because from there on
-        #: these two values are the event's identity. See `step` for what relatching
-        #: them mid-event cost.
-        self._subject_ref: Optional[str] = None
-        self._target_ref: Optional[str] = None
-        #: How many times the predicate flapped while an event was open. Surfaced as a
-        #: tuning hint — a rule that flaps a lot wants a longer rearm delay.
+        self._label_groups: Dict[str, str] = dict(label_groups or {})
+        self._cluster_iou = cluster_iou
+        self._instances: Dict[str, _EventInstance] = {}
+        self._next_instance = 0
+        #: Totalled on the machine, not the instance, so a tuning hint survives the
+        #: eviction of the instance that flapped.
         self.flap_count: int = 0
 
     # ------------------------------------------------------------------ helpers
 
+    def _group_of(self, label_uuid: Optional[str]) -> str:
+        key = label_uuid or ""
+        return self._label_groups.get(key, key)
+
+    def _new_instance(self) -> _EventInstance:
+        self._next_instance += 1
+        instance = _EventInstance(instance_id=f"{self.spec.uuid}:{self._next_instance}")
+        self._instances[instance.instance_id] = instance
+        return instance
+
     def _signal(
         self,
+        instance: _EventInstance,
         phase: EventPhase,
         now: float,
         close_reason: EventCloseReason = EventCloseReason.PREDICATE,
@@ -501,259 +744,388 @@ class RuleMachine:
             rule_name=self.spec.name,
             phase=phase,
             at=now,
-            started_at=self._event_started_at if self._event_started_at is not None else now,
+            started_at=instance.started_at if instance.started_at is not None else now,
             source_uuid=self.source_uuid,
-            track_ids=list(self._track_ids),
-            peak_confidence=self._peak_confidence,
+            track_ids=sorted(instance.track_ids),
+            peak_confidence=instance.peak_confidence,
             close_reason=close_reason,
-            subject_ref=self._subject_ref,
-            target_ref=self._target_ref,
+            subject_ref=instance.subject_ref,
+            target_ref=instance.target_ref,
+            instance_id=instance.instance_id,
             metadata={"eventLabel": self.spec.event_label} if self.spec.event_label else {},
         )
 
-    def _impulse(self, at: Optional[float]) -> List[WatchEventSignal]:
+    def _impulse(self, instance: _EventInstance, at: Optional[float]) -> List[WatchEventSignal]:
         """One edge as a zero-length event: START and END at the same instant.
 
         Both phases rather than a phase of its own, because every consumer downstream —
         the recorder's open map, the MQTT publisher, the actions' `event_started` /
         `event_ended` triggers — is built on the pair, and a third phase would mean
         teaching all of them a case that carries no information they do not already
-        have. The pair arrives in one step and in order, so the recorder opens and
-        closes the row without ever holding it, and an `event_ended` clip action sees a
-        span of zero: its length comes entirely from `preroll_s` and `postroll_s`, which
-        is the point of an impulse.
+        have.
 
-        `_event_started_at` is set to the anchor first so both signals carry it, and so
+        `started_at` is set to the anchor first so both signals carry it, and so
         `duration_s` on the END is exactly 0 rather than the dwell that preceded it.
         """
-        self._event_started_at = at
+        instance.started_at = at
         moment = at if at is not None else 0.0
         return [
-            self._signal(EventPhase.START, moment),
-            self._signal(EventPhase.END, moment, EventCloseReason.PREDICATE),
+            self._signal(instance, EventPhase.START, moment),
+            self._signal(instance, EventPhase.END, moment, EventCloseReason.PREDICATE),
         ]
 
-    def _spend(self, false_since: Optional[float]) -> None:
-        """Drop everything but the latch: nothing may open until the subject is gone."""
-        self._reset()
-        self.state = RuleState.SPENT
-        self._false_since = false_since
+    def _spend(self, instance: _EventInstance, false_since: Optional[float]) -> None:
+        """Drop the event, keep the identity: nothing may open until the subject is gone.
 
-    def _reset(self) -> None:
-        self.state = RuleState.IDLE
-        self._true_since = None
-        self._false_since = None
-        self._event_started_at = None
-        self._track_ids = []
-        self._peak_confidence = 0.0
-        self._subject_ref = None
-        self._target_ref = None
+        `track_ids`, the boxes and the label pile deliberately survive. They are how the
+        latch recognises the subject it just capped — clear them and the next frame looks
+        like a brand new arrival, which turns the cap straight back into the metronome
+        SPENT exists to prevent.
+        """
+        instance.state = RuleState.SPENT
+        instance.true_since = None
+        instance.started_at = None
+        instance.peak_confidence = 0.0
+        instance.false_since = false_since
+
+    @staticmethod
+    def _is_open(spec: RuleSpec, instance: _EventInstance) -> bool:
+        return spec.trigger == TRIGGER_WHILE and instance.state in (RuleState.ACTIVE, RuleState.CLOSING)
+
+    def instance_is_open(self, instance: _EventInstance) -> bool:
+        return self._is_open(self.spec, instance)
+
+    # ------------------------------------------------------------------ association
+
+    def _clusters(self, result: PredicateResult) -> List[MatchCluster]:
+        """This frame's matches as clusters, one per object the event layer can see.
+
+        A predicate that holds with no matches at all is `motion`, which measures pixels
+        and reports a zone. It still deserves an event, so it becomes one trackless
+        cluster — which `_associate` then routes to the machine's single instance,
+        because a trackless rule can never distinguish a second object anyway.
+        """
+        if result.matches:
+            return cluster_matches(
+                result.matches,
+                self._cluster_iou,
+                collapse=self.spec.event_granularity != GRANULARITY_SUBJECT,
+            )
+        if result.holds:
+            return [
+                MatchCluster(
+                    subject_ref=result.subject_ref,
+                    target_ref=result.target_ref,
+                    score=result.score,
+                    confidence=result.confidence,
+                )
+            ]
+        return []
+
+    def _associate(self, clusters: Sequence[MatchCluster]) -> List[Tuple[MatchCluster, Optional[_EventInstance]]]:
+        """Pair each cluster with the event it belongs to, or with None for a new one.
+
+        Four rules, in order of how much they claim:
+
+        1. **A shared track id.** Unambiguous: the same track is the same object.
+        2. **Overlap with the instance's last boxes.** Covers the ordinary case of a body
+           carried by successive track ids.
+        3. **Adoption.** An instance whose last member has gone but whose rearm window is
+           still running takes the next compatible cluster wherever it appears. This is
+           what the rearm window is *for* — an obstruction that hides the subject and
+           hands it back somewhere else must extend the open event, not start a second
+           one — and rules 1 and 2 both miss it, because the returning object shares
+           neither ids nor position.
+        4. **Nothing** — a genuinely new object, unless the machine is at its cap, in
+           which case it joins its nearest neighbour rather than being dropped.
+
+        One instance per cluster per frame: a claimed instance is withdrawn from the pool
+        so two objects can never collapse into one event by both matching it.
+        """
+        available = list(self._instances.values())
+        pairs: List[Tuple[MatchCluster, Optional[_EventInstance]]] = []
+        for cluster in clusters:
+            match = self._claim(cluster, available)
+            if match is not None:
+                available.remove(match)
+            pairs.append((cluster, match))
+        return pairs
+
+    def _claim(self, cluster: MatchCluster, available: List[_EventInstance]) -> Optional[_EventInstance]:
+        if not cluster.track_ids:
+            # Trackless (motion): one object is all this rule can ever distinguish.
+            return available[0] if available else None
+
+        for instance in available:
+            if cluster.track_ids & instance.track_ids:
+                return instance
+
+        overlapping = [
+            (_best_iou(cluster.boxes, i.boxes), i) for i in available if i.boxes and i.state is not RuleState.IDLE
+        ]
+        best = max(overlapping, key=lambda pair: pair[0], default=(0.0, None))
+        if best[0] >= self._cluster_iou and best[1] is not None:
+            return best[1]
+
+        # Adoption and the cap fold below are for live events only. A SPENT instance is
+        # a latch, not an event: it may recognise its own subject (above) but must never
+        # absorb a different one, or one animal's cap would swallow the next animal's
+        # event entirely.
+        live = [i for i in available if not i.spent]
+        adoptable = [i for i in live if i.state is RuleState.CLOSING and self._compatible(cluster, i)]
+        if adoptable:
+            # Oldest first: the event that has been waiting longest has the strongest
+            # claim on the next thing to appear.
+            return min(adoptable, key=lambda i: i.false_since if i.false_since is not None else 0.0)
+
+        if len(self._instances) >= MAX_EVENT_INSTANCES and live:
+            return max(live, key=lambda i: _best_iou(cluster.boxes, i.boxes) if i.boxes else 0.0)
+        return None
+
+    def _compatible(self, cluster: MatchCluster, instance: _EventInstance) -> bool:
+        """Whether a cluster may be adopted into an event opened on something else.
+
+        Same `exclusive_variants` group only. The group means "alternate guesses about
+        one object", so a cluster inside it is a plausible continuation of the same
+        visit; anything outside it is a different animal, and a rearm window is not a
+        licence to file it under the first one. An unknown label on either side is
+        permitted rather than refused — refusing would make an unlabelled `any` rule
+        unable to extend any event at all.
+        """
+        if cluster.subject_ref is None or instance.subject_ref is None:
+            return True
+        return self._group_of(cluster.subject_ref) == self._group_of(instance.subject_ref)
 
     # ------------------------------------------------------------------ step
 
     def step(self, result: PredicateResult, now: float) -> List[WatchEventSignal]:
-        """Advance the machine one frame; return any transitions to dispatch."""
+        """Advance every instance by one frame; return any transitions to dispatch."""
         if not self.spec.active:
-            # Nothing open means nothing to close. That covers SPENT (whose event was
-            # already capped, and a second closing edge against it would be filed against
-            # a row that has one) and an impulse machine mid-dwell (whose event does not
-            # exist yet, and disarming a rule is not the subject leaving).
-            # It also covers PENDING, which never had an event either — that branch used
-            # to emit an END whose `started_at` was the moment of disarming.
-            if not self.is_open:
-                self._reset()
-                return []
-            # Disabling *or disarming* a rule mid-event must close it, not strand it open
-            # forever. Forced, not predicate: the subject may still be right there, and
-            # the span stops short of whatever it was actually doing.
-            signals = [self._signal(EventPhase.END, now, EventCloseReason.FORCED)]
-            self._reset()
-            return signals
+            return self._deactivate(now)
 
         signals: List[WatchEventSignal] = []
+        matched: Set[str] = set()
+        for cluster, instance in self._associate(self._clusters(result)):
+            if instance is None:
+                instance = self._new_instance()
+            matched.add(instance.instance_id)
+            signals.extend(self._advance(instance, cluster, now))
+
+        # Every instance the frame said nothing about sees a false predicate — which is
+        # what starts, and eventually finishes, its rearm countdown.
+        for instance in list(self._instances.values()):
+            if instance.instance_id not in matched:
+                signals.extend(self._advance(instance, None, now))
+
+        self._evict()
+        return signals
+
+    def _deactivate(self, now: float) -> List[WatchEventSignal]:
+        """Disabled or disarmed: close what is open, forget the rest.
+
+        Forced, not predicate: the subject may still be right there, and the span stops
+        short of whatever it was actually doing. Nothing open means nothing to close —
+        that covers SPENT (already capped, and a second closing edge would be filed
+        against a row that has one), PENDING (which never had an event) and an impulse
+        machine mid-dwell (whose event does not exist yet; disarming a rule is not the
+        subject leaving).
+        """
+        signals: List[WatchEventSignal] = []
+        for instance in self._instances.values():
+            if self.instance_is_open(instance):
+                signals.append(self._signal(instance, EventPhase.END, now, EventCloseReason.FORCED))
+            instance.reset()
+        self._instances.clear()
+        return signals
+
+    def _advance(
+        self,
+        instance: _EventInstance,
+        cluster: Optional[MatchCluster],
+        now: float,
+    ) -> List[WatchEventSignal]:
+        signals: List[WatchEventSignal] = []
+        spec = self.spec
+        holds = cluster is not None
 
         # Waiting out a capped event. The subject is still there as far as this rule is
         # concerned, so nothing is measured and nothing is latched — the only question
         # is whether it has been gone long enough to allow a new event.
-        if self.state is RuleState.SPENT:
-            if result.holds:
-                self._false_since = None
+        if instance.state is RuleState.SPENT:
+            if holds:
+                assert cluster is not None
+                # Keep following the subject while latched. A latch tracking a stale box
+                # loses the object as soon as it moves, and then a new instance opens
+                # beside it — the cap defeated by the very motion it was watching.
+                instance.observe(cluster)
+                instance.false_since = None
                 return signals
-            if self._false_since is None:
-                self._false_since = now
+            if instance.false_since is None:
+                instance.false_since = now
             # Not `elif`: a rule with no rearm delay is asking to be free again as soon
             # as the subject is gone, not one frame later.
-            if now - self._false_since >= self.spec.rearm_delay_s:
-                self._reset()
+            if now - instance.false_since >= spec.rearm_delay_s:
+                instance.reset()
             return signals
 
-        if result.holds:
-            self._track_ids = sorted(set(self._track_ids) | set(result.track_ids))
-            # Slot values follow the peak only until the event opens. Once it is open
-            # they are its *identity* and must not move under it: the recorder's
-            # `_event_key`, the timelapse action's `_session_key`, the in-progress
-            # preview endpoint and the MQTT template all hash an event on
-            # (source, rule, subject, target).
-            #
-            # Nothing is lost by pinning them. The row records the slots once, at the
-            # opening edge, and no later write revises them — so relatching mid-event
-            # could never change what was stored, and only ever cost the closing edge
-            # its key. A `present` rule spanning several cats would open on one of
-            # them, meet a second more confident cat, and emit an END that hashed to a
-            # tuple nothing had been filed under: the row never received `ended_at`
-            # and sat "in progress" until a restart swept it, while the timelapse
-            # action never found its buffer, so it neither compiled the video nor
-            # released the frames — it kept sampling into a directory no closing edge
-            # could reach.
-            #
-            # `is_open` covers CLOSING as well as ACTIVE, which is what keeps a flap
-            # back inside the rearm window rejoining the same event rather than
-            # quietly renaming it.
-            if not self.is_open and (result.confidence >= self._peak_confidence or self._subject_ref is None):
-                if result.subject_ref is not None:
-                    self._subject_ref = result.subject_ref
-                if result.target_ref is not None:
-                    self._target_ref = result.target_ref
-            # Not pinned: the reported confidence is a measurement of the event, not a
-            # key into it, and it should still report the best look it ever got.
-            self._peak_confidence = max(self._peak_confidence, result.confidence)
-            self._false_since = None
+        if holds:
+            assert cluster is not None
+            instance.observe(cluster)
+            instance.false_since = None
 
-            if self.state is RuleState.IDLE:
-                self.state = RuleState.PENDING
+            if instance.state is RuleState.IDLE:
+                instance.state = RuleState.PENDING
                 # The event's start is when the predicate *first* held, not when
                 # hysteresis confirmed it — pre-roll is measured back from here.
-                self._true_since = now
-            elif self.state is RuleState.PENDING:
-                assert self._true_since is not None
-                if now - self._true_since >= self.spec.min_duration_s:
-                    self.state = RuleState.ACTIVE
-                    self._event_started_at = self._true_since
-                    if self.spec.trigger == TRIGGER_ON_ENTER:
-                        # The arrival itself, as a zero-length event anchored at the
-                        # moment the subject appeared rather than at the moment the
-                        # dwell confirmed it — a clip's preroll reaches back from the
-                        # anchor, and anchoring at confirmation would cut `min_duration`
-                        # off the front of the footage the user asked for.
-                        signals.extend(self._impulse(self._true_since))
+                instance.true_since = now
+            elif instance.state is RuleState.PENDING:
+                assert instance.true_since is not None
+                if now - instance.true_since >= spec.min_duration_s:
+                    instance.state = RuleState.ACTIVE
+                    instance.started_at = instance.true_since
+                    if spec.trigger == TRIGGER_ON_ENTER:
+                        # The arrival itself, anchored at the moment the subject appeared
+                        # rather than at the moment the dwell confirmed it — a clip's
+                        # preroll reaches back from the anchor, and anchoring at
+                        # confirmation would cut `min_duration` off the front.
+                        signals.extend(self._impulse(instance, instance.true_since))
                         # Nothing is open, and the subject is still there. SPENT is
                         # exactly the right latch: no second arrival until it has gone.
-                        self._spend(false_since=None)
-                    elif self.spec.trigger == TRIGGER_ON_EXIT:
+                        self._spend(instance, false_since=None)
+                    elif spec.trigger == TRIGGER_ON_EXIT:
                         # Armed, not open: the dwell is being served and the event, if
-                        # there is ever one, happens when the subject leaves. No START
-                        # is emitted, so `is_open` stays false and no consumer sees an
-                        # event it will never get a matching END for.
+                        # there is ever one, happens when the subject leaves. No START is
+                        # emitted, so nothing downstream sees an event it will never get
+                        # a matching END for.
                         pass
                     else:
-                        signals.append(self._signal(EventPhase.START, now))
-            elif self.state is RuleState.CLOSING:
+                        signals.append(self._signal(instance, EventPhase.START, now))
+            elif instance.state is RuleState.CLOSING:
                 # Re-fired inside the rearm window: rejoin the open event rather than
-                # opening a second one. This is what stops one visit becoming twelve.
-                self.state = RuleState.ACTIVE
+                # opening a second one. This is what stops one visit becoming twelve, and
+                # with adoption it holds even when the subject comes back under new track
+                # ids in a different part of the frame.
+                instance.state = RuleState.ACTIVE
                 self.flap_count += 1
         else:
-            if self.state is RuleState.PENDING:
+            if instance.state is RuleState.PENDING:
                 # Never reached min_duration — no event ever existed, so nothing to emit.
-                self._reset()
-            elif self.state is RuleState.ACTIVE:
-                self.state = RuleState.CLOSING
-                self._false_since = now
-            elif self.state is RuleState.CLOSING:
-                assert self._false_since is not None
-                if now - self._false_since >= self.spec.rearm_delay_s:
-                    if self.spec.trigger == TRIGGER_ON_EXIT:
+                instance.reset()
+            elif instance.state is RuleState.ACTIVE:
+                instance.state = RuleState.CLOSING
+                instance.false_since = now
+            elif instance.state is RuleState.CLOSING:
+                assert instance.false_since is not None
+                if now - instance.false_since >= spec.rearm_delay_s:
+                    if spec.trigger == TRIGGER_ON_EXIT:
                         # The departure, anchored at the moment the subject stopped
-                        # matching rather than at the end of the debounce. The delay is
-                        # there to decide whether it *really* left — a tracker dropping
-                        # a car for two frames must not fire "car left" — not to move
-                        # when it left, and a clip's preroll is measured back from the
-                        # anchor. Anchoring at the end of the window would slide a 15 s
-                        # preroll to cover the empty garage instead of the departure.
-                        signals.extend(self._impulse(self._false_since))
+                        # matching rather than at the end of the debounce. The delay
+                        # decides whether it *really* left — a tracker dropping a car for
+                        # two frames must not fire "car left" — it does not move when it
+                        # left, and a preroll is measured back from the anchor.
+                        signals.extend(self._impulse(instance, instance.false_since))
                     else:
-                        signals.append(self._signal(EventPhase.END, now))
-                    self._reset()
+                        signals.append(self._signal(instance, EventPhase.END, now))
+                    instance.reset()
 
         # The runaway cap applies regardless of the predicate: a stuck detection would
         # otherwise hold an event — and a recording — open indefinitely.
         if (
             # ...but only to a rule that has a span to cap. An impulse has none, and an
-            # `on_exit` machine sitting ACTIVE is serving a *dwell*, not holding an event
+            # `on_exit` instance sitting ACTIVE is serving a *dwell*, not holding an event
             # open: capping it would emit an END for an event that never started, and
             # would break the headline case outright — "in the garage for 15 minutes"
             # under the default 300 s cap could never fire.
-            self.spec.trigger == TRIGGER_WHILE
-            and self.state in (RuleState.ACTIVE, RuleState.CLOSING)
-            and self._event_started_at is not None
+            spec.trigger == TRIGGER_WHILE
+            and instance.state in (RuleState.ACTIVE, RuleState.CLOSING)
+            and instance.started_at is not None
             # Zero (or negative) means "no cap", the same reading the recording retention
             # settings give it. Without this the comparison is trivially true the instant
-            # the event opens: `_event_started_at` is `min_duration_s` in the past, so a
-            # zero cap emits END in the *same step* as START, forever. That is the exact
-            # opposite of what anyone typing 0 into a "max" field intends, and it fails
-            # silently — an endless churn of zero-length events, and a timelapse that
-            # compiles nothing because no event ever holds a frame.
-            and self.spec.max_duration_s > 0
-            and now - self._event_started_at >= self.spec.max_duration_s
+            # the event opens: `started_at` is `min_duration_s` in the past, so a zero cap
+            # emits END in the *same step* as START, forever.
+            and spec.max_duration_s > 0
+            and now - instance.started_at >= spec.max_duration_s
         ):
-            signals.append(self._signal(EventPhase.END, now, EventCloseReason.CAP))
+            signals.append(self._signal(instance, EventPhase.END, now, EventCloseReason.CAP))
             # Deliberately *not* a reset to IDLE. The predicate that tripped the cap is
-            # usually still true — that is what "stuck" means — and an IDLE machine would
+            # usually still true — that is what "stuck" means — and an IDLE instance would
             # re-open on the next frame and cap again one max_duration later, forever.
-            # Capping out of CLOSING goes the same way rather than straight to IDLE: the
-            # countdown it was already serving carries over, so a subject that has in
-            # fact left is released on the very next step and nothing waits twice.
-            self._spend(false_since=self._false_since)
+            # Capping out of CLOSING carries the countdown over rather than restarting it,
+            # so a subject that has in fact left is released on the very next step.
+            self._spend(instance, false_since=instance.false_since)
 
         return signals
 
-    def open_signal(self, now: float) -> Optional[WatchEventSignal]:
-        """This machine's open event as an UPDATE signal, or None when nothing is open.
+    def _evict(self) -> None:
+        """Forget instances with nothing left to remember.
 
-        Carries the same identity the START and END signals do — rule, source and both
-        matched slots — so a caller can find the event's row, or the buffer an action is
-        filling for it, while it is still running. Emits nothing itself: it is a view of
-        the current state, not a transition, and `step` remains the only thing that
-        advances the machine.
+        The old machine table was allocated once at load time and never grew, which is
+        what made cardinality a non-question. An instance per object brings the question
+        back, and this is the answer: an instance is dropped the moment it holds no
+        state, so the table is bounded by what is actually in front of the camera. SPENT
+        instances are deliberately kept — their whole purpose is a latch outliving the
+        event.
         """
-        if not self.is_open:
-            return None
-        return self._signal(EventPhase.UPDATE, now)
+        for instance_id in [i.instance_id for i in self._instances.values() if i.retired]:
+            del self._instances[instance_id]
+
+    # ------------------------------------------------------------------ views
+
+    @property
+    def open_instances(self) -> List[_EventInstance]:
+        return [i for i in self._instances.values() if self.instance_is_open(i)]
+
+    @property
+    def is_open(self) -> bool:
+        """Whether *any* event is open right now — a START emitted with no END yet.
+
+        Only a `while` rule can be. An impulse emits both edges in one step and is never
+        between them, and an `on_exit` instance in ACTIVE is serving its dwell with no
+        event to show for it yet. Getting this wrong would put a phantom row in the
+        status panel's "Open events" table and, worse, make `force_close` emit an END on
+        shutdown for an event that was never started.
+        """
+        return bool(self.open_instances)
+
+    @property
+    def state(self) -> RuleState:
+        """The machine's most advanced instance state, for the status panel.
+
+        A machine no longer *has* one state. Reported as the furthest along any instance
+        has got, because that is what a reader of "is this rule doing anything" means.
+        """
+        order = [RuleState.IDLE, RuleState.SPENT, RuleState.PENDING, RuleState.CLOSING, RuleState.ACTIVE]
+        return max((i.state for i in self._instances.values()), key=order.index, default=RuleState.IDLE)
+
+    def open_signals(self, now: float) -> List[WatchEventSignal]:
+        """Every open event as an UPDATE signal. Advances nothing.
+
+        Each carries the same identity its START and END do — rule, source and instance —
+        so a caller can find the event's row, or the buffer an action is filling for it,
+        while it is still running.
+        """
+        return [self._signal(i, EventPhase.UPDATE, now) for i in self.open_instances]
 
     def force_close(
         self,
         now: float,
         reason: EventCloseReason = EventCloseReason.FORCED,
-    ) -> Optional[WatchEventSignal]:
-        """Close an open event without waiting for hysteresis.
+    ) -> List[WatchEventSignal]:
+        """Close every open event without waiting for hysteresis.
 
-        Used on shutdown and on resume: an event that was open when the task stopped
-        must be closed and its clip enqueued, not left dangling.
+        Used on shutdown and on resume: an event that was open when the task stopped must
+        be closed and its clip enqueued, not left dangling.
 
         `reason` is the caller's, because the machine cannot tell the difference. The
-        state it sees is identical whether the watcher is stopping or the camera has
-        gone dark, and those read very differently on an event card — see
-        `EventCloseReason`.
-        """
-        # `is_open`, not the raw state: an impulse rule mid-dwell has nothing open, and
-        # a watcher stopping is not the subject leaving — an `on_exit` rule must not fire
-        # "the car left" because someone pressed Stop.
-        if self.is_open:
-            signal = self._signal(EventPhase.END, now, reason)
-            self._reset()
-            return signal
-        self._reset()
-        return None
+        state it sees is identical whether the watcher is stopping or the camera has gone
+        dark, and those read very differently on an event card.
 
-    @property
-    def is_open(self) -> bool:
-        """Whether an event is open *right now* — i.e. a START has been emitted with no
-        END yet.
-
-        Only a `while` rule can be. An impulse emits both edges in one step and is never
-        between them, and an `on_exit` machine in ACTIVE is serving its dwell with no
-        event to show for it yet. Getting this wrong would put a phantom row in the
-        status panel's "Open events" table and, worse, make `force_close` emit an END
-        on shutdown for an event that was never started.
+        Instances that hold nothing open are dropped rather than closed: an impulse rule
+        mid-dwell has no event, and a watcher stopping is not the subject leaving — an
+        `on_exit` rule must not fire "the car left" because someone pressed Stop.
         """
-        return self.spec.trigger == TRIGGER_WHILE and self.state in (RuleState.ACTIVE, RuleState.CLOSING)
+        signals = [self._signal(i, EventPhase.END, now, reason) for i in self.open_instances]
+        for instance in self._instances.values():
+            instance.reset()
+        self._instances.clear()
+        return signals

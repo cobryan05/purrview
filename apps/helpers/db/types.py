@@ -1864,6 +1864,29 @@ class RuleTrigger(str, Enum):
     ON_EXIT = "on_exit"
 
 
+class EventGranularity(str, Enum):
+    """*How many* events a rule opens at once, as opposed to when each one fires.
+
+    The engine keeps one event per distinct tracked object. Whether that is what the
+    author meant cannot be inferred from the rule — "a cat is present", which wants one
+    clip of the scene however many cats are in it, and "a cat drank water", which wants
+    one per cat, are the same shape with different intent.
+
+    * `SUBJECT` — one event per object. The default: "one event per thing that happened"
+      is the more useful card, and it is the only setting under which two cats at the
+      same bowl are two visits rather than one.
+    * `RULE` — one event for as long as the predicate holds for anyone. Right whenever
+      the recording is the whole frame, because per-object events would then be
+      near-identical clips of one scene.
+
+    Note the behaviour this replaced was per *label*, which is neither — so there is no
+    "as before" value, and a migration has to choose per rule.
+    """
+
+    SUBJECT = "subject"
+    RULE = "rule"
+
+
 class ZoneKind(str, Enum):
     BOX = "box"
     POLYGON = "polygon"
@@ -2098,6 +2121,14 @@ class InteractionRule(SQLModel, table=True):
     trigger: str = Field(
         default=RuleTrigger.WHILE.value,
         sa_column=Column(sa.String(), nullable=False, server_default=sa.text("'while'")),
+    )
+    # One event per object, or one for the whole rule. See `EventGranularity`.
+    # `server_default` for the same reason as `trigger` above: the created and migrated
+    # schemas must agree. The migration that adds this column does *not* take the default
+    # blindly — see its docstring, which derives a value per rule.
+    event_granularity: str = Field(
+        default=EventGranularity.SUBJECT.value,
+        sa_column=Column(sa.String(), nullable=False, server_default=sa.text("'subject'")),
     )
     # The predicate must hold continuously this long before the event STARTS — or, for
     # an impulse trigger, the dwell it must have served before either edge counts.
@@ -2633,6 +2664,7 @@ class InteractionRuleRead(OrmModel):
     margin: float = 0.0
     motion_sensitivity: float = 0.0
     trigger: str = RuleTrigger.WHILE.value
+    event_granularity: str = EventGranularity.SUBJECT.value
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -2665,6 +2697,7 @@ class InteractionRuleWrite(ApiModel):
     # fire; 0 is not "most sensitive" but "use the default", so the floor is above it.
     motion_sensitivity: float = Field(default=0.0, ge=0.0, le=1.0)
     trigger: RuleTrigger = RuleTrigger.WHILE
+    event_granularity: EventGranularity = EventGranularity.SUBJECT
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0

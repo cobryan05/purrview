@@ -12,21 +12,46 @@ the same rule. A rule may also opt out of a source entirely (`RuleSpec.source_uu
 in which case this engine simply has no machine for it.
 """
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..tracking.tracker import Track
 from .events import EventCloseReason, WatchEventSignal
 from .geometry import Zone
 from .motion import MotionField
-from .rules import RuleMachine, RuleSpec, evaluate_predicate
+from .rules import TRIGGER_ON_ENTER, TRIGGER_ON_EXIT, RuleMachine, RuleSpec, evaluate_predicate
 from .scoping import rule_applies_to_source
 
-#: Which machine a transition belongs to: the rule, plus the member of each subject slot
-#: it was narrowed to. `None` in either position means that slot had nothing to
-#: enumerate. Deliberately the same shape the recorder and the timelapse action key an
-#: event on — `(source, rule, subject_ref, target_ref)` — minus the source, which an
-#: engine already is.
+#: Which machine a transition belongs to: the rule, plus any slot member the rule was
+#: narrowed to. `None` in a position means that slot is not split on — which, for the
+#: subject slot, is now almost always the case: see `_machine_keys`.
+#:
+#: No longer the shape an event is keyed on. Events key on `instance_id`, because a
+#: machine holds several at once.
 SlotKey = Tuple[str, Optional[str], Optional[str]]
+
+
+def _machine_keys(rule: RuleSpec) -> List[SlotKey]:
+    """Which machines one rule needs.
+
+    Almost always exactly one. A machine separates concurrent events *inside* itself now,
+    by object, so splitting it by slot member would only re-create the bug that motivated
+    all of this: a subject whose label changed, or that moved to the next target, landed
+    in a different machine and so became a second event.
+
+    Two slots still earn a machine each, for reasons that are not about identity:
+
+    * **A `motion` rule's subject.** It names a region to measure, not a thing to look
+      for. Two zones are two independent measurements and there is no object to cluster.
+    * **An impulse rule's target.** Walking from the first bowl to the second genuinely
+      *is* a second arrival, so `on_enter` must fire again. Only `while` rules want the
+      target out of the key, where a subject moving between targets is one continuous
+      thing happening.
+    """
+    if rule.relation == "motion":
+        return [(rule.uuid, a_ref, None) for a_ref in _slot_refs(rule.subject_a_kind, rule.subject_a_refs)]
+    if rule.trigger in (TRIGGER_ON_ENTER, TRIGGER_ON_EXIT):
+        return [(rule.uuid, None, b_ref) for b_ref in _slot_refs(rule.subject_b_kind, rule.subject_b_refs)]
+    return [(rule.uuid, None, None)]
 
 
 def _slot_refs(kind: str, refs: Sequence[str]) -> List[Optional[str]]:
@@ -53,18 +78,15 @@ class WatchEngine:
         source_uuid: Optional[str] = None,
         frame_width: float = 640.0,
         frame_height: float = 480.0,
+        label_groups: Optional[Mapping[str, str]] = None,
     ) -> None:
         self.source_uuid = source_uuid
         self._zones: Dict[str, Zone] = {z.uuid: z for z in zones}
-        # One machine per *slot* — per member of each multi-ref subject — not per rule.
-        # "Any of these three cats" is three independent events with their own hysteresis
-        # and their own recordings; see `RuleSpec.narrowed` for why that line falls
-        # between labels rather than between tracks.
-        #
-        # Enumerated once, here, because the ref lists are known at load time (descendants
-        # were already widened by `expand_descendants` before the spec arrived). Nothing
-        # is ever allocated per frame, so there is no cardinality to cap and no eviction
-        # to get wrong: the table is exactly as big as the rules say it is.
+        # Machines are still enumerated once, here — see `_machine_keys` for which slots
+        # earn one. What is no longer fixed at load time is how many *events* a machine
+        # can hold: it grows one per object in front of the camera and drops it again when
+        # the object is gone, so cardinality is bounded by the scene rather than by the
+        # config. `RuleMachine._evict` is where that bound is enforced.
         #
         # A rule scoped to other sources gets no machine here at all, rather than a
         # machine that is asked never to fire. That is the difference between "this
@@ -75,11 +97,13 @@ class WatchEngine:
         for rule in rules:
             if not rule_applies_to_source(rule.source_uuids, source_uuid):
                 continue
-            for a_ref in _slot_refs(rule.subject_a_kind, rule.subject_a_refs):
-                for b_ref in _slot_refs(rule.subject_b_kind, rule.subject_b_refs):
-                    self._machines[(rule.uuid, a_ref, b_ref)] = RuleMachine(
-                        rule.narrowed(a_ref, b_ref), source_uuid=source_uuid
-                    )
+            for key in _machine_keys(rule):
+                _rule_uuid, a_ref, b_ref = key
+                self._machines[key] = RuleMachine(
+                    rule.narrowed(a_ref, b_ref),
+                    source_uuid=source_uuid,
+                    label_groups=label_groups,
+                )
         self.frame_width = frame_width
         self.frame_height = frame_height
 
@@ -152,11 +176,9 @@ class WatchEngine:
 
     def open_signals(self, now: float) -> List[WatchEventSignal]:
         """One UPDATE signal per currently-open event. Advances nothing."""
-        signals = []
+        signals: List[WatchEventSignal] = []
         for machine in self._machines.values():
-            signal = machine.open_signal(now)
-            if signal is not None:
-                signals.append(signal)
+            signals.extend(machine.open_signals(now))
         return signals
 
     def close_all(
@@ -165,11 +187,9 @@ class WatchEngine:
         reason: EventCloseReason = EventCloseReason.FORCED,
     ) -> List[WatchEventSignal]:
         """Close every open event. Used on shutdown, pause, resume and a lost source."""
-        signals = []
+        signals: List[WatchEventSignal] = []
         for machine in self._machines.values():
-            signal = machine.force_close(now, reason)
-            if signal is not None:
-                signals.append(signal)
+            signals.extend(machine.force_close(now, reason))
         return signals
 
     def set_rule_armed(
@@ -200,9 +220,7 @@ class WatchEngine:
                 continue
             machine.spec.armed = armed
             if not armed:
-                signal = machine.force_close(now, reason)
-                if signal is not None:
-                    signals.append(signal)
+                signals.extend(machine.force_close(now, reason))
         return signals
 
     def rule_arming(self) -> List[Tuple[str, str, bool]]:
@@ -226,23 +244,25 @@ class WatchEngine:
     def open_events(self) -> List[Dict[str, object]]:
         """Open events, shaped for the status panel's "Open events" table.
 
-        The slot refs are carried because one rule can now hold several events at once —
-        without them two of this rule's rows would be indistinguishable, and the panel
-        would look like it was double-reporting rather than showing two cats.
+        One row per open event, not per machine: a rule holds an event per object, and
+        `instanceId` is what tells two of this rule's rows apart. The slot refs ride along
+        for display only — they move as the detector changes its mind, which is exactly
+        why they are no longer the identity.
         """
         return [
             {
                 "ruleUuid": machine.spec.uuid,
                 "ruleName": machine.spec.name,
                 "sourceUuid": self.source_uuid,
-                "subjectRef": subject_ref,
-                "targetRef": target_ref,
-                "state": machine.state.value,
-                "startedAt": machine._event_started_at,
-                "trackIds": list(machine._track_ids),
+                "instanceId": instance.instance_id,
+                "subjectRef": instance.subject_ref,
+                "targetRef": instance.target_ref,
+                "state": instance.state.value,
+                "startedAt": instance.started_at,
+                "trackIds": sorted(instance.track_ids),
             }
-            for (_rule_uuid, subject_ref, target_ref), machine in self._machines.items()
-            if machine.is_open
+            for machine in self._machines.values()
+            for instance in machine.open_instances
         ]
 
     def tuning_hints(self, min_flaps: int = 5) -> List[str]:

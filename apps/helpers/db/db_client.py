@@ -8826,28 +8826,40 @@ class DbClient:
             return None if event is None else event.crop_path
 
     async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
-        """Insert the event and bump its lifetime tally in the same transaction.
+        """Insert the event. The lifetime tally is bumped when it *closes*.
 
-        The tally has to be bumped where the event is written, not derived where it is
-        read — see `WatchEventCounter`. Events missing either uuid are counted by
-        nothing, matching the filter `watch_event_counts` has always applied: a tally
-        keyed on a NULL has no Home Assistant entity to publish to.
+        Not here, even though this is where the row appears. An open event's subject is
+        still the watcher's running opinion, and it is revised at the closing edge to
+        whichever label the visit actually weighed most — so a tally taken now would
+        count a `Person` for an event whose card ends up reading `Alice`, and the two would
+        disagree permanently, because a `total_increasing` counter cannot be walked back.
+
+        See `_close_watch_event_counter`.
         """
         async with self._async_session_maker() as session:
             session.add(event)
-            if event.source_uuid is not None and event.rule_uuid is not None:
-                await self._bump_watch_event_counter(session, event)
             await session.commit()
             await session.refresh(event)
             return self._watch_event_to_read(event)
 
-    async def _bump_watch_event_counter(self, session: Any, event: WatchEvent) -> None:
-        """`+1` on the event's counter row, creating it at 1 if this pair is new.
+    async def _close_watch_event_counter(self, session: Any, event: WatchEvent) -> None:
+        """`+1` on the closing event's counter row, creating it at 1 if this pair is new.
+
+        Called once per event, at the moment it closes, so the tally counts the subject
+        the event was finally decided to be. Events missing either uuid are counted by
+        nothing, matching the filter `watch_event_counts` has always applied: a tally
+        keyed on a NULL has no Home Assistant entity to publish to.
+
+        An event that never closes is never counted — a watcher killed hard enough that
+        its shutdown sweep does not run leaves the row open, and one uncounted visit is a
+        far smaller lie than a count that disagrees with every card under it.
 
         An upsert rather than read-modify-write because two watchers can close an event
         on the same pair concurrently, and `count = count + 1` evaluated in SQLite is
         atomic where a Python round-trip would lose one of them.
         """
+        if event.source_uuid is None or event.rule_uuid is None:
+            return
         stmt = sqlite_insert(WatchEventCounter).values(
             source_uuid=event.source_uuid,
             rule_uuid=event.rule_uuid,
@@ -8881,10 +8893,16 @@ class DbClient:
             event = await session.get(WatchEvent, uuid)
             if event is None:
                 return None
+            # Read before the fields are applied: the tally is owed on the *transition*
+            # from open to closed, and applying first would make every later correction
+            # to an already-closed event look like another close and count it again.
+            was_open = event.ended_at is None
             for key, value in fields.items():
                 if hasattr(event, key):
                     setattr(event, key, value)
             session.add(event)
+            if was_open and event.ended_at is not None:
+                await self._close_watch_event_counter(session, event)
             await session.commit()
             await session.refresh(event)
             read = self._watch_event_to_read(event)

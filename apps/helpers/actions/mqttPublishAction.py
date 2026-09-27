@@ -21,9 +21,9 @@ edges (what just happened) — a retained "event started" would replay to every 
 subscriber as though it were live.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
-from ..watch.events import WatchEventSignal
+from ..watch.events import EventPhase, WatchEventSignal
 from ..watch.templating import build_template_params, describe_params, render_topic, slugify
 from .action import Action, ActionContext, ActionResult
 from .Registry import register_action
@@ -62,6 +62,10 @@ class MqttPublishAction(Action):
         # Injected by the task, which owns the connection: one broker connection per
         # watcher, not one per action.
         self._publisher = publisher
+        #: Topic per open event, so both of its edges publish to the same place — see
+        #: `topic_for`. Bounded by what is open: an entry is dropped on the END that
+        #: consumes it.
+        self._topics: Dict[Tuple[str, str, str], str] = {}
 
     @classmethod
     def display_name(cls) -> str:
@@ -104,7 +108,30 @@ class MqttPublishAction(Action):
         }
 
     def topic_for(self, signal: WatchEventSignal, context: ActionContext) -> str:
-        return render_topic(self._topic_template, build_template_params(signal, context))
+        """The topic for one edge, pinned to whatever the event's START published on.
+
+        A template may route on `{subject}` or `{target}`, and both of those now move
+        while an event is open: the watcher revises its opinion of what it is looking at,
+        and an event that opened on the group root can close named after a variant. Left
+        alone, START and END would land on two different topics, and an automation
+        waiting for the end of the event it saw begin would wait forever.
+
+        So the first edge decides, and every later edge reuses it. Keyed on the
+        instance — the one part of an event's identity that does not move. The payload
+        still carries the current values, so a subscriber routing on payload rather than
+        on topic shape sees the correction.
+        """
+        key = (signal.source_uuid or "", signal.rule_uuid or "", signal.instance_id or "")
+        topic = self._topics.get(key)
+        if topic is None:
+            topic = render_topic(self._topic_template, build_template_params(signal, context))
+            # An impulse emits both edges in one step and is never between them, so it has
+            # no pair to keep together and nothing to remember.
+            if signal.instance_id and signal.phase is not EventPhase.END:
+                self._topics[key] = topic
+        if signal.phase is EventPhase.END:
+            self._topics.pop(key, None)
+        return topic
 
     def payload_for(self, signal: WatchEventSignal, context: ActionContext) -> Dict[str, Any]:
         payload = signal.to_dict()

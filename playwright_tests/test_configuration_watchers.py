@@ -3229,6 +3229,51 @@ class TestRuleTrigger:
         expect(cap).to_be_visible()
 
 
+class TestRuleGranularity:
+    """How many events one rule holds at once.
+
+    The engine half is covered in `tests/helpers/test_watch_engine.py`. What needs a
+    browser is that the choice reaches the payload, and that it leaves the row for a
+    `motion` rule — which measures changed pixels and has no objects to separate, so the
+    control would be one that silently does nothing.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_a_rule_holds_one_event_per_subject_by_default(self, page: Page, base_url: str):
+        """ "One event per thing that happened" is the more useful card, so it is the
+        default — and it is the only setting under which two cats at one bowl are two
+        visits rather than one."""
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-rule-granularity']").first).to_have_value("subject")
+
+    def test_choosing_one_event_for_the_rule_is_saved(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-rule-granularity']").first.select_option("rule")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["eventGranularity"] == "rule", saved["rules"][0]
+
+    def test_the_choice_leaves_the_row_for_a_motion_rule(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        granularity = page.locator("[data-testid='watch-rule-granularity']").first
+        expect(granularity).to_be_visible()
+
+        page.locator("[data-testid='watch-rule-relation']").first.select_option("motion")
+        expect(granularity).to_be_hidden()
+
+        page.locator("[data-testid='watch-rule-relation']").first.select_option("present")
+        expect(granularity).to_be_visible()
+
+
 class TestRuleSummary:
     """The sentence under the tuning row, restating what its numbers do.
 
