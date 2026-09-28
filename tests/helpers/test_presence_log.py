@@ -112,6 +112,28 @@ class TestPruning:
             log.note(CAM, float(at), {CAT: 0.8})
         assert log.interval_count(CAM) <= 5
 
+    def test_a_long_lived_interval_does_not_shield_stale_ones_behind_it(self):
+        """Intervals are ordered by `start`, but `end` is what ages. A subject that stays
+        visible sits at the head forever, so no property of the head interval can stand in
+        for the sweep: an expired sighting behind it must still be dropped."""
+        log = PresenceLog(horizon_s=100.0, gap_s=60.0)
+        log.note(CAM, 0.0, {CAT: 0.8})
+        log.note(CAM, 5.0, {DOG: 0.8})
+        for at in range(50, 2001, 50):
+            log.note(CAM, float(at), {CAT: 0.8})
+        assert set(log.labels_between(CAM, 0.0, 10.0)) == {CAT}
+        assert set(log.labels_between(CAM, 1980.0, 2000.0)) == {CAT}
+
+    def test_the_count_cap_evicts_the_stale_intervals_not_the_open_one(self):
+        """A still-open interval sits at the head for as long as it lasts, so a cap that
+        trimmed by position would discard exactly the label most reliably in the clip and
+        keep the per-frame flicker that crowded it out."""
+        log = PresenceLog(gap_s=60.0, max_intervals=5)
+        for at in range(0, 21):
+            log.note(CAM, float(at), {CAT: 0.8, f"flicker-{at}": 0.5})
+        assert log.interval_count(CAM) <= 5
+        assert CAT in log.labels_between(CAM, 0.0, 2.0)
+
 
 class TestOverlayLabels:
     def test_only_confirmed_tracks_are_catalogued_never_raw_boxes(self):

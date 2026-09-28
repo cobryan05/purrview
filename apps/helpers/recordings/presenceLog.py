@@ -73,6 +73,10 @@ class PresenceLog:
     max_intervals: int = DEFAULT_MAX_INTERVALS
     #: source_uuid → intervals, oldest first.
     _by_source: Dict[str, List[PresenceInterval]] = field(default_factory=dict)
+    #: source_uuid → the time after which its log is worth sweeping again. A sweep is
+    #: O(intervals) and every analysed frame calls `note`, so it runs on a timer rather
+    #: than per frame; nothing reads an interval that expired less than a sweep ago.
+    _sweep_after: Dict[str, float] = field(default_factory=dict)
 
     def note(self, source_uuid: str, at: float, labels: Mapping[str, float]) -> None:
         """Record one analysed frame's verdict for one source.
@@ -128,9 +132,11 @@ class PresenceLog:
 
     def forget(self, source_uuid: str) -> None:
         self._by_source.pop(source_uuid or "", None)
+        self._sweep_after.pop(source_uuid or "", None)
 
     def clear(self) -> None:
         self._by_source.clear()
+        self._sweep_after.clear()
 
     def interval_count(self, source_uuid: Optional[str] = None) -> int:
         if source_uuid is None:
@@ -141,14 +147,24 @@ class PresenceLog:
         intervals = self._by_source.get(source_uuid)
         if not intervals:
             return
+        # `max_intervals` is a hard bound, so exceeding it sweeps out of turn however
+        # recently the last sweep ran.
+        if len(intervals) <= self.max_intervals and now < self._sweep_after.get(source_uuid, 0.0):
+            return
+        self._sweep_after[source_uuid] = now + max(self.gap_s, 1.0)
         cutoff = now - self.horizon_s
-        # An interval still open at the cutoff is kept: its `end` is what ages, not its
-        # start, so a subject present for longer than the horizon does not vanish from a
-        # window it is still inside.
-        if intervals[0].end < cutoff:
-            intervals = [i for i in intervals if i.end >= cutoff]
+        # `end` is what ages, not `start`, so a subject present for longer than the
+        # horizon does not vanish from a window it is still inside. Every interval is
+        # tested: `start` order says nothing about `end` order, so a long-lived interval
+        # at the head is no evidence that what follows it is still current.
+        intervals = [i for i in intervals if i.end >= cutoff]
         if len(intervals) > self.max_intervals:
-            intervals = intervals[len(intervals) - self.max_intervals :]
+            # Dropped by `end`, not by position. A still-open interval sits at the head
+            # for as long as it lasts, so trimming the front discards exactly the label
+            # that is most reliably present and keeps the flicker that crowded it out.
+            oldest = sorted(intervals, key=lambda i: i.end)[: len(intervals) - self.max_intervals]
+            doomed = {id(i) for i in oldest}
+            intervals = [i for i in intervals if id(i) not in doomed]
         self._by_source[source_uuid] = intervals
 
 
@@ -160,8 +176,9 @@ def labels_from_overlay(document: Mapping[str, object]) -> Dict[str, float]:
     boxes are raw model output at the deliberately low floor ByteTrack needs. Cataloguing
     boxes would mark nearly every clip as containing nearly every label.
 
-    Used for two things that must agree: the clip-window slice written beside a new clip,
-    and the one-time backfill over sidecars that already exist.
+    The live path never reads a sidecar — it slices `PresenceLog` as the frames go by —
+    so this exists for the one-time backfill over recordings that predate the catalogue,
+    and applies the tracks-only rule the live feed gets from `presence_labels`.
     """
     found: Dict[str, float] = {}
     frames = document.get("frames") if isinstance(document, Mapping) else None

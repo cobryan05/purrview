@@ -8726,14 +8726,6 @@ class DbClient:
                 await session.commit()
             return touched
 
-    async def watch_event_label_uuids(self, event_uuid: str) -> List[str]:
-        """The label uuids catalogued for one event. For tests and the backfill's skip check."""
-        async with self._async_session_maker() as session:
-            rows = (
-                await session.exec(select(WatchEventLabel.label_uuid).where(WatchEventLabel.event_uuid == event_uuid))
-            ).all()
-            return [r for r in rows]
-
     # ─── event blips ─────────────────────────────────────────────────────────
 
     async def _attach_event_blip_counts(self, session: Any, events: List[WatchEventRead]) -> List[WatchEventRead]:
