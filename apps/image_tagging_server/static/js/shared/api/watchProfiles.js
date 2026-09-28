@@ -154,6 +154,8 @@ export async function deleteWatchProfile(uuid) {
  * @param {string[]} [opts.ruleExcludeUuids] - event types to exclude
  * @param {string[]} [opts.subjectExcludeRefs] - acting things to exclude
  * @param {string[]} [opts.targetExcludeRefs] - things acted on to exclude
+ * @param {string[]} [opts.presentRefs] - labels the clip must contain; any of
+ * @param {string[]} [opts.presentExcludeRefs] - labels the clip must not contain
  * @param {?string} [opts.startFrom] - ISO, inclusive
  * @param {?string} [opts.startTo] - ISO, inclusive
  * @param {?boolean} [opts.hasRecording] - owns any media, or none
@@ -189,6 +191,8 @@ export function watchEventFilterParams({
   ruleExcludeUuids,
   subjectExcludeRefs,
   targetExcludeRefs,
+  presentRefs,
+  presentExcludeRefs,
   startFrom,
   startTo,
   hasRecording,
@@ -214,6 +218,10 @@ export function watchEventFilterParams({
     ['exclude_rule_uuids', ruleExcludeUuids],
     ['exclude_subject_refs', subjectExcludeRefs],
     ['exclude_target_refs', targetExcludeRefs],
+    // What the clip contains, which unlike the four above is one-to-many per event: an
+    // event matches when *any* of these labels was present in it at some point.
+    ['present_refs', presentRefs],
+    ['exclude_present_refs', presentExcludeRefs],
   ]) {
     for (const value of values ?? []) params.append(key, value);
   }
@@ -363,7 +371,7 @@ export async function fetchWatchEventHistogram({ bucket = 'hour', ...filters } =
  *
  * @param {Object} [opts]
  * @param {?string} [opts.profileUuid]
- * @returns {Promise<{rules: Array, subjects: Array, targets: Array, sources: Array}>}
+ * @returns {Promise<{rules: Array, subjects: Array, targets: Array, sources: Array, present: Array}>}
  */
 export async function fetchWatchEventFacets({ profileUuid } = {}) {
   const params = new URLSearchParams();
@@ -378,6 +386,7 @@ export async function fetchWatchEventFacets({ profileUuid } = {}) {
     subjects: data.subjects || [],
     targets: data.targets || [],
     sources: data.sources || [],
+    present: data.present || [],
   };
 }
 

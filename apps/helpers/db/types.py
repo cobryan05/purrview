@@ -2486,6 +2486,46 @@ class WatchEventCounter(SQLModel, table=True):
     last_seen: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
 
 
+class WatchEventLabel(SQLModel, table=True):
+    """One label that was present at some point inside an event's clip window.
+
+    The catalogue of what is *in* the video, as opposed to `subject_ref`/`target_ref`,
+    which record what the rule fired *about*. A clip saved because a cat reached a bowl
+    still contains whoever walked past behind it, and "every clip a person appears in" is
+    a question the actor columns cannot answer at all. The primary subject is in here too
+    — it was present — so this is a complete inventory rather than an "also seen" list.
+
+    **The window is the clip's, not the event's.** Pre-roll is part of the video, so
+    presence during the lead-in counts; see `apps.helpers.recordings.presenceLog`. An event
+    with no recording gets its own span instead, so the filter still answers for it.
+
+    **Only confirmed tracks are recorded.** The watcher asks inference for a 0.1 floor
+    because ByteTrack needs weak boxes, so a catalogue built from raw detections would mark
+    nearly every clip as containing nearly every label. `Tracker.update` returns
+    `active_tracks()` — confirmed only — and that is the set fed here.
+
+    A row per (event, label), not per sighting: the question is membership. `label_uuid`
+    carries **no foreign key**, for the same reason `WatchEvent.rule_uuid` carries none —
+    deleting a label must not rewrite the history of what the cameras saw, and the facet
+    list is built from the values present in history precisely so a deleted label keeps its
+    clips findable. Names are resolved by joining `labels` at read time rather than
+    denormalised, so a rename shows up on old clips the way it does everywhere else.
+    """
+
+    __tablename__ = "watch_event_labels"
+    __table_args__ = (
+        # The composite PK leads with `event_uuid`, so the filter's reverse lookup — every
+        # event containing label X — would scan the table without this.
+        sa.Index("ix_watch_event_labels_label_uuid", "label_uuid"),
+    )
+    event_uuid: str = Field(foreign_key="watch_events.uuid", primary_key=True, ondelete="CASCADE")
+    label_uuid: str = Field(primary_key=True)
+    #: Highest confidence this label reached inside the window. Display and future
+    #: "confidently present" filtering; never used to decide membership, which is settled
+    #: by the tracker having confirmed the track at all.
+    peak_confidence: float = Field(default=0.0)
+
+
 class EventBlip(TimestampModel, table=True):
     """One stretch of a clip where tracking went wrong.
 
@@ -2938,6 +2978,18 @@ class EventRecordingRead(OrmModel):
     status: str = RecordingStatus.PENDING.value
 
 
+class PresentLabelRead(OrmModel):
+    """One entry in an event's catalogue of what was in the clip.
+
+    `label_name` is resolved from the live `labels` table, so it is null for a label that
+    has since been deleted — the uuid still matches, and the UI falls back to it.
+    """
+
+    label_uuid: str
+    label_name: Optional[str] = None
+    peak_confidence: float = 0.0
+
+
 class WatchEventRead(OrmModel):
     uuid: str
     profile_uuid: str
@@ -2983,6 +3035,13 @@ class WatchEventRead(OrmModel):
     #: has no FK back to `watch_events` (an event can be deleted while its extraction is
     #: still in flight, and a hard FK would either block that or take the row with it).
     recordings: List[EventRecordingRead] = Field(default_factory=list)
+    #: Every label that was present at some point in this event's clip window — what the
+    #: video *contains*, including the subject the rule fired on. Filled in by the db
+    #: client in one batched query per page, alongside `recordings`. See `WatchEventLabel`
+    #: for why the window is the clip's rather than the event's, and why only confirmed
+    #: tracks count. Empty for an event recorded before this existed, which is
+    #: indistinguishable here from one whose cameras genuinely saw nothing.
+    present: List[PresentLabelRead] = Field(default_factory=list)
 
 
 class EventBlipRead(OrmModel):

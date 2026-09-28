@@ -19,15 +19,17 @@ import { expandWithDescendants, flattenHierarchy } from '/app-static/js/ui/label
 import { createMultiSelectDropdown, Logger } from '/app-static/js/ui/utils/index.js';
 
 /** @typedef {{sourceUuids: string[], ruleUuids: string[], subjectRefs: string[],
- *             targetRefs: string[], sourceExcludeUuids: string[], ruleExcludeUuids: string[],
- *             subjectExcludeRefs: string[], targetExcludeRefs: string[],
+ *             targetRefs: string[], presentRefs: string[], sourceExcludeUuids: string[],
+ *             ruleExcludeUuids: string[],
+ *             subjectExcludeRefs: string[], targetExcludeRefs: string[], presentExcludeRefs: string[],
  *             subjectIncludeChildren: boolean, targetIncludeChildren: boolean,
+ *             presentIncludeChildren: boolean,
  *             startFrom: ?string, startTo: ?string,
  *             hasRecording: ?boolean, recordingKind: ?string,
  *             reviewState: ?string, pinned: ?boolean}} EventFilterState */
 
 /**
- * The four facet filters, as `[state key for includes, state key for excludes, facet key,
+ * The five facet filters, as `[state key for includes, state key for excludes, facet key,
  * label, "no filter" text, testid, state key for the roll-up toggle or null]`.
  *
  * One table rather than four near-identical blocks: every one of them is the same
@@ -35,14 +37,20 @@ import { createMultiSelectDropdown, Logger } from '/app-static/js/ui/utils/index
  * restoring after a facet refresh, and reporting emptiness — were drifting apart when
  * each was written out longhand.
  *
- * Only the two actor slots carry a roll-up key. A rule and a camera are flat entities;
- * a subject or target ref is (usually) a label uuid, and labels are a tree.
+ * Only the label-valued facets carry a roll-up key. A rule and a camera are flat
+ * entities; a subject or target ref is (usually) a label uuid and `present` always is,
+ * and labels are a tree.
  */
 export const FACET_FILTERS = [
   ['ruleUuids', 'ruleExcludeUuids', 'rules', 'Event type', 'Any event type', 'event-filter-rule', null],
   ['sourceUuids', 'sourceExcludeUuids', 'sources', 'Camera', 'Any camera', 'event-filter-source', null],
   ['subjectRefs', 'subjectExcludeRefs', 'subjects', 'Acting', 'Anything acting', 'event-filter-subject', 'subjectIncludeChildren'],
   ['targetRefs', 'targetExcludeRefs', 'targets', 'Acted on', 'Anything acted on', 'event-filter-target', 'targetIncludeChildren'],
+  // Not an actor slot: what the clip *contains*, at any point, whether or not the rule
+  // cared — the catalogue `WatchEventLabel` keeps. The one facet backed by a one-to-many
+  // table, which is why it is the only one whose value can appear on an event more than
+  // once and the only one an event can have none of.
+  ['presentRefs', 'presentExcludeRefs', 'present', 'Present', 'Anything present', 'event-filter-present', 'presentIncludeChildren'],
 ];
 
 /** The roll-up state keys, for the places that must not treat one as a filter. */
@@ -354,7 +362,7 @@ export async function createEventFilters(onChange) {
   container.dataset.testid = 'event-filters';
 
   const state = defaultFilterState();
-  let facets = { rules: [], subjects: [], targets: [], sources: [] };
+  let facets = { rules: [], subjects: [], targets: [], sources: [], present: [] };
   // The label tree the two actor facets are drawn against, and the same tree the
   // roll-up expands through. Empty until the first fetch lands, and empty again only if
   // one fails — `labelFacetItems` then leaves every ref flat under the divider, which
@@ -367,7 +375,7 @@ export async function createEventFilters(onChange) {
 
   // Rebuilt on refresh rather than mutated: the option sets change wholesale when new
   // event kinds appear, and reconciling them in place is more code than re-rendering
-  // four dropdowns.
+  // them all.
   /** @type {Array<{destroy: () => void}>} live dropdowns, destroyed before each rebuild */
   let facetDropdowns = [];
   let clipSelect;
@@ -430,7 +438,10 @@ export async function createEventFilters(onChange) {
         items,
         defaultSelected: [...state[includeKey]],
         // An event has exactly one camera, one rule, one subject and one target, so
-        // "all of" could only ever match nothing — offering it would be a dead end.
+        // "all of" could only ever match nothing — offering it would be a dead end. It
+        // *would* mean something for `present`, where an event holds a set, but the
+        // backend answers only "any of" (`present_refs`), so offering it here would
+        // promise a narrowing that does not happen.
         showModeToggle: false,
         emptySummary: anyLabel,
         emptyText: 'Nothing recorded yet',

@@ -1173,6 +1173,10 @@ class WatchEventFacetsResponse(StatusResponse):
     subjects: List[WatchEventFacet] = Field(default_factory=list)
     targets: List[WatchEventFacet] = Field(default_factory=list)
     sources: List[WatchEventFacet] = Field(default_factory=list)
+    #: Labels catalogued as present in some event's clip — the "Present" filter's options.
+    #: Unlike the other four these are always labels, so the UI arranges them as the label
+    #: tree and offers the roll-up toggle.
+    present: List[WatchEventFacet] = Field(default_factory=list)
 
 
 class WatchEventCount(ApiModel):
@@ -1222,6 +1226,8 @@ class WatchEventQuery:
         exclude_rule_uuids: Optional[List[str]] = Query(None),
         exclude_subject_refs: Optional[List[str]] = Query(None),
         exclude_target_refs: Optional[List[str]] = Query(None),
+        present_refs: Optional[List[str]] = Query(None),
+        exclude_present_refs: Optional[List[str]] = Query(None),
         start_from: Optional[datetime] = None,
         start_to: Optional[datetime] = None,
         has_recording: Optional[bool] = None,
@@ -1243,6 +1249,8 @@ class WatchEventQuery:
         self.exclude_rule_uuids = exclude_rule_uuids
         self.exclude_subject_refs = exclude_subject_refs
         self.exclude_target_refs = exclude_target_refs
+        self.present_refs = present_refs
+        self.exclude_present_refs = exclude_present_refs
         self.start_from = start_from
         self.start_to = start_to
         self.has_recording = has_recording
@@ -1300,6 +1308,30 @@ class WatchEventHistogramBucket(ApiModel):
 class SetWatchEventReviewStatesRequest(Payload):
     uuids: List[str] = Field(default_factory=list)
     state: str = ""
+
+
+class PresentLabelWrite(Payload):
+    """One label the watcher saw inside an event's clip window."""
+
+    label_uuid: str
+    peak_confidence: float = 0.0
+
+
+class AddWatchEventLabelsRequest(Payload):
+    """Add to an event's catalogue of what its clip contains — see `WatchEventLabel`.
+
+    Additive, not a replacement: the watcher writes this twice for a clip-bearing event —
+    once for the event's own span at its closing edge, once for the clip's wider window
+    when the recording is attached — and either may arrive first.
+    """
+
+    labels: List[PresentLabelWrite] = Field(default_factory=list)
+
+
+class AddWatchEventLabelsResponse(StatusResponse):
+    #: Rows inserted or raised to a higher confidence. Zero is an ordinary answer: the
+    #: labels were already catalogued, or the event has since been deleted.
+    written: int = 0
 
 
 class SetWatchEventPinnedRequest(Payload):
@@ -5148,6 +5180,29 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return WatchEventResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/watch-events/{uuid}/labels",
+            response_model=AddWatchEventLabelsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="add_watch_event_labels",
+        )
+        async def add_watch_event_labels(uuid: str, payload: AddWatchEventLabelsRequest) -> AddWatchEventLabelsResponse:
+            """Catalogue labels present in this event's clip window.
+
+            Not part of `update_watch_event`: that endpoint replaces column values, while
+            this unions into a child table, and folding a set-union into a PATCH whose other
+            fields are last-write-wins would make "omitted" and "clear" indistinguishable
+            for exactly the field where the difference matters.
+            """
+            try:
+                written = await self._manager.add_watch_event_labels(
+                    uuid, {row.label_uuid: row.peak_confidence for row in payload.labels}
+                )
+                return AddWatchEventLabelsResponse(status=JsonValues.SUCCESS, written=written)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return AddWatchEventLabelsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/watch-events/close-stranded",

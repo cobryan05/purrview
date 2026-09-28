@@ -1930,7 +1930,12 @@ class StreamWatcherTask(Task):
             # were evaluated against rather than raw model output the watcher then ignored.
             await self._dispatch_frame(pipeline)
 
-            self._publish_bridge_presence(pipeline, now)
+            # One `presence_labels` call, three consumers. It is not a pure read — it ages
+            # and carries snapshot-mode sightings — so calling it once per consumer would
+            # advance that state several times for one frame.
+            present = pipeline.presence_labels(now)
+            self._note_presence(pipeline, now, present)
+            self._publish_bridge_presence(pipeline, now, present)
             self._publish_bridge_telemetry(pipeline, now)
 
             # Last, because the frame this pass just handed to the per-frame actions is what
@@ -2285,18 +2290,51 @@ class StreamWatcherTask(Task):
                 return pipeline.source_name
         return None
 
-    def _publish_bridge_presence(self, pipeline: WatchPipeline, now: float) -> None:
+    def _note_presence(self, pipeline: WatchPipeline, now: float, present: Set[str]) -> None:
+        """Hand this frame's presence verdict to the recorder's catalogue.
+
+        Every analysed frame, open event or not: a clip's pre-roll is cut from frames that
+        predate the event, so the labels in it can only come from a log that was already
+        running. See `WatchEventLabel` for what the catalogue is for.
+
+        `presence_labels` is the app's one definition of "what can this camera see" — in
+        stream mode confirmed tracks, in snapshot mode recent sightings that still stand —
+        and using it rather than the raw detections is what keeps the catalogue off the 0.1
+        inference floor ByteTrack needs. Confidences are read back off this frame's tracks
+        and detections, so a label carried over from an earlier snapshot contributes 0.0
+        here and picks up its real peak on a frame where it is actually seen.
+        """
+        if not present:
+            return
+        confidences: Dict[str, float] = {}
+        for item in (*pipeline.tracks, *pipeline.detections):
+            label_uuid = getattr(item, "label_uuid", None)
+            if not label_uuid or label_uuid not in present:
+                continue
+            conf = float(getattr(item, "confidence", 0.0) or 0.0)
+            if conf > confidences.get(label_uuid, -1.0):
+                confidences[label_uuid] = conf
+        self._recorder.note_presence(
+            pipeline.source_uuid,
+            now + self._wallclock_offset,
+            {label_uuid: confidences.get(label_uuid, 0.0) for label_uuid in present},
+        )
+
+    def _publish_bridge_presence(self, pipeline: WatchPipeline, now: float, present: Set[str]) -> None:
         """Report which labels this camera can currently see.
 
         Every analysed frame, not throttled: the bridge only publishes when a subject's
         overall answer actually changes, and it needs each frame's view to compute that
         union. Throttling here would delay presence by the throttle interval for no
         saving — the expensive part is the publish, which is already conditional.
+
+        `present` is passed in rather than read here: `presence_labels` advances the
+        snapshot-mode hold state, so it is called once per frame by the loop and shared.
         """
         try:
             self._manager.get_mqtt_bridge().publish_presence(
                 source_uuid=pipeline.source_uuid,
-                label_uuids=sorted(pipeline.presence_labels(now)),
+                label_uuids=sorted(present),
                 source_name=pipeline.source_name,
                 at=self._wall_iso(now),
                 known=pipeline.presence_is_known(now),

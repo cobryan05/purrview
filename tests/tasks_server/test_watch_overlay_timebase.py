@@ -117,6 +117,11 @@ def _harness():
     # Sources are serviced concurrently, so `_service_source` holds the real
     # pipeline's dispatch lock around its post-inference half.
     pipeline.dispatch_lock = asyncio.Lock()
+    # Read once per analysed frame by the loop and shared with the MQTT publish and the
+    # events' presence catalogue. Same reason as `sub_models` above: the real pipeline
+    # always has both, so a fake without them fails on wiring rather than on time bases.
+    pipeline.presence_labels = lambda now: set()
+    pipeline.presence_is_known = lambda now: True
     return task, pipeline, ring, track
 
 

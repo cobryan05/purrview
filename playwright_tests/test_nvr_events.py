@@ -126,6 +126,7 @@ def _facets(**overrides) -> dict:
         "subjects": [{"ref": "label-cat", "name": "Tabby"}],
         "targets": [{"ref": "zone-box", "name": "litter box"}],
         "sources": [{"ref": "src-1", "name": "Litter cam"}],
+        "present": [{"ref": "label-cat", "name": "Tabby"}],
     }
     facets.update(overrides)
     return facets
@@ -778,6 +779,37 @@ class TestFiltersReachTheServer:
         with _issues_a_search(page, queries):
             _pick_facet(page, "event-filter-target", "litter box")
         assert queries[-1].get("target_refs") == "zone-box"
+
+    def test_filtering_by_what_the_clip_contains(self, page: Page, base_url: str):
+        """The catalogue filter is a fifth facet over a one-to-many table, so its query
+        parameter is its own — a control wired to `subject_refs` would silently answer a
+        different question (what the rule fired about) and still return plausible rows."""
+        queries = _mock(page)
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-present", "Tabby")
+        assert queries[-1].get("present_refs") == "label-cat"
+        assert queries[-1].get("subject_refs") is None
+
+    def test_rolling_up_what_the_clip_contains_sends_its_children(self, page: Page, base_url: str):
+        """Present is always label-valued, so it carries the roll-up. "Any cat appears in
+        this clip" is the question it exists for, and the facets only ever name the labels
+        history holds — so the parent row a user ticks has no events of its own."""
+        queries = _mock(
+            page,
+            facets=_facets(present=[{"ref": "label-tabby", "name": "Tabby"}]),
+            labels=[_label("label-cat", "Cat"), _label("label-tabby", "Tabby", "label-cat")],
+        )
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _toggle_facet_hierarchy(page, "event-filter-present")
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-present", "Cat")
+
+        sent = _query_values(queries[-1], "present_refs")
+        assert sorted(sent) == ["label-cat", "label-tabby"], sent
 
     def test_rolling_up_an_actor_sends_its_children(self, page: Page, base_url: str):
         """ "Include child labels" has to widen the *query*, not merely the display.

@@ -4550,6 +4550,9 @@ class Manager:
     async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
         return await self._db_client.create_watch_event(event)
 
+    async def add_watch_event_labels(self, event_uuid: str, labels: Dict[str, float]) -> int:
+        return await self._db_client.add_watch_event_labels(event_uuid, labels)
+
     async def update_watch_event(self, uuid: str, **fields) -> Optional[WatchEventRead]:
         return await self._db_client.update_watch_event(uuid, **fields)
 

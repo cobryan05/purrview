@@ -65,6 +65,10 @@ class _FakeApi:
         self._store.updated.append((uuid, payload))
         return _FakeResponse(status="success", event=SimpleNamespace(uuid=uuid))
 
+    def add_watch_event_labels(self, uuid, payload):
+        self._store.catalogued.append((uuid, payload))
+        return _FakeResponse(status="success", written=len(payload.labels))
+
     # recordings
     def create_recording(self, payload):
         self._store.recordings.append(payload)
@@ -84,6 +88,7 @@ class _Store:
         self.updated = []
         self.recordings = []
         self.blips = []
+        self.catalogued = []
         self.fail_create = False
         self.fail_blips = False
         self.logs = []
@@ -104,6 +109,7 @@ def recorder(store, tmp_path, monkeypatch):
     # the test independent of whether the client has been regenerated.
     monkeypatch.setattr(module, "_payload_models", lambda: (SimpleNamespace, SimpleNamespace, SimpleNamespace))
     monkeypatch.setattr(module, "_blip_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
+    monkeypatch.setattr(module, "_label_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
     return WatchEventRecorder(
         profile_uuid=PROFILE,
         api_client_factory=lambda: None,
@@ -773,6 +779,7 @@ class TestTheAnalysisSwitch:
         monkeypatch.setattr(module, "RecordingsApi", lambda _client: _FakeApi(store))
         monkeypatch.setattr(module, "_payload_models", lambda: (SimpleNamespace, SimpleNamespace, SimpleNamespace))
         monkeypatch.setattr(module, "_blip_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
+        monkeypatch.setattr(module, "_label_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
 
         await self._run(self._recorder(store, tmp_path, analyse_blips=False), tmp_path)
 
@@ -793,8 +800,125 @@ class TestTheAnalysisSwitch:
         monkeypatch.setattr(module, "RecordingsApi", lambda _client: _FakeApi(store))
         monkeypatch.setattr(module, "_payload_models", lambda: (SimpleNamespace, SimpleNamespace, SimpleNamespace))
         monkeypatch.setattr(module, "_blip_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
+        monkeypatch.setattr(module, "_label_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
 
         strict = self._recorder(store, tmp_path, blip_thresholds={"min_disagreement_samples": 5})
         await self._run(strict, tmp_path)
 
         assert store.blips == []
+
+
+class TestPresentInClipCatalogue:
+    """What the video contains, which is wider than what the rule fired about.
+
+    The behaviour that cannot be reached any other way: a clip's pre-roll is cut from
+    frames analysed *before* the event existed, so the labels in it can only come from a
+    log that was already running. Accumulating per open event — the obvious design — silently
+    loses exactly those, and the loss is invisible on screen: the filter simply never
+    matches the clips where the subject only appears in the lead-in.
+    """
+
+    def _note(self, recorder, labels, first=95.0, last=130.0, step=5.0):
+        """Feed the presence log as the frame loop does — wallclock, every analysed frame."""
+        at = first
+        while at <= last:
+            recorder.note_presence("src-1", WALLCLOCK_OFFSET + at, labels)
+            at += step
+
+    def _catalogued(self, store, event_uuid):
+        found = {}
+        for uuid, payload in store.catalogued:
+            if uuid != event_uuid:
+                continue
+            for row in payload.labels:
+                found[row.label_uuid] = max(found.get(row.label_uuid, 0.0), row.peak_confidence)
+        return found
+
+    async def test_the_closing_edge_catalogues_the_events_own_span(self, recorder, store):
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        self._note(recorder, {"label-cat": 0.9}, first=100.0, last=130.0)
+
+        await recorder.record(_signal(EventPhase.END, at=130.0), _context())
+
+        assert self._catalogued(store, event_uuid) == {"label-cat": 0.9}
+
+    async def test_an_event_that_never_saw_anything_catalogues_nothing(self, recorder, store):
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        await recorder.record(_signal(EventPhase.END, at=130.0), _context())
+        assert self._catalogued(store, event_uuid) == {}
+
+    async def test_a_clip_catalogues_what_was_present_in_its_preroll(self, recorder, store):
+        """The reason the log is per source rather than per event. The person walks through
+        at 80s, the rule fires at 100s, and the clip starts at 90s — so the person is in the
+        video the user watches and in no window the event itself covers.
+        """
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        self._note(recorder, {"label-person": 0.7}, first=91.0, last=96.0, step=2.0)
+        self._note(recorder, {"label-cat": 0.9}, first=100.0, last=130.0)
+        clip_start = datetime.fromtimestamp(WALLCLOCK_OFFSET + 90.0, tz=timezone.utc)
+
+        await recorder.attach_recording(
+            _signal(EventPhase.END, at=130.0),
+            event_uuid,
+            {"path": "/x.mp4", "startedAt": clip_start.isoformat(), "durationS": 45.0},
+        )
+
+        assert self._catalogued(store, event_uuid) == {"label-person": 0.7, "label-cat": 0.9}
+
+    async def test_a_label_seen_outside_the_clips_window_is_not_catalogued(self, recorder, store):
+        """The other half of the same rule. Without the window check the catalogue would be
+        "everything this camera has seen recently", which matches every clip and filters
+        nothing."""
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        self._note(recorder, {"label-fox": 0.8}, first=10.0, last=20.0, step=5.0)
+        self._note(recorder, {"label-cat": 0.9}, first=100.0, last=130.0)
+        clip_start = datetime.fromtimestamp(WALLCLOCK_OFFSET + 90.0, tz=timezone.utc)
+
+        await recorder.attach_recording(
+            _signal(EventPhase.END, at=130.0),
+            event_uuid,
+            {"path": "/x.mp4", "startedAt": clip_start.isoformat(), "durationS": 45.0},
+        )
+
+        assert "label-fox" not in self._catalogued(store, event_uuid)
+
+    async def test_a_timelapse_catalogues_the_span_it_compressed_not_its_playing_time(self, recorder, store):
+        """`durationS` for a timelapse is video seconds — eighteen of them for two hours of
+        event. Slicing on it would catalogue the first eighteen seconds of a two-hour visit,
+        which for a timelapse is nearly always an empty room."""
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        self._note(recorder, {"label-cat": 0.9}, first=100.0, last=400.0, step=10.0)
+        clip_start = datetime.fromtimestamp(WALLCLOCK_OFFSET + 100.0, tz=timezone.utc)
+
+        await recorder.attach_recording(
+            _signal(EventPhase.END, at=400.0),
+            event_uuid,
+            {
+                "path": "/x-tl.mp4",
+                "kind": "timelapse",
+                "startedAt": clip_start.isoformat(),
+                "durationS": 3.0,
+                "sourceSpanS": 300.0,
+            },
+        )
+
+        assert self._catalogued(store, event_uuid) == {"label-cat": 0.9}
+
+    async def test_a_catalogue_failure_does_not_fail_the_recording(self, recorder, store, monkeypatch):
+        """Same contract as everything else here: a missing filter row must not cost the clip
+        that was already written to disk."""
+        import apps.tasks_server.tasks._watch_event_recorder as module
+
+        monkeypatch.setattr(module, "_label_payload_models", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        self._note(recorder, {"label-cat": 0.9}, first=100.0, last=130.0)
+        clip_start = datetime.fromtimestamp(WALLCLOCK_OFFSET + 90.0, tz=timezone.utc)
+
+        recording_uuid = await recorder.attach_recording(
+            _signal(EventPhase.END, at=130.0),
+            event_uuid,
+            {"path": "/x.mp4", "startedAt": clip_start.isoformat(), "durationS": 45.0},
+        )
+
+        assert recording_uuid == "recording-1"
+        assert store.recordings[0].file_path == "/x.mp4"

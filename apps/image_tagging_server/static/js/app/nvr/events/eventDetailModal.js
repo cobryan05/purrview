@@ -1460,6 +1460,14 @@ export function openEventDetailModal(
     if (event.truncated) {
       sidebar.appendChild(detailRow('Ended by', describeCloseReason(event.closeReason).title));
     }
+    // What the video contains, subject included — the same catalogue the Present filter
+    // searches. Ordered by confidence by the server, so the strongest sighting leads.
+    // Absent rather than empty for events recorded before the catalogue existed, which is
+    // why there is no "nothing" row: it would read as "the cameras saw nothing".
+    if (event.present?.length) {
+      const names = event.present.map(p => p.labelName || p.labelUuid).join(', ');
+      sidebar.appendChild(detailRow('Present', names));
+    }
     // Only once it is something other than the default. Every event starts unreviewed,
     // so a row saying so on all of them is a column of noise that makes the events
     // somebody *has* acted on harder to spot, not easier.

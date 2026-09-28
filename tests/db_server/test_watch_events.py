@@ -1590,3 +1590,161 @@ class TestLifetimeCounts:
         before = len(await _counts(http_client))
         await _make_closed_event(http_client, profile_uuid, ruleName="no ids at all")
         assert len(await _counts(http_client)) == before
+
+
+class TestPresentInClipCatalogue:
+    """The catalogue of what an event's clip *contains*, and the filter over it.
+
+    Distinct from `subject_ref`/`target_ref`, which say what the rule fired about. The
+    failure modes worth protecting against are all silent: a union that overwrites instead
+    of merging loses whichever window landed first (the event's span or the clip's wider
+    one); an exclusion built as `NOT IN` rather than `NOT EXISTS` would swallow every event
+    with no catalogue at all; and a facet list built from the label table rather than from
+    history would offer labels no clip contains.
+    """
+
+    async def _make_label(self, http_client, name: str) -> str:
+        r = await http_client.post("/api/labels", json={"name": name, "color": "#FF0000"})
+        assert r.status_code == 200, r.text
+        return r.json()["label"]["uuid"]
+
+    async def _catalogue(self, http_client, event_uuid: str, labels: dict) -> dict:
+        r = await http_client.post(
+            f"/api/watch-events/{event_uuid}/labels",
+            json={"labels": [{"labelUuid": uuid, "peakConfidence": conf} for uuid, conf in labels.items()]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "success", body
+        return body
+
+    async def _get(self, http_client, event_uuid: str) -> dict:
+        r = await http_client.get(f"/api/watch-events/{event_uuid}")
+        assert r.status_code == 200, r.text
+        return r.json()["event"]
+
+    async def test_a_catalogued_label_is_readable_with_its_live_name(self, http_client):
+        """The name is joined from `labels`, not denormalised, so a rename reads through to
+        old clips the way it does everywhere else in the app."""
+        profile_uuid = await _make_profile(http_client)
+        cat = await self._make_label(http_client, "Cat")
+        event = await _make_event(http_client, profile_uuid)
+        await self._catalogue(http_client, event["uuid"], {cat: 0.8})
+
+        assert [(p["labelUuid"], p["labelName"]) for p in (await self._get(http_client, event["uuid"]))["present"]] == [
+            (cat, "Cat")
+        ]
+
+    async def test_a_second_write_unions_rather_than_replaces(self, http_client):
+        """The watcher writes twice for a clip-bearing event — its own span at the closing
+        edge, the clip's wider window when the recording is attached — and either may land
+        first. A replace would make the answer depend on the order."""
+        profile_uuid = await _make_profile(http_client)
+        cat = await self._make_label(http_client, "Cat")
+        dog = await self._make_label(http_client, "Dog")
+        event = await _make_event(http_client, profile_uuid)
+
+        await self._catalogue(http_client, event["uuid"], {cat: 0.8})
+        await self._catalogue(http_client, event["uuid"], {dog: 0.5})
+
+        present = {p["labelUuid"] for p in (await self._get(http_client, event["uuid"]))["present"]}
+        assert present == {cat, dog}
+
+    async def test_a_lower_confidence_never_lowers_a_recorded_peak(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        cat = await self._make_label(http_client, "Cat")
+        event = await _make_event(http_client, profile_uuid)
+
+        await self._catalogue(http_client, event["uuid"], {cat: 0.9})
+        second = await self._catalogue(http_client, event["uuid"], {cat: 0.2})
+
+        assert second["written"] == 0
+        assert (await self._get(http_client, event["uuid"]))["present"][0]["peakConfidence"] == 0.9
+
+    async def test_a_higher_confidence_raises_it(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        cat = await self._make_label(http_client, "Cat")
+        event = await _make_event(http_client, profile_uuid)
+
+        await self._catalogue(http_client, event["uuid"], {cat: 0.2})
+        await self._catalogue(http_client, event["uuid"], {cat: 0.9})
+
+        assert (await self._get(http_client, event["uuid"]))["present"][0]["peakConfidence"] == 0.9
+
+    async def test_filtering_finds_events_whose_clip_merely_contained_the_label(self, http_client):
+        """The whole point: the person is incidental to the rule that saved the clip, and
+        the actor columns cannot answer for them at all."""
+        profile_uuid = await _make_profile(http_client)
+        person = await self._make_label(http_client, "Person")
+        cat = await self._make_label(http_client, "Cat")
+        with_person = await _make_event(http_client, profile_uuid, subjectRef="cat-ref", ruleName="cat drinking")
+        without = await _make_event(http_client, profile_uuid, subjectRef="cat-ref", ruleName="cat sleeping")
+        await self._catalogue(http_client, with_person["uuid"], {cat: 0.8, person: 0.6})
+        await self._catalogue(http_client, without["uuid"], {cat: 0.8})
+
+        body = await _list(http_client, present_refs=[person])
+        assert [e["ruleName"] for e in body["events"]] == ["cat drinking"]
+        assert body["total"] == 1
+
+    async def test_an_event_matches_once_even_when_it_contains_several_wanted_labels(self, http_client):
+        """EXISTS, not a join: a join would return the event once per matching label and
+        the grid would show the same card three times with a total to match."""
+        profile_uuid = await _make_profile(http_client)
+        refs = [await self._make_label(http_client, name) for name in ("Cat", "Dog", "Person")]
+        event = await _make_event(http_client, profile_uuid)
+        await self._catalogue(http_client, event["uuid"], {ref: 0.5 for ref in refs})
+
+        body = await _list(http_client, present_refs=refs)
+        assert body["total"] == 1
+        assert len(body["events"]) == 1
+
+    async def test_excluding_a_label_keeps_events_with_no_catalogue_at_all(self, http_client):
+        """Every event recorded before the catalogue existed has no rows, and "not the dog"
+        plainly includes them. NOT EXISTS gets this right where NOT IN would not."""
+        profile_uuid = await _make_profile(http_client)
+        dog = await self._make_label(http_client, "Dog")
+        catalogued = await _make_event(http_client, profile_uuid, ruleName="has a dog")
+        await self._catalogue(http_client, catalogued["uuid"], {dog: 0.8})
+        await _make_event(http_client, profile_uuid, ruleName="catalogued nothing")
+
+        body = await _list(http_client, exclude_present_refs=[dog])
+        assert [e["ruleName"] for e in body["events"]] == ["catalogued nothing"]
+
+    async def test_the_facet_list_comes_from_history_not_from_the_label_tree(self, http_client):
+        """A label nothing has ever been seen with must not appear in the dropdown: it
+        would offer a filter that silently matches nothing."""
+        profile_uuid = await _make_profile(http_client)
+        seen = await self._make_label(http_client, "Seen")
+        await self._make_label(http_client, "Never seen")
+        event = await _make_event(http_client, profile_uuid)
+        await self._catalogue(http_client, event["uuid"], {seen: 0.7})
+
+        r = await http_client.get("/api/watch-events/facets", params={"profile_uuid": profile_uuid})
+        assert r.status_code == 200, r.text
+        assert [(f["ref"], f["name"]) for f in r.json()["present"]] == [(seen, "Seen")]
+
+    async def test_deleting_an_event_takes_its_catalogue_with_it(self, http_client):
+        """The FK cascade. An orphaned row would keep a deleted event's label in the facet
+        dropdown forever, offering a filter that can never match."""
+        profile_uuid = await _make_profile(http_client)
+        cat = await self._make_label(http_client, "Cat")
+        event = await _make_event(http_client, profile_uuid)
+        await self._catalogue(http_client, event["uuid"], {cat: 0.8})
+
+        r = await http_client.delete(f"/api/watch-events/{event['uuid']}")
+        assert r.status_code == 200, r.text
+
+        r = await http_client.get("/api/watch-events/facets", params={"profile_uuid": profile_uuid})
+        assert r.json()["present"] == []
+
+    async def test_cataloguing_a_deleted_event_is_a_no_op_not_an_error(self, http_client):
+        """The watcher writes this after the fact, and retention or a profile save can take
+        the row in between. A raised FK error there would be logged as a recording failure
+        for an event nobody can see."""
+        profile_uuid = await _make_profile(http_client)
+        cat = await self._make_label(http_client, "Cat")
+        event = await _make_event(http_client, profile_uuid)
+        assert (await http_client.delete(f"/api/watch-events/{event['uuid']}")).status_code == 200
+
+        body = await self._catalogue(http_client, event["uuid"], {cat: 0.8})
+        assert body["written"] == 0

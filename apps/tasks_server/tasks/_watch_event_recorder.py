@@ -76,6 +76,7 @@ from apps.helpers.recordings.eventCrop import (
     is_worth_cropping,
     normalise_boxes,
 )
+from apps.helpers.recordings.presenceLog import PresenceLog
 from apps.helpers.timeUtils import parse_iso_utc
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
@@ -136,6 +137,18 @@ def _payload_models() -> Tuple[Any, Any, Any]:
     from db_client.models.watch_event_update import WatchEventUpdate
 
     return WatchEventCreate, WatchEventUpdate, RecordingCreate
+
+
+def _label_payload_models() -> Tuple[Any, Any]:
+    """`(AddWatchEventLabelsRequest, PresentLabelWrite)`, imported at call time.
+
+    Same reason as `_payload_models`: the generated client does not exist while the spec
+    that generates it is being built.
+    """
+    from db_client.models.add_watch_event_labels_request import AddWatchEventLabelsRequest
+    from db_client.models.present_label_write import PresentLabelWrite
+
+    return AddWatchEventLabelsRequest, PresentLabelWrite
 
 
 def _blip_payload_models() -> Tuple[Any, Any]:
@@ -207,6 +220,15 @@ class WatchEventRecorder:
         self._open: Dict[EventKey, str] = {}
         #: Events that have begun but written nothing yet — see `_PendingEvent`.
         self._pending: Dict[EventKey, _PendingEvent] = {}
+        #: Wallclock epoch seconds an open event started, so its close can slice the
+        #: presence log over the span it covered. `_pending` cannot answer this: it is
+        #: popped the moment the row is created, and the row's own `started_at` would cost
+        #: a fetch per closing edge.
+        self._open_since: Dict[EventKey, float] = {}
+        #: What each camera could see, per source — the catalogue's source of truth. Kept
+        #: here rather than per open event because a clip's window reaches back before its
+        #: event existed; see `apps.helpers.recordings.presenceLog`.
+        self._presence = PresenceLog()
         self._failures = 0
 
     @property
@@ -296,12 +318,58 @@ class WatchEventRecorder:
                 pending = _PendingEvent(started_at=self._wallclock(signal.started_at, context))
             uuid = await self._open_event(signal, pending)
             self._open[key] = uuid
+            self._open_since[key] = (
+                pending.started_at.timestamp() if pending.started_at else datetime.now(timezone.utc).timestamp()
+            )
             return uuid
         except Exception as e:
             self._failures += 1
             logger.exception("Could not persist watch event for rule %s", signal.rule_name)
             self._log(f"Event not recorded ({signal.rule_name}): {e}")
             return None
+
+    def note_presence(self, source_uuid: Optional[str], at: float, labels: Dict[str, float]) -> None:
+        """Record what one camera could see on one analysed frame.
+
+        Called every analysed frame, whether or not anything is open: a clip's pre-roll is
+        cut from frames that predate its event, and those are exactly the frames no
+        per-event accumulator could have kept. Cheap enough for the frame path — presence is
+        stored as intervals, so a steady sighting is one dict lookup and a float assignment.
+
+        `at` is wallclock epoch seconds, because that is the clock a clip window is
+        addressed in; the frame loop's own clock is monotonic.
+        """
+        self._presence.note(source_uuid or "", at, labels)
+
+    async def _catalogue(self, event_uuid: Optional[str], labels: Dict[str, float]) -> None:
+        """Union labels into an event's "present in clip" catalogue. Never raises.
+
+        Additive on the server, so the two callers — the closing edge with the event's own
+        span, and each attached recording with its wider window — can arrive in either
+        order and neither has to know about the other.
+        """
+        if not event_uuid or not labels:
+            return
+        try:
+            AddWatchEventLabelsRequest, PresentLabelWrite = _label_payload_models()
+            api = WatchProfilesApi(self._api_client_factory())
+            payload = AddWatchEventLabelsRequest(
+                labels=[
+                    PresentLabelWrite(label_uuid=label_uuid, peak_confidence=confidence)
+                    for label_uuid, confidence in sorted(labels.items())
+                ]
+            )
+            response = await asyncio.to_thread(api.add_watch_event_labels, event_uuid, payload)
+            if response.status != JsonValues.SUCCESS:
+                raise RuntimeError(response.message or "db refused the event labels")
+        except Exception as e:
+            # A missing catalogue costs a filter row, not a clip. Counted as a failure so
+            # the task's own health surface still reports it.
+            self._failures += 1
+            logger.warning("Could not catalogue labels for event %s: %s", event_uuid, e)
+
+    def _presence_between(self, source_uuid: Optional[str], start: float, end: float) -> Dict[str, float]:
+        return self._presence.labels_between(source_uuid or "", start, end)
 
     async def _hold_event(self, signal: WatchEventSignal, context: ActionContext) -> None:
         """Capture what the row will need, without writing anything.
@@ -355,6 +423,7 @@ class WatchEventRecorder:
         # scope — nothing was written, so there is nothing to close and nothing to show.
         self._pending.pop(_event_key(signal), None)
         uuid = self._open.pop(_event_key(signal), None)
+        started_at = self._open_since.pop(_event_key(signal), None)
         if uuid is None:
             # Either the event wrote nothing, or its row failed to insert. Closing
             # nothing is correct; inventing a zero-length row at the closing edge would
@@ -380,6 +449,13 @@ class WatchEventRecorder:
         response = await asyncio.to_thread(api.update_watch_event, uuid, payload)
         if response.status != JsonValues.SUCCESS:
             raise RuntimeError(response.message or "db refused the event update")
+        # The event's own span. An attached recording adds its wider window on top, so an
+        # event with no media still gets a catalogue and one with a clip gets the pre-roll.
+        if started_at is not None:
+            await self._catalogue(
+                uuid,
+                self._presence_between(signal.source_uuid, started_at, datetime.now(timezone.utc).timestamp()),
+            )
         return uuid
 
     async def close_all(self) -> None:
@@ -405,11 +481,19 @@ class WatchEventRecorder:
         for key, uuid in list(self._open.items()):
             try:
                 await asyncio.to_thread(api.update_watch_event, uuid, payload)
+                started_at = self._open_since.get(key)
+                if started_at is not None:
+                    # `key[0]` is the source uuid — see `_event_key`. There is no signal on
+                    # this path, so the key is the only thing that still says which camera.
+                    await self._catalogue(
+                        uuid, self._presence_between(key[0], started_at, datetime.now(timezone.utc).timestamp())
+                    )
             except Exception as e:
                 self._failures += 1
                 logger.warning("Could not close stranded event %s: %s", uuid, e)
                 self._log(f"Event {uuid} left open: {e}")
             self._open.pop(key, None)
+            self._open_since.pop(key, None)
 
     async def close_stranded(self) -> int:
         """Close events a previous run left open, and say how many there were.
@@ -491,6 +575,20 @@ class WatchEventRecorder:
             if response.status != JsonValues.SUCCESS or response.recording is None:
                 raise RuntimeError(response.message or "db refused the recording")
             recording_uuid = response.recording.uuid
+            # The window the *video* covers, which is wider than the event's on both counts:
+            # a clip opens with pre-roll, and a timelapse compresses a span far longer than
+            # its own playing time — hence `sourceSpanS` in preference to `durationS`, which
+            # for a timelapse is measured in video seconds.
+            if started_at is not None and event_uuid:
+                span_s = float(clip.get("sourceSpanS") or duration_s or 0.0)
+                await self._catalogue(
+                    event_uuid,
+                    self._presence_between(
+                        signal.source_uuid,
+                        started_at.timestamp(),
+                        started_at.timestamp() + span_s,
+                    ),
+                )
             if self._analyse_blips and overlay_path and event_uuid:
                 await self._file_blips(event_uuid, recording_uuid, overlay_path)
             return recording_uuid
@@ -839,6 +937,9 @@ class NullWatchEventRecorder(WatchEventRecorder):
         return None
 
     async def ensure_event(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
+        return None
+
+    def note_presence(self, source_uuid: Optional[str], at: float, labels: Dict[str, float]) -> None:
         return None
 
     async def close_all(self) -> None:

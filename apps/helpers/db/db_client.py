@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, TypeVar, Union
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from alembic import command as alembic_command
@@ -106,6 +106,7 @@ from .types import (
     ModelGroupRead,
     ModelGroupUpdate,
     ObjectLabelTerm,
+    PresentLabelRead,
     PreviewCandidate,
     PreviewCandidateCreate,
     PreviewCandidateQuery,
@@ -141,6 +142,7 @@ from .types import (
     WatchActionWrite,
     WatchEvent,
     WatchEventCounter,
+    WatchEventLabel,
     WatchEventRead,
     WatchProfile,
     WatchProfileCreate,
@@ -7987,6 +7989,8 @@ class DbClient:
         exclude_rule_uuids: Optional[List[str]] = None,
         exclude_subject_refs: Optional[List[str]] = None,
         exclude_target_refs: Optional[List[str]] = None,
+        present_refs: Optional[List[str]] = None,
+        exclude_present_refs: Optional[List[str]] = None,
         start_from: Optional[datetime] = None,
         start_to: Optional[datetime] = None,
         has_recording: Optional[bool] = None,
@@ -8008,8 +8012,9 @@ class DbClient:
         Adds no ORDER BY, LIMIT or cursor: those are the caller's, and they are the only
         thing the callers legitimately disagree about.
 
-        Each of the four facet filters takes a list of values to include and a list to
-        exclude. The singular forms are the same filter spelled for one value, folded
+        Each of the four actor/entity facet filters takes a list of values to include and a
+        list to exclude, and `present_refs` does the same over the one-to-many catalogue of
+        what each event's clip contains. The singular forms are the same filter spelled for one value, folded
         into the lists below rather than applied separately, so asking for both cannot
         produce two contradictory conditions on one column.
         """
@@ -8044,6 +8049,36 @@ class DbClient:
         ):
             if clause is not None:
                 stmt = stmt.where(clause)
+        if present_refs:
+            # A different shape from the four facets above, because presence is one-to-many:
+            # `subject_ref` is a column with one value, while an event contains a set. EXISTS
+            # over the indexed `label_uuid` rather than a join, so an event containing three
+            # of the wanted labels stays one row instead of three.
+            wanted = [v for v in present_refs if v]
+            if wanted:
+                contains = (
+                    select(WatchEventLabel.label_uuid)
+                    .where(
+                        WatchEventLabel.event_uuid == WatchEvent.uuid,
+                        WatchEventLabel.label_uuid.in_(wanted),
+                    )
+                    .exists()
+                )
+                stmt = stmt.where(contains)
+        if exclude_present_refs:
+            # NOT EXISTS, which needs no NULL special case: an event with no catalogue at all
+            # simply has no matching row, and "not the dog" plainly includes it.
+            unwanted = [v for v in exclude_present_refs if v]
+            if unwanted:
+                contains = (
+                    select(WatchEventLabel.label_uuid)
+                    .where(
+                        WatchEventLabel.event_uuid == WatchEvent.uuid,
+                        WatchEventLabel.label_uuid.in_(unwanted),
+                    )
+                    .exists()
+                )
+                stmt = stmt.where(~contains)
         if start_from:
             stmt = stmt.where(WatchEvent.started_at >= start_from)
         if start_to:
@@ -8100,8 +8135,7 @@ class DbClient:
             stmt = stmt.order_by(WatchEvent.started_at.desc()).offset(offset).limit(limit)
             result = await session.exec(stmt)
             events = [self._watch_event_to_read(e) for e in result.all()]
-            events = await self._attach_event_recordings(session, events)
-            return await self._attach_event_blip_counts(session, events), int(total)
+            return await self._hydrate_watch_events(session, events), int(total)
 
     #: The identity of an event for grouping: the rule that fired, the thing that acted,
     #: and the thing it acted on — plus the camera, which the UI folds away by default.
@@ -8519,6 +8553,21 @@ class DbClient:
             rows = (await session.exec(stmt)).all()
             return [{"ref": ref, "name": name or ref} for ref, name in rows if ref]
 
+        async def _present() -> List[Dict[str, str]]:
+            # Joined to `labels` for the name, like `_sources` and unlike the three
+            # denormalised slots: these refs are always labels, and a rename should read
+            # through to old clips. An outer join keeps a deleted label's events findable
+            # under its uuid rather than dropping the row.
+            stmt = (
+                select(WatchEventLabel.label_uuid, func.max(Label.name))
+                .join(Label, Label.uuid == WatchEventLabel.label_uuid, isouter=True)
+                .join(WatchEvent, WatchEvent.uuid == WatchEventLabel.event_uuid)
+            )
+            if profile_uuid:
+                stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
+            rows = (await session.exec(stmt.group_by(WatchEventLabel.label_uuid))).all()
+            return [{"ref": ref, "name": name or ref} for ref, name in rows if ref]
+
         async def _sources() -> List[Dict[str, str]]:
             # Joined, not denormalised like the other three: a camera is a live entity
             # the user renames in Sources and expects to see renamed here, whereas a
@@ -8539,6 +8588,7 @@ class DbClient:
                 "subjects": await _distinct(WatchEvent.subject_ref, WatchEvent.subject_name),
                 "targets": await _distinct(WatchEvent.target_ref, WatchEvent.target_name),
                 "sources": await _sources(),
+                "present": await _present(),
             }
 
     async def watch_event_counts(self) -> List[Dict[str, Any]]:
@@ -8580,8 +8630,109 @@ class DbClient:
             if event is None:
                 return None
             read = self._watch_event_to_read(event)
-            attached = await self._attach_event_recordings(session, [read])
-            return (await self._attach_event_blip_counts(session, attached))[0]
+            return (await self._hydrate_watch_events(session, [read]))[0]
+
+    async def _hydrate_watch_events(self, session: Any, events: List[WatchEventRead]) -> List[WatchEventRead]:
+        """Fill in everything an event row needs that is not a column on it.
+
+        One entry point rather than a chain spelled out at each of the four readers, which
+        is how `present` came to exist: three of the four had already been updated by hand
+        for recordings and blips, and the fourth silently returned rows missing a badge.
+        Each step is one batched query for the whole page.
+        """
+        events = await self._attach_event_recordings(session, events)
+        events = await self._attach_event_blip_counts(session, events)
+        return await self._attach_event_present_labels(session, events)
+
+    async def _attach_event_present_labels(self, session: Any, events: List[WatchEventRead]) -> List[WatchEventRead]:
+        """Fill in each event's catalogue of what was in its clip — see `WatchEventLabel`.
+
+        Left-joined to `labels` for the name: the link table deliberately stores only the
+        uuid, so a renamed label reads correctly on old clips and a deleted one still
+        matches its events with a null name the UI falls back from.
+
+        Ordered by confidence so the strongest sighting leads, which is the order a card
+        with room for two chips should truncate in.
+        """
+        if not events:
+            return events
+        uuids = [e.uuid for e in events]
+        rows = (
+            await session.exec(
+                select(
+                    WatchEventLabel.event_uuid,
+                    WatchEventLabel.label_uuid,
+                    Label.name,
+                    WatchEventLabel.peak_confidence,
+                )
+                .join(Label, Label.uuid == WatchEventLabel.label_uuid, isouter=True)
+                .where(WatchEventLabel.event_uuid.in_(uuids))
+                .order_by(WatchEventLabel.peak_confidence.desc())
+            )
+        ).all()
+        by_event: Dict[str, List[PresentLabelRead]] = {}
+        for event_uuid, label_uuid, label_name, peak_confidence in rows:
+            by_event.setdefault(event_uuid, []).append(
+                PresentLabelRead(
+                    label_uuid=label_uuid,
+                    label_name=label_name,
+                    peak_confidence=float(peak_confidence or 0.0),
+                )
+            )
+        for event in events:
+            event.present = by_event.get(event.uuid, [])
+        return events
+
+    async def add_watch_event_labels(self, event_uuid: str, labels: Mapping[str, float]) -> int:
+        """Union labels into an event's catalogue, keeping the higher confidence. Returns rows touched.
+
+        Union rather than replace, because the catalogue is written from two windows that
+        both belong to it: the event's own span at the closing edge, and each clip's wider
+        window — pre-roll included — when the recording is attached. A replace would make
+        the answer depend on which of the two landed last.
+
+        Silently does nothing for an event that no longer exists. The watcher writes this
+        after the fact, and retention or a profile save can take the row in between; a
+        raised FK error there would be logged as a recording failure for an event nobody
+        can see any more.
+        """
+        wanted = {uuid: float(conf or 0.0) for uuid, conf in (labels or {}).items() if uuid}
+        if not event_uuid or not wanted:
+            return 0
+        async with self._async_session_maker() as session:
+            if await session.get(WatchEvent, event_uuid) is None:
+                return 0
+            existing = (
+                await session.exec(select(WatchEventLabel).where(WatchEventLabel.event_uuid == event_uuid))
+            ).all()
+            by_label = {row.label_uuid: row for row in existing}
+            touched = 0
+            for label_uuid, confidence in wanted.items():
+                row = by_label.get(label_uuid)
+                if row is None:
+                    session.add(
+                        WatchEventLabel(
+                            event_uuid=event_uuid,
+                            label_uuid=label_uuid,
+                            peak_confidence=confidence,
+                        )
+                    )
+                    touched += 1
+                elif confidence > row.peak_confidence:
+                    row.peak_confidence = confidence
+                    session.add(row)
+                    touched += 1
+            if touched:
+                await session.commit()
+            return touched
+
+    async def watch_event_label_uuids(self, event_uuid: str) -> List[str]:
+        """The label uuids catalogued for one event. For tests and the backfill's skip check."""
+        async with self._async_session_maker() as session:
+            rows = (
+                await session.exec(select(WatchEventLabel.label_uuid).where(WatchEventLabel.event_uuid == event_uuid))
+            ).all()
+            return [r for r in rows]
 
     # ─── event blips ─────────────────────────────────────────────────────────
 
@@ -8906,8 +9057,7 @@ class DbClient:
             await session.commit()
             await session.refresh(event)
             read = self._watch_event_to_read(event)
-            attached = await self._attach_event_recordings(session, [read])
-            return (await self._attach_event_blip_counts(session, attached))[0]
+            return (await self._hydrate_watch_events(session, [read]))[0]
 
     async def delete_watch_event(self, uuid: str) -> bool:
         async with self._async_session_maker() as session:
@@ -9081,8 +9231,7 @@ class DbClient:
             await session.commit()
             await session.refresh(event)
             read = self._watch_event_to_read(event)
-            attached = await self._attach_event_recordings(session, [read])
-            return (await self._attach_event_blip_counts(session, attached))[0]
+            return (await self._hydrate_watch_events(session, [read]))[0]
 
     async def list_open_watch_events(self, profile_uuid: Optional[str] = None) -> List[WatchEventRead]:
         """Events with no `ended_at` — what resume has to close out after a restart."""
