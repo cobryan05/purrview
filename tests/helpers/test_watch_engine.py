@@ -2246,3 +2246,83 @@ class TestSustainedRelabelStillOpensOneEvent:
         self._run(tracker, engine)
 
         assert len({t.track_id for t in tracker.all_tracks()}) == 1
+
+
+class TestSubjectMassWindow:
+    """An event is named by what the instance saw *recently*, not by everything it saw.
+
+    An instance outlives its event. A SPENT latch keeps observing, and an `on_exit`
+    instance is exempt from the runaway cap by design — "in the garage for 15 minutes"
+    could not fire otherwise — so it sits ACTIVE for the whole dwell. A car parked
+    overnight therefore piles up hours of confidence under its own label, and when a
+    different vehicle takes the same spot and later leaves, the departure is filed under
+    the car that is still parked. `max_duration_s` bounds the pile so the newcomer's
+    own observations are the ones that name its event.
+    """
+
+    SPOT = (450, 450, 550, 550)
+
+    def _park(self, machine, spec, label, span, step=10.0):
+        for t in span:
+            track = _track(bbox=self.SPOT, label=label)
+            machine.step(evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H), now=float(t))
+
+    def test_an_overnight_dwell_does_not_name_a_later_subjects_departure(self):
+        spec = _rule(
+            trigger="on_exit",
+            subject_a_refs=[CAT_A, CAT_B],
+            min_duration_s=1.0,
+            rearm_delay_s=2.0,
+            max_duration_s=300.0,
+        )
+        machine = RuleMachine(spec, source_uuid="src-1")
+
+        self._park(machine, spec, CAT_A, range(0, 3600, 10))
+        self._park(machine, spec, CAT_B, range(3600, 3960, 10))
+
+        machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=3960.0)
+        signals = machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=3965.0)
+
+        starts = [s for s in signals if s.phase is EventPhase.START]
+        assert [s.subject_ref for s in starts] == [CAT_B]
+
+    def test_a_single_odd_frame_at_the_closing_edge_still_cannot_rename_the_visit(self):
+        """The window must not shrink the pile to the latest frame's answer."""
+        spec = _rule(
+            trigger="on_exit",
+            subject_a_refs=[CAT_A, CAT_B],
+            min_duration_s=1.0,
+            rearm_delay_s=2.0,
+            max_duration_s=300.0,
+        )
+        machine = RuleMachine(spec, source_uuid="src-1")
+
+        self._park(machine, spec, CAT_A, range(0, 200, 10))
+        self._park(machine, spec, CAT_B, [200])
+
+        machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=210.0)
+        signals = machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=215.0)
+
+        starts = [s for s in signals if s.phase is EventPhase.START]
+        assert [s.subject_ref for s in starts] == [CAT_A]
+
+    def test_an_uncapped_rule_keeps_the_whole_pile(self):
+        """`max_duration_s <= 0` is "no cap" everywhere else in the machine, and a pile
+        that quietly forgot the start of an unbounded event would not be that."""
+        spec = _rule(
+            trigger="on_exit",
+            subject_a_refs=[CAT_A, CAT_B],
+            min_duration_s=1.0,
+            rearm_delay_s=2.0,
+            max_duration_s=0.0,
+        )
+        machine = RuleMachine(spec, source_uuid="src-1")
+
+        self._park(machine, spec, CAT_A, range(0, 3600, 10))
+        self._park(machine, spec, CAT_B, range(3600, 3960, 10))
+
+        machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=3960.0)
+        signals = machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=3965.0)
+
+        starts = [s for s in signals if s.phase is EventPhase.START]
+        assert [s.subject_ref for s in starts] == [CAT_A]

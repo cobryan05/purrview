@@ -53,9 +53,10 @@ only if it was there 15 minutes" is `on_exit` + `min_duration_s=900` + `preroll_
 The cap does not apply to either impulse — see the guard in `step`.
 """
 
+from collections import deque
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Deque, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ..tracking.tracker import BBox, Track
 from .events import EventCloseReason, EventPhase, WatchEventSignal
@@ -647,12 +648,23 @@ class _EventInstance:
     boxes: List[BBox] = field(default_factory=list)
     peak_confidence: float = 0.0
     target_ref: Optional[str] = None
-    #: Accumulated confidence per subject label seen over the event's life. The reported
-    #: subject is this pile's leader rather than the latest frame's answer: an event is
-    #: named by the weight of what it saw, so a single odd frame at the closing edge
-    #: cannot rename the whole visit. Undecayed — an event is already bounded by
-    #: `max_duration_s`.
+    #: Accumulated confidence per subject label over the last `max_duration_s`. The
+    #: reported subject is this pile's leader rather than the latest frame's answer: an
+    #: event is named by the weight of what it saw, so a single odd frame at the closing
+    #: edge cannot rename the whole visit.
+    #:
+    #: The window is what keeps that true in both directions. An instance outlives its
+    #: event — a SPENT latch keeps observing, and an `on_exit` instance is exempt from
+    #: the runaway cap and so sits ACTIVE for the whole dwell, days if the subject stays
+    #: put. An unwindowed pile there is not "the weight of what this event saw" but the
+    #: weight of everything the instance ever saw, and a departure cannot outvote the
+    #: parked hours that preceded it — least of all when the instance changed object
+    #: mid-dwell.
     label_mass: Dict[str, float] = field(default_factory=dict)
+    #: `label_mass` split into whole-second buckets so the window can be enforced by
+    #: subtraction. Seconds, not frames: the pile only has to be accurate enough to pick
+    #: a winner, and per-frame entries cost 16 instances × the frame rate × the window.
+    mass_log: Deque[Tuple[int, Dict[str, float]]] = field(default_factory=deque)
 
     @property
     def subject_ref(self) -> Optional[str]:
@@ -660,17 +672,49 @@ class _EventInstance:
             return None
         return max(self.label_mass.items(), key=lambda kv: kv[1])[0]
 
-    def observe(self, cluster: MatchCluster) -> None:
+    def observe(self, cluster: MatchCluster, now: float, window_s: float) -> None:
         self.track_ids |= cluster.track_ids
         self.boxes = list(cluster.boxes)
         self.peak_confidence = max(self.peak_confidence, cluster.confidence)
         if cluster.subject_ref is not None:
-            mass = self.label_mass.get(cluster.subject_ref, 0.0) + max(0.0, cluster.confidence)
             # Floored so a zero-confidence match still records *which* label matched.
             # Without it an event whose every observation scored 0 could not be named.
-            self.label_mass[cluster.subject_ref] = mass or 1e-9
+            self._add_mass(cluster.subject_ref, max(0.0, cluster.confidence) or 1e-9, now)
         if cluster.target_ref is not None:
             self.target_ref = cluster.target_ref
+        self._expire_mass(now, window_s)
+
+    def _add_mass(self, label: str, weight: float, now: float) -> None:
+        self.label_mass[label] = self.label_mass.get(label, 0.0) + weight
+        second = int(now)
+        if self.mass_log and self.mass_log[-1][0] == second:
+            bucket = self.mass_log[-1][1]
+            bucket[label] = bucket.get(label, 0.0) + weight
+        else:
+            self.mass_log.append((second, {label: weight}))
+
+    def _expire_mass(self, now: float, window_s: float) -> None:
+        """Drop buckets older than the window, and their contribution to the pile.
+
+        A window of zero or less is `max_duration_s`'s "no cap" reading, the same one the
+        runaway cap gives it: the caller has asked for an event that lasts exactly as
+        long as its subject does, and a pile that quietly forgot the start of it would
+        not be that.
+        """
+        if window_s <= 0:
+            return
+        cutoff = now - window_s
+        while self.mass_log and self.mass_log[0][0] < cutoff:
+            _, bucket = self.mass_log.popleft()
+            for label, weight in bucket.items():
+                # Popped rather than left at ~0: `subject_ref` takes the leader of
+                # whatever is in the pile, so a label whose every observation has aged
+                # out must not still be a candidate for naming the event.
+                remaining = self.label_mass.get(label, 0.0) - weight
+                if remaining > 1e-12:
+                    self.label_mass[label] = remaining
+                else:
+                    self.label_mass.pop(label, None)
 
     def reset(self) -> None:
         self.state = RuleState.IDLE
@@ -682,6 +726,7 @@ class _EventInstance:
         self.peak_confidence = 0.0
         self.target_ref = None
         self.label_mass = {}
+        self.mass_log.clear()
 
     @property
     def spent(self) -> bool:
@@ -978,7 +1023,7 @@ class RuleMachine:
                 # Keep following the subject while latched. A latch tracking a stale box
                 # loses the object as soon as it moves, and then a new instance opens
                 # beside it — the cap defeated by the very motion it was watching.
-                instance.observe(cluster)
+                instance.observe(cluster, now, spec.max_duration_s)
                 instance.false_since = None
                 return signals
             if instance.false_since is None:
@@ -991,7 +1036,7 @@ class RuleMachine:
 
         if holds:
             assert cluster is not None
-            instance.observe(cluster)
+            instance.observe(cluster, now, spec.max_duration_s)
             instance.false_since = None
 
             if instance.state is RuleState.IDLE:
