@@ -89,15 +89,7 @@ class RingClipBackend(ClipBackend):
             # `FrameRing._sticky_recent`. Splice in whatever sticky stills predate
             # it, so the clip opens on an honest lead-in instead of either nothing or a
             # still that never appears in the video (the bug this replaces).
-            lead_in = self._ring.lead_in_frames(before=start.timestamp())
-            # Only the most recent, and shown at the window's own start rather than at
-            # its true age. A sticky still can be many minutes old (see `_sticky_recent`),
-            # and holding it for its real gap — which is what honest timing demands
-            # everywhere else — would open the clip on a ten-minute freeze. Clamping the
-            # *frame* instead of capping its duration keeps the timeline exact: the clip
-            # begins where it was asked to begin, and every frame after it still sits at
-            # its true offset from that start.
-            lead_in = [(start.timestamp(), lead_in[-1][1])] if lead_in else []
+            lead_in = self._montage(self._ring.lead_in_frames(before=start.timestamp()), start.timestamp(), frames)
         if not frames and not lead_in:
             raise ValueError("Frame ring holds nothing for the requested window")
         size = await asyncio.to_thread(self._write_timeline, lead_in, frames, dest)
@@ -116,11 +108,14 @@ class RingClipBackend(ClipBackend):
         # timestamp is clamped to `start` (above), so it can't be used to measure the
         # gap — the whole requested window is missing.
         head_gap_s = duration_s if not frames else max(0.0, frames[0][0] - start.timestamp())
-        # Only the part a spliced still actually stands in for. With no lead-in — no
-        # sticky still, or one older than `LEAD_IN_MAX_AGE_S` — the clip simply begins
-        # late, and calling that stretch "stills" makes the player describe footage the
-        # file does not contain. `partialPreroll` reports the gap either way.
-        stills_only_s = head_gap_s if lead_in else 0.0
+        # The montage's own length, not the gap it stands in for: the stills are clamped
+        # into a short run and the rest of the wake gap is simply absent from the file,
+        # so calling that stretch "stills" would make the player describe footage the
+        # clip does not contain. `partialPreroll` reports the gap either way.
+        stills_only_s = 0.0
+        if lead_in:
+            body = frames[0][0] if frames else lead_in[-1][0] + LAST_FRAME_HOLD_S
+            stills_only_s = max(0.0, body - lead_in[0][0])
         return {
             "path": str(dest),
             "sizeBytes": size,
@@ -145,6 +140,35 @@ class RingClipBackend(ClipBackend):
             "lowFps": True,
             "leadInFrames": len(lead_in),
         }
+
+    @staticmethod
+    def _montage(
+        stills: List[Tuple[float, bytes]],
+        window_start: float,
+        frames: List[Tuple[float, Any]],
+    ) -> List[Tuple[float, bytes]]:
+        """Sticky stills as a quick run ending where the dense frames begin.
+
+        A sticky still can be many minutes old and the wake gap it stands in for is many
+        seconds, so giving the head its real duration opens the clip on a freeze long
+        enough to read as a broken video rather than as context. The stills are clamped
+        into `LEAD_IN_MONTAGE_S` instead and the clip simply starts later — the stretch
+        it no longer covers held nothing but that same motionless frame.
+
+        The *frames* are clamped, never the timeline. Each still still sits at a real
+        offset from the clip's first frame, so one video second stays one world second
+        and `build_overlay`'s wallclock subtraction stays exact. Compressing the head
+        instead would shift every box in the body by the amount removed.
+        """
+        if not stills:
+            return []
+        anchor = frames[0][0] if frames else window_start + LEAD_IN_MONTAGE_S
+        span = min(LEAD_IN_MONTAGE_S, max(0.0, anchor - window_start))
+        if span <= 0:
+            return []
+        step = span / len(stills)
+        first = anchor - span
+        return [(first + index * step, blob) for index, (_stamp, blob) in enumerate(stills)]
 
     def _spooled_or_ring_frames(self, start: float, end: float) -> List[Tuple[float, bytes]]:
         """This event's frames for the window, from the spool where there is one.
@@ -227,6 +251,11 @@ class RingClipBackend(ClipBackend):
 
 #: What the final frame is held for, having no successor to measure against.
 LAST_FRAME_HOLD_S = 0.5
+
+#: Total video time the spliced idle stills are given, however long a gap they cover.
+#: Short enough to read as a lead-in rather than as a stalled player, long enough that
+#: each of the two or three stills is legible.
+LEAD_IN_MONTAGE_S = 1.2
 
 
 def _canvas_for(frames: Sequence[Tuple[float, Path]]) -> Optional[Tuple[int, int]]:

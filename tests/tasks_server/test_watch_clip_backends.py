@@ -27,6 +27,7 @@ import pytest
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.actions.recordClipAction import (
     LAST_FRAME_HOLD_S,
+    LEAD_IN_MONTAGE_S,
     FrameRing,
     FrameSpool,
     PlaybackClipBackend,
@@ -818,9 +819,10 @@ class TestARingClipIsAsLongAsTheEventItRecords:
 
         played = self._duration(dest)
         assert result["durationS"] == pytest.approx(played, rel=0.05), result
-        # The lead-in still is clamped to the window start, so the span the clip covers
-        # is the window itself rather than the age of the oldest sticky still.
-        assert result["sourceSpanS"] == pytest.approx(dense[-1][0] - lead[0][0], rel=0.01)
+        # The stills are clamped into the montage that ends where the dense frames
+        # begin, so the span the clip covers is the body plus that short head — not the
+        # age of the oldest sticky still, and not the whole requested window.
+        assert result["sourceSpanS"] == pytest.approx(dense[-1][0] - (dense[0][0] - LEAD_IN_MONTAGE_S), rel=0.01)
         # And the video is that span — no longer compressed against it, which is what
         # made boxes after the still seam point at the wrong moment.
         assert result["durationS"] == pytest.approx(result["sourceSpanS"], abs=LAST_FRAME_HOLD_S + 0.1)
@@ -959,8 +961,11 @@ class TestATruncatedHeadIsReported:
             _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 120.0, tmp_path / "c.mp4"
         )
 
-        assert result["stillsOnlyS"] == pytest.approx(60.0, abs=1.0), result
-        assert result["partialPreroll"] is True, "a minute of stills is not a complete clip"
+        # The montage's own length, not the minute it stands in for: the clip does not
+        # contain that minute at all any more, and claiming it as stills would describe
+        # footage that is not in the file.
+        assert result["stillsOnlyS"] == pytest.approx(LEAD_IN_MONTAGE_S, abs=0.2), result
+        assert result["partialPreroll"] is True, "a minute of missing head is not a complete clip"
 
     async def test_a_late_start_with_no_stills_is_not_reported_as_stills(self, tmp_path):
         """The player's warning reads "the first N seconds are stills, not video". With no
@@ -1109,15 +1114,41 @@ class TestVideoTimeEqualsEventTime:
         )
 
         assert result["leadInFrames"] == 1, "one still, not a parade of them"
-        # The clip starts where it was asked to start, not ten minutes earlier.
+        # The clip opens on the montage rather than on the requested start: the 40s in
+        # between held nothing but this same motionless still.
         started = datetime.fromisoformat(result["startedAt"]).timestamp()
-        assert started == pytest.approx(t0, abs=0.5), result["startedAt"]
-        # And it runs the full requested span: 40s of still plus ~16s of dense frames.
-        # A capped or re-rated lead-in would land far short of that.
-        assert result["durationS"] == pytest.approx(40.0 + 39 * 0.4, rel=0.1), result["durationS"]
-        # The gap is reported rather than presented as footage.
-        assert result["stillsOnlyS"] == pytest.approx(40.0, abs=1.0)
+        assert started == pytest.approx(t0 + 40.0 - LEAD_IN_MONTAGE_S, abs=0.2), result["startedAt"]
+        # The contract this class exists for: strip the head and what remains is the
+        # dense frames' own wall span, unscaled. A compressed head — as opposed to a
+        # clamped one — would shrink this and carry every box in the body with it.
+        body_s = result["durationS"] - result["stillsOnlyS"]
+        assert body_s == pytest.approx(39 * 0.4, abs=LAST_FRAME_HOLD_S + 0.1), result
+        assert result["stillsOnlyS"] == pytest.approx(LEAD_IN_MONTAGE_S, abs=0.2)
         assert result["partialPreroll"] is True
+
+    async def test_several_stills_play_as_a_short_montage_not_one_long_freeze(self, tmp_path):
+        """The head must be brief enough to read as context rather than as a stalled
+
+        player. Every sticky still is shown — a changing picture is what says the video
+        is running — and all of them together occupy `LEAD_IN_MONTAGE_S`, however many
+        seconds of wake gap they stand in for.
+        """
+        t0 = 1000.0
+        ring = FrameRing(max_seconds=20.0)
+        for age in (200.0, 130.0, 70.0):
+            ring.push(t0 - age, _solid_jpeg(int(age)), idle=True)
+        for i in range(40):
+            ring.push(t0 + 40.0 + i * 0.4, _solid_jpeg(i % 255))
+
+        result = await RingClipBackend(ring).extract(
+            _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 120.0, tmp_path / "montage.mp4"
+        )
+
+        # Two, not three: `lead_in_frames` keeps `sticky_idle_count` stills.
+        assert result["leadInFrames"] == 2, "every held still is shown, not just the newest"
+        assert result["stillsOnlyS"] == pytest.approx(LEAD_IN_MONTAGE_S, abs=0.2), result
+        # The whole point: the 40s gap is no longer 40s of frozen video.
+        assert result["durationS"] < 20.0, result["durationS"]
 
     async def test_a_dense_clip_runs_at_wall_speed(self, tmp_path):
         """No stills involved: the plain case must be exact, not merely close."""
