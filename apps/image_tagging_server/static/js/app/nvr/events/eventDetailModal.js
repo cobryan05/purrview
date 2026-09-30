@@ -61,6 +61,9 @@ import { pauseTour, runningTourId, runTourResumed } from '/app-static/js/ui/tour
 /** The tour this modal's ? runs, as registered in ui/tour/registry.js. */
 const EVENT_TOUR_ID = 'event-detail';
 
+// Keeps a seek strictly before the end of the media without rejecting the final sample.
+const CLIP_END_EPSILON_S = 0.001;
+
 /**
  * How a settled review state reads in the sidebar.
  *
@@ -985,9 +988,12 @@ export function openEventDetailModal(
     const duration = video?.duration;
     if (!Number.isFinite(duration) || duration <= 0) return times;
     const lead = overlay?.leadSeconds?.() ?? 0;
-    // A hair inside the end: seeking to exactly `duration` lands on the last frame the
-    // same way seeking past it does.
-    const latest = duration - lead - 0.05;
+    // Strictly inside the end, and no wider: seeking to exactly `duration` lands on the
+    // final frame the same way seeking past it does, but a margin thick enough to be
+    // felt discards real moments. The last sidecar sample routinely sits a few tens of
+    // milliseconds short of the file's end, and for a label the detector only saw once
+    // it is the whole harvest.
+    const latest = duration - lead - CLIP_END_EPSILON_S;
     return times.filter(t => t <= latest);
   }
 
