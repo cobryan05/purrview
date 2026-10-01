@@ -289,6 +289,9 @@ class PredicateMatch:
     target_ref: Optional[str]
     score: float
     confidence: float
+    #: Whether the tracker matched this track to a detection on this frame, as opposed
+    #: to carrying it while it coasts. Unknown trackers report True.
+    matched: bool = True
 
 
 @dataclass
@@ -486,6 +489,7 @@ def evaluate_predicate(
                         target_ref=target.uuid if isinstance(target, Zone) else target.label_uuid,
                         score=score,
                         confidence=track_a.confidence,
+                        matched=bool(getattr(track_a, "matched_this_update", True)),
                     )
                 )
                 if score > best_match_score:
@@ -507,14 +511,9 @@ def evaluate_predicate(
     )
 
 
-#: How much two boxes must overlap before the event layer calls them one object.
-#:
-#: Deliberately far looser than the tracker's `DUPLICATE_TRACK_IOU_THRESH` (0.85), and
-#: the asymmetry is the point: a false merge inside the tracker corrupts box geometry and
-#: any training frame saved from it, so it has to be strict, while a false merge here
-#: only joins two event cards. Both questions used to be answered by the tracker's single
-#: strict threshold, which meant events inherited a strictness they never wanted and one
-#: body arriving under two track ids became two clips.
+#: Minimum IoU at which `cluster_matches` joins two tracks into one object. Looser than
+#: the tracker's `DUPLICATE_TRACK_IOU_THRESH` (0.85), and applied only to pairs where at
+#: most one side was matched to a detection on this frame.
 EVENT_CLUSTER_IOU = 0.3
 
 #: Ceiling on concurrent events one machine will hold. A machine is no longer allocated
@@ -567,6 +566,8 @@ class MatchCluster:
     target_ref: Optional[str] = None
     score: float = 0.0
     confidence: float = 0.0
+    #: True when any track in the cluster was matched to a detection on this frame.
+    matched: bool = False
 
 
 def cluster_matches(
@@ -578,7 +579,10 @@ def cluster_matches(
 
     Two passes. First by track id, because one track matching two targets is one object
     at two bowls, not two objects. Then by overlap, because one object is routinely
-    carried by more than one track id.
+    carried by more than one track id — but never two tracks the tracker matched to
+    separate detections on this frame. Those are two objects by the tracker's own
+    verdict, whatever their boxes do; the id-beside-id case this pass exists for has the
+    old id coasting while the new one is the one being matched.
 
     `collapse` is `rule` granularity: every match becomes one cluster, so the rule holds
     a single event however many objects satisfy it. That is the right answer for
@@ -600,6 +604,8 @@ def cluster_matches(
     clusters: List[MatchCluster] = []
     for candidate in by_track.values():
         for existing in clusters:
+            if candidate.matched and existing.matched:
+                continue
             if _best_iou(candidate.boxes, existing.boxes) >= iou_threshold:
                 _join(existing, candidate)
                 break
@@ -620,12 +626,14 @@ def _absorb(cluster: MatchCluster, m: PredicateMatch) -> None:
         if m.target_ref is not None:
             cluster.target_ref = m.target_ref
     cluster.confidence = max(cluster.confidence, m.confidence)
+    cluster.matched = cluster.matched or m.matched
 
 
 def _join(into: MatchCluster, other: MatchCluster) -> None:
     into.track_ids |= other.track_ids
     into.boxes.extend(b for b in other.boxes if b not in into.boxes)
     into.confidence = max(into.confidence, other.confidence)
+    into.matched = into.matched or other.matched
     if other.score > into.score:
         into.score = other.score
         into.subject_ref = other.subject_ref or into.subject_ref
@@ -977,7 +985,9 @@ class RuleMachine:
                 return instance
 
         overlapping = [
-            (_best_iou(cluster.boxes, i.boxes), i) for i in available if i.boxes and i.state is not RuleState.IDLE
+            (_best_iou(cluster.boxes, i.boxes), i)
+            for i in available
+            if i.boxes and i.state is not RuleState.IDLE and not self._coexisted(cluster.track_ids, i.track_ids)
         ]
         best = max(overlapping, key=lambda pair: pair[0], default=(0.0, None))
         if best[0] >= self._cluster_iou and best[1] is not None:

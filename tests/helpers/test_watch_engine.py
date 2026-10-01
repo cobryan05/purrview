@@ -51,8 +51,15 @@ LITTER_ZONE = Zone(uuid=ZONE_UUID, name="litter box area", kind="box", points=[(
 FRAME_W, FRAME_H = 1000.0, 1000.0
 
 
-def _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT, conf=0.9) -> Track:
-    return Track(track_id=track_id, bbox=bbox, label_uuid=label, label_name=label, confidence=conf)
+def _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT, conf=0.9, matched=True) -> Track:
+    return Track(
+        track_id=track_id,
+        bbox=bbox,
+        label_uuid=label,
+        label_name=label,
+        confidence=conf,
+        matched_this_update=matched,
+    )
 
 
 def _rule(**overrides) -> RuleSpec:
@@ -1565,15 +1572,16 @@ class TestTwoSubjectsInOneZoneKeepSeparateEvents:
     SEDAN_BOX = (650, 650, 750, 750)
 
     def _spec(self, **overrides):
-        return _rule(
+        kwargs = dict(
             subject_a_refs=[self.HATCHBACK, self.SEDAN],
             subject_b_refs=[ZONE_UUID],
             trigger="on_exit",
             min_duration_s=2.0,
             rearm_delay_s=10.0,
             max_duration_s=300.0,
-            **overrides,
         )
+        kwargs.update(overrides)
+        return _rule(**kwargs)
 
     def _drive(self, spec, frames):
         machine = RuleMachine(spec, source_uuid="src-1", label_groups=self.GROUPS)
@@ -1650,6 +1658,59 @@ class TestTwoSubjectsInOneZoneKeepSeparateEvents:
         )
 
         assert emitted == [], "neither car has left, so nothing has departed"
+
+    #: Two cars parked side by side. Measured off the live garage camera: the boxes
+    #: overlap each other at IoU 0.31-0.37, over the 0.3 the clusterer joins at.
+    HATCHBACK_BESIDE = (400, 400, 700, 700)
+    SEDAN_BESIDE = (530, 430, 800, 800)
+
+    def test_two_cars_parked_touching_are_two_arrivals_not_one(self):
+        """Two tracks each matched by its own detection are two objects, however much
+        their boxes overlap — the tracker already decided that by giving them separate
+        detections. Joining them made the pair one event named after one car, so the
+        other car's departure began with a fresh instance and an arrival it never made.
+        """
+        spec = self._spec(trigger="on_enter")
+        hatchback = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9)
+        sedan = _track(track_id=2, bbox=self.SEDAN_BESIDE, label=self.SEDAN, conf=0.9)
+        sedan_leaving = _track(track_id=2, bbox=(900, 900, 990, 990), label=self.SEDAN, conf=0.9)
+        _machine, emitted = self._drive(
+            spec,
+            [
+                (0.0, [hatchback, sedan]),
+                (3.0, [hatchback, sedan]),  # both arrivals, one per car
+                (60.0, [hatchback, sedan]),
+                (120.0, [hatchback, sedan]),
+                (200.0, [hatchback, sedan_leaving]),  # the Sedan backs out of the zone
+                (203.0, [hatchback]),
+                (215.0, [hatchback]),
+            ],
+        )
+
+        arrivals = [s for s in emitted if s.phase is EventPhase.START]
+        assert sorted(s.subject_ref for s in arrivals) == [self.HATCHBACK, self.SEDAN]
+        assert all(s.started_at == 0.0 for s in arrivals), "both arrived at the start, nothing arrived at 200"
+
+    def test_a_coasting_track_beside_its_replacement_is_still_one_object(self):
+        """The join the clusterer exists for: a dropout breaks association and a new id
+        starts beside the old one while the old one coasts. Only one of the two was
+        matched this frame, so they are one body."""
+        spec = self._spec(trigger="on_enter")
+        old = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9)
+        coasting = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, matched=False)
+        replacement = _track(track_id=9, bbox=self.SEDAN_BESIDE, label=self.HATCHBACK, conf=0.9)
+        _machine, emitted = self._drive(
+            spec,
+            [
+                (0.0, [old]),
+                (3.0, [old]),  # arrival
+                (4.0, [coasting, replacement]),
+                (5.0, [coasting, replacement]),
+                (8.0, [replacement]),
+            ],
+        )
+
+        assert len([s for s in emitted if s.phase is EventPhase.START]) == 1
 
     def test_a_dropout_handing_the_subject_back_under_a_new_id_still_adopts(self):
         """The case adoption exists for, which coexistence must leave alone.
