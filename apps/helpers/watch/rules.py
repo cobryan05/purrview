@@ -292,6 +292,8 @@ class PredicateMatch:
     #: Whether the tracker matched this track to a detection on this frame, as opposed
     #: to carrying it while it coasts. Unknown trackers report True.
     matched: bool = True
+    #: The frame time the tracker created this track on, in the engine's clock.
+    first_seen: float = 0.0
 
 
 @dataclass
@@ -490,6 +492,7 @@ def evaluate_predicate(
                         score=score,
                         confidence=track_a.confidence,
                         matched=bool(getattr(track_a, "matched_this_update", True)),
+                        first_seen=float(getattr(track_a, "first_seen", 0.0) or 0.0),
                     )
                 )
                 if score > best_match_score:
@@ -568,6 +571,8 @@ class MatchCluster:
     confidence: float = 0.0
     #: True when any track in the cluster was matched to a detection on this frame.
     matched: bool = False
+    #: Earliest `first_seen` across the cluster's tracks; +inf for a trackless cluster.
+    first_seen: float = float("inf")
 
 
 def cluster_matches(
@@ -627,6 +632,7 @@ def _absorb(cluster: MatchCluster, m: PredicateMatch) -> None:
             cluster.target_ref = m.target_ref
     cluster.confidence = max(cluster.confidence, m.confidence)
     cluster.matched = cluster.matched or m.matched
+    cluster.first_seen = min(cluster.first_seen, m.first_seen)
 
 
 def _join(into: MatchCluster, other: MatchCluster) -> None:
@@ -634,6 +640,7 @@ def _join(into: MatchCluster, other: MatchCluster) -> None:
     into.boxes.extend(b for b in other.boxes if b not in into.boxes)
     into.confidence = max(into.confidence, other.confidence)
     into.matched = into.matched or other.matched
+    into.first_seen = min(into.first_seen, other.first_seen)
     if other.score > into.score:
         into.score = other.score
         into.subject_ref = other.subject_ref or into.subject_ref
@@ -681,6 +688,9 @@ class _EventInstance:
     #: subtraction. Seconds, not frames: the pile only has to be accurate enough to pick
     #: a winner, and per-frame entries cost 16 instances × the frame rate × the window.
     mass_log: Deque[Tuple[int, Dict[str, float]]] = field(default_factory=deque)
+    #: True when the object this instance opened on already existed when the machine
+    #: started watching. An `on_enter` instance so marked latches without firing.
+    preexisting: bool = False
 
     @property
     def subject_ref(self) -> Optional[str]:
@@ -743,6 +753,7 @@ class _EventInstance:
         self.target_ref = None
         self.label_mass = {}
         self.mass_log.clear()
+        self.preexisting = False
 
     @property
     def spent(self) -> bool:
@@ -783,6 +794,9 @@ class RuleMachine:
         #: says so — a dropout's replacement id never shares a frame with the id it
         #: replaced, while two cars in one garage share hundreds.
         self._coexist: Dict[int, Set[int]] = {}
+        #: Frame time of the first `step` since the machine was built or last re-armed;
+        #: None while inactive. Tracks created at or before it were already there.
+        self._watching_since: Optional[float] = None
         #: Totalled on the machine, not the instance, so a tuning hint survives the
         #: eviction of the instance that flapped.
         self.flap_count: int = 0
@@ -1038,7 +1052,10 @@ class RuleMachine:
     def step(self, result: PredicateResult, now: float) -> List[WatchEventSignal]:
         """Advance every instance by one frame; return any transitions to dispatch."""
         if not self.spec.active:
+            self._watching_since = None
             return self._deactivate(now)
+        if self._watching_since is None:
+            self._watching_since = now
 
         signals: List[WatchEventSignal] = []
         matched: Set[str] = set()
@@ -1049,6 +1066,7 @@ class RuleMachine:
         for cluster, instance in self._associate(clusters):
             if instance is None:
                 instance = self._new_instance()
+                instance.preexisting = cluster.first_seen <= self._watching_since
             matched.add(instance.instance_id)
             signals.extend(self._advance(instance, cluster, now))
 
@@ -1130,8 +1148,11 @@ class RuleMachine:
                         # The arrival itself, anchored at the moment the subject appeared
                         # rather than at the moment the dwell confirmed it — a clip's
                         # preroll reaches back from the anchor, and anchoring at
-                        # confirmation would cut `min_duration` off the front.
-                        signals.extend(self._impulse(instance, instance.true_since))
+                        # confirmation would cut `min_duration` off the front. A subject
+                        # that was already there when watching began did not appear, so
+                        # it only takes the latch.
+                        if not instance.preexisting:
+                            signals.extend(self._impulse(instance, instance.true_since))
                         # Nothing is open, and the subject is still there. SPENT is
                         # exactly the right latch: no second arrival until it has gone.
                         self._spend(instance, false_since=None)

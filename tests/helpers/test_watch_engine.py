@@ -51,13 +51,14 @@ LITTER_ZONE = Zone(uuid=ZONE_UUID, name="litter box area", kind="box", points=[(
 FRAME_W, FRAME_H = 1000.0, 1000.0
 
 
-def _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT, conf=0.9, matched=True) -> Track:
+def _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT, conf=0.9, matched=True, first_seen=0.0) -> Track:
     return Track(
         track_id=track_id,
         bbox=bbox,
         label_uuid=label,
         label_name=label,
         confidence=conf,
+        first_seen=first_seen,
         matched_this_update=matched,
     )
 
@@ -1671,14 +1672,15 @@ class TestTwoSubjectsInOneZoneKeepSeparateEvents:
         other car's departure began with a fresh instance and an arrival it never made.
         """
         spec = self._spec(trigger="on_enter")
-        hatchback = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9)
-        sedan = _track(track_id=2, bbox=self.SEDAN_BESIDE, label=self.SEDAN, conf=0.9)
-        sedan_leaving = _track(track_id=2, bbox=(900, 900, 990, 990), label=self.SEDAN, conf=0.9)
+        hatchback = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, first_seen=10.0)
+        sedan = _track(track_id=2, bbox=self.SEDAN_BESIDE, label=self.SEDAN, conf=0.9, first_seen=10.0)
+        sedan_leaving = _track(track_id=2, bbox=(900, 900, 990, 990), label=self.SEDAN, conf=0.9, first_seen=10.0)
         _machine, emitted = self._drive(
             spec,
             [
-                (0.0, [hatchback, sedan]),
-                (3.0, [hatchback, sedan]),  # both arrivals, one per car
+                (0.0, []),  # watching an empty garage
+                (10.0, [hatchback, sedan]),
+                (13.0, [hatchback, sedan]),  # both arrivals, one per car
                 (60.0, [hatchback, sedan]),
                 (120.0, [hatchback, sedan]),
                 (200.0, [hatchback, sedan_leaving]),  # the Sedan backs out of the zone
@@ -1689,24 +1691,25 @@ class TestTwoSubjectsInOneZoneKeepSeparateEvents:
 
         arrivals = [s for s in emitted if s.phase is EventPhase.START]
         assert sorted(s.subject_ref for s in arrivals) == [self.HATCHBACK, self.SEDAN]
-        assert all(s.started_at == 0.0 for s in arrivals), "both arrived at the start, nothing arrived at 200"
+        assert all(s.started_at == 10.0 for s in arrivals), "both arrived at 10, nothing arrived at 200"
 
     def test_a_coasting_track_beside_its_replacement_is_still_one_object(self):
         """The join the clusterer exists for: a dropout breaks association and a new id
         starts beside the old one while the old one coasts. Only one of the two was
         matched this frame, so they are one body."""
         spec = self._spec(trigger="on_enter")
-        old = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9)
-        coasting = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, matched=False)
-        replacement = _track(track_id=9, bbox=self.SEDAN_BESIDE, label=self.HATCHBACK, conf=0.9)
+        old = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, first_seen=1.0)
+        coasting = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, matched=False, first_seen=1.0)
+        replacement = _track(track_id=9, bbox=self.SEDAN_BESIDE, label=self.HATCHBACK, conf=0.9, first_seen=4.0)
         _machine, emitted = self._drive(
             spec,
             [
-                (0.0, [old]),
-                (3.0, [old]),  # arrival
-                (4.0, [coasting, replacement]),
+                (0.0, []),
+                (1.0, [old]),
+                (4.0, [old]),  # arrival
                 (5.0, [coasting, replacement]),
-                (8.0, [replacement]),
+                (6.0, [coasting, replacement]),
+                (9.0, [replacement]),
             ],
         )
 
@@ -1740,6 +1743,92 @@ class TestTwoSubjectsInOneZoneKeepSeparateEvents:
         departures = [s for s in emitted if s.phase is EventPhase.END]
         assert len(departures) == 1, "one car, one departure — the dropout is not a second car"
         assert departures[0].at == pytest.approx(60.0)
+
+
+class TestASubjectAlreadyThereIsNotAnArrival:
+    """`on_enter` fires for a subject that *appeared*, not for one the watcher found.
+
+    A rule machine starts empty, so the first frames after a watcher restart show every
+    parked car going absent→present as the tracker confirms it, and each one fired an
+    arrival that Home Assistant received and nothing else recorded. Re-arming a rule did
+    the same. A track that already existed when the machine started watching is a
+    subject that was already there, and the instance it opens latches without firing.
+    """
+
+    HATCHBACK = "label-hatchback"
+    PARKED = (420, 420, 520, 520)
+
+    def _spec(self, **overrides):
+        kwargs = dict(subject_a_refs=[self.HATCHBACK], subject_b_refs=[ZONE_UUID], min_duration_s=2.0, rearm_delay_s=10.0)
+        kwargs.update(overrides)
+        return _rule(**kwargs)
+
+    def _parked(self, first_seen):
+        return _track(track_id=1, bbox=self.PARKED, label=self.HATCHBACK, conf=0.9, first_seen=first_seen)
+
+    def _drive(self, engine, frames):
+        emitted = []
+        for now, tracks in frames:
+            emitted.extend(engine.step(tracks, now))
+        return emitted
+
+    def test_a_car_parked_at_startup_does_not_arrive(self):
+        spec = self._spec(trigger="on_enter")
+        engine = WatchEngine([spec], zones=list(ALL_ZONES.values()), source_uuid="src-1")
+        engine.set_frame_size(FRAME_W, FRAME_H)
+        # The tracker stamps a track's first_seen with the frame it was created on, so a
+        # car there from the first frame carries that frame's time even though it only
+        # confirms (and reaches the engine) a few frames later.
+        parked = self._parked(first_seen=0.0)
+        gone = _track(track_id=1, bbox=(900, 900, 990, 990), label=self.HATCHBACK, conf=0.9, first_seen=0.0)
+        back = self._parked(first_seen=500.0)
+
+        emitted = self._drive(
+            engine,
+            [
+                (0.0, []),  # tracker warming up: nothing confirmed yet
+                (17.0, []),
+                (34.0, [parked]),  # confirmed, three frames in
+                (51.0, [parked]),
+                (300.0, [parked]),
+                (400.0, [gone]),  # drives off
+                (415.0, [gone]),
+                (500.0, [back]),  # and comes back: a real arrival
+                (503.0, [back]),
+            ],
+        )
+
+        starts = [s for s in emitted if s.phase is EventPhase.START]
+        assert [s.started_at for s in starts] == [500.0], "the only arrival is the one that happened"
+
+    def test_rearming_a_rule_over_a_parked_car_does_not_arrive(self):
+        spec = self._spec(trigger="on_enter")
+        engine = WatchEngine([spec], zones=list(ALL_ZONES.values()), source_uuid="src-1")
+        engine.set_frame_size(FRAME_W, FRAME_H)
+        arriving = self._parked(first_seen=10.0)
+
+        emitted = self._drive(engine, [(0.0, []), (10.0, [arriving]), (13.0, [arriving])])
+        assert len([s for s in emitted if s.phase is EventPhase.START]) == 1, "the real arrival"
+
+        engine.set_rule_armed(spec.uuid, False, now=20.0)
+        emitted = self._drive(engine, [(21.0, [arriving]), (30.0, [arriving])])
+        assert emitted == []
+
+        engine.set_rule_armed(spec.uuid, True, now=40.0)
+        emitted = self._drive(engine, [(41.0, [arriving]), (44.0, [arriving]), (60.0, [arriving])])
+        assert emitted == [], "the car did not arrive again because someone armed the rule"
+
+    def test_a_span_rule_still_opens_on_a_subject_already_there(self):
+        """Only the arrival edge is suppressed. A visit in progress when the watcher
+        starts is a real visit, and a `while` rule records it from the first frame."""
+        spec = self._spec(trigger="while", max_duration_s=0.0)
+        engine = WatchEngine([spec], zones=list(ALL_ZONES.values()), source_uuid="src-1")
+        engine.set_frame_size(FRAME_W, FRAME_H)
+        parked = self._parked(first_seen=0.0)
+
+        emitted = self._drive(engine, [(0.0, [parked]), (3.0, [parked])])
+
+        assert [s.phase for s in emitted] == [EventPhase.START]
 
 
 class TestMasking:
