@@ -8,6 +8,7 @@ drops *only* successful polls of hot endpoints — never an error, never an
 ordinary request.
 """
 
+import calendar
 import importlib
 import logging
 
@@ -213,3 +214,104 @@ class TestConfigureAppLoggers:
 
         for name in ("sqlalchemy.engine", "onnxruntime"):
             assert logging.getLogger(name).isEnabledFor(logging.INFO) is False
+
+
+class TestLogFormat:
+    """The stamp has to be UTC, because nothing the app stores is in local time.
+
+    `watch_events.started_at`, a recording's span and a task heartbeat are all written
+    UTC while the container's clock is not, so a log stamped locally reads five hours off
+    every row it would be compared against — silently, and only while diagnosing
+    something else.
+    """
+
+    def _format(self, record_time: float, msecs: float) -> str:
+        record = logging.LogRecord(
+            name="apps.tasks_server.tasks.StreamWatcherTask",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="Car Arrives",
+            args=(),
+            exc_info=None,
+        )
+        record.created = record_time
+        record.msecs = msecs
+        return logUtils.utc_formatter().format(record)
+
+    def test_the_timestamp_is_utc_not_the_container_clock(self):
+        # The arrival this format exists to line up with, as `watch_events` stored it:
+        # 2026-10-01 13:27:19.399 UTC. `timegm` rather than `mktime` so the expectation
+        # is not itself in local time.
+        line = self._format(calendar.timegm((2026, 10, 1, 13, 27, 19, 0, 0, 0)), 399)
+
+        assert line.startswith("2026-10-01 13:27:19.399Z "), line
+        assert "INFO" in line and "Car Arrives" in line
+
+    def test_a_handler_without_the_formatter_is_stamped(self):
+        """`configure_log_format` has to reach handlers that already exist — every
+        service's modules call a bare `basicConfig` at import time, long before it runs.
+        """
+        root = logging.getLogger()
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        root.addHandler(handler)
+        try:
+            logUtils.configure_log_format()
+            assert handler.formatter is not None
+            assert handler.formatter._fmt == logUtils.LOG_FORMAT
+        finally:
+            root.removeHandler(handler)
+
+    def test_the_access_logger_is_stamped_without_losing_its_own_fields(self):
+        """Uvicorn's access formatter builds its line from record attributes, so the stamp
+        goes in front of its format rather than replacing it."""
+
+        class AccessLike(logging.Formatter):
+            """Stands in for uvicorn's AccessFormatter: reads a field off the record."""
+
+        access = logging.getLogger("uvicorn.access")
+        handler = logging.StreamHandler()
+        handler.setFormatter(AccessLike("%(client_addr)s - %(status_code)s"))
+        access.addHandler(handler)
+        try:
+            logUtils.configure_log_format()
+            fmt = handler.formatter._fmt
+            assert "%(client_addr)s - %(status_code)s" in fmt, "the request line survives"
+            assert fmt.startswith("%(asctime)s"), fmt
+            assert isinstance(handler.formatter, AccessLike), "same class, so it still reads its own fields"
+        finally:
+            access.removeHandler(handler)
+
+    def test_stamping_twice_does_not_stack_two_timestamps(self):
+        """`configure_log_format` runs per service `main.py`, and a reload or a second
+        call must not produce a line with the time on it twice."""
+        access = logging.getLogger("uvicorn.access")
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(client_addr)s"))
+        access.addHandler(handler)
+        try:
+            logUtils.configure_log_format()
+            once = handler.formatter._fmt
+            logUtils.configure_log_format()
+            assert handler.formatter._fmt == once
+        finally:
+            access.removeHandler(handler)
+
+    def test_a_formatter_that_cannot_be_rebuilt_is_left_alone(self):
+        """An unstamped line is a smaller loss than a broken one."""
+
+        class Awkward(logging.Formatter):
+            def __init__(self):  # no (fmt, datefmt) to rebuild from
+                super().__init__("%(client_addr)s")
+
+        access = logging.getLogger("uvicorn.access")
+        handler = logging.StreamHandler()
+        original = Awkward()
+        handler.setFormatter(original)
+        access.addHandler(handler)
+        try:
+            logUtils.configure_log_format()
+            assert handler.formatter is original
+        finally:
+            access.removeHandler(handler)

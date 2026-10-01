@@ -5,7 +5,7 @@ import uvicorn
 
 from apps import APPS_CONFIG, DB_DIR
 from apps.helpers.db.db_client import DbClient
-from apps.helpers.logUtils import configure_app_loggers, quiet_poll_access_logs
+from apps.helpers.logUtils import configure_app_loggers, configure_log_format, quiet_poll_access_logs
 
 from .manager import Manager
 from .web import WebApp
@@ -19,6 +19,7 @@ web_app = WebApp(manager=manager, app_name=config.name)
 
 # Poll endpoints log one access line per tab per tick; quiet the successful
 # ones so the log stays readable (see helpers/logUtils).
+configure_log_format()
 configure_app_loggers()
 quiet_poll_access_logs()
 

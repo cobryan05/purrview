@@ -33,7 +33,9 @@ stream with its own switch — see :data:`ACCESS_LOG_QUIET_PATHS` and
 
 import logging
 import os
-from typing import Final, Protocol
+import sys
+import time
+from typing import Final, Optional, Protocol
 
 
 class TaskLogFn(Protocol):
@@ -143,6 +145,78 @@ def configure_app_loggers() -> None:
     own level; calling this does not affect them.
     """
     logging.getLogger("apps").setLevel(LOG_LEVEL)
+
+
+#: Log line format. UTC with milliseconds, and the ``Z`` is load-bearing: every
+#: timestamp the app *stores* — ``watch_events.started_at``, a recording's span, a task
+#: heartbeat — is UTC, while the container's clock is not. A log stamped in local time
+#: cannot be lined up against those rows without arithmetic, which is how a diagnosis
+#: ends up guessing which layer went quiet.
+LOG_FORMAT: Final[str] = "%(asctime)s.%(msecs)03dZ %(levelname)s %(name)s: %(message)s"
+LOG_DATEFMT: Final[str] = "%Y-%m-%d %H:%M:%S"
+
+#: Uvicorn's loggers carry their own handlers, so its lines would otherwise be the one
+#: unstamped thing in the file — and "did the service actually restart" is read off
+#: exactly those.
+_STAMPED_LOGGERS: Final[tuple[str, ...]] = ("uvicorn", "uvicorn.error")
+
+#: Stamped by prefixing their own format string instead of replacing it. Uvicorn's access
+#: formatter builds its line from record attributes (``client_addr``, ``request_line``)
+#: rather than from ``%(message)s``, so a plain formatter here prints neither the request
+#: nor an error — it prints nothing useful at all.
+_PREFIXED_LOGGERS: Final[tuple[str, ...]] = ("uvicorn.access",)
+
+#: The timestamp on its own, for prefixing a format string that already says the rest.
+_STAMP: Final[str] = "%(asctime)s.%(msecs)03dZ"
+
+
+def utc_formatter() -> logging.Formatter:
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
+    formatter.converter = time.gmtime
+    return formatter
+
+
+def _prefixed_formatter(existing: logging.Formatter) -> Optional[logging.Formatter]:
+    """`existing` rebuilt with a UTC stamp in front, or None if it cannot be.
+
+    Same class, so a subclass that computes its own fields keeps doing so. A formatter
+    whose ``__init__`` does not take ``(fmt, datefmt)`` is left alone rather than
+    replaced: an unstamped line is a smaller loss than a broken one.
+    """
+    fmt = getattr(existing, "_fmt", None)
+    if not fmt or fmt.startswith(_STAMP):
+        return None
+    try:
+        rebuilt = type(existing)(f"{_STAMP} {fmt}", datefmt=LOG_DATEFMT)
+    except Exception:
+        return None
+    rebuilt.converter = time.gmtime
+    return rebuilt
+
+
+def configure_log_format() -> None:
+    """Stamp every stream handler with a UTC timestamp.
+
+    Set on the handlers rather than passed to ``basicConfig``: the first ``basicConfig``
+    call in a process wins, and dozens of modules make a bare one at import time, so a
+    format given here would survive or vanish depending on which module imported first.
+
+    Safe to call more than once — a format already carrying the stamp is left as it is.
+    """
+    root = logging.getLogger()
+    if not root.handlers:
+        root.addHandler(logging.StreamHandler(sys.stdout))
+    for logger in (root, *(logging.getLogger(name) for name in _STAMPED_LOGGERS)):
+        for handler in logger.handlers:
+            handler.setFormatter(utc_formatter())
+    for logger in (logging.getLogger(name) for name in _PREFIXED_LOGGERS):
+        for handler in logger.handlers:
+            if handler.formatter is None:
+                handler.setFormatter(utc_formatter())
+                continue
+            rebuilt = _prefixed_formatter(handler.formatter)
+            if rebuilt is not None:
+                handler.setFormatter(rebuilt)
 
 
 def quiet_poll_access_logs() -> None:
