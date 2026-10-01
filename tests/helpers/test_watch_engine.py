@@ -1538,6 +1538,149 @@ class TestOneEventPerSubject:
         assert len(hints) == 1, "one rule, one piece of advice — not one per cat"
 
 
+class TestTwoSubjectsInOneZoneKeepSeparateEvents:
+    """Two cars in one garage are two events, however alike the detector thinks they are.
+
+    `exclusive_variants` says two labels are alternate guesses about one object *in one
+    frame* — it is an NMS concept. Adoption read it as a licence to hand an open event
+    the next cluster that carried a sibling label, which for a Hatchback and a Sedan parked
+    in one garage is the other car. The shipped symptom: one event covering both, so the
+    first car's departure fired an impulse named after the second, and the second car's
+    real departure fired nothing at all.
+
+    The signal that separates the two cases is coexistence. A dropout's replacement
+    track never shares a frame with the track it replaced; two cars in one garage share
+    hundreds. Nothing else in a single frame can tell them apart.
+    """
+
+    HATCHBACK = "label-hatchback"
+    SEDAN = "label-sedan"
+    #: What `suppression_group_for` reports for two children of an `exclusive_variants`
+    #: parent: one group, which is exactly what made adoption cross between them.
+    GROUPS = {HATCHBACK: "group-vehicle", SEDAN: "group-vehicle"}
+
+    #: Both well inside LITTER_ZONE ((400,400)-(800,800) at this frame size) and clear of
+    #: each other, so neither `contains` nor the cluster IoU can conflate them.
+    HATCHBACK_BOX = (420, 420, 520, 520)
+    SEDAN_BOX = (650, 650, 750, 750)
+
+    def _spec(self, **overrides):
+        return _rule(
+            subject_a_refs=[self.HATCHBACK, self.SEDAN],
+            subject_b_refs=[ZONE_UUID],
+            trigger="on_exit",
+            min_duration_s=2.0,
+            rearm_delay_s=10.0,
+            max_duration_s=300.0,
+            **overrides,
+        )
+
+    def _drive(self, spec, frames):
+        machine = RuleMachine(spec, source_uuid="src-1", label_groups=self.GROUPS)
+        emitted = []
+        for now, tracks in frames:
+            emitted.extend(machine.step(evaluate_predicate(spec, tracks, ALL_ZONES, FRAME_W, FRAME_H), now))
+        return machine, emitted
+
+    def _hatchback(self):
+        return _track(track_id=1, bbox=self.HATCHBACK_BOX, label=self.HATCHBACK, conf=0.9)
+
+    def _sedan(self):
+        return _track(track_id=17, bbox=self.SEDAN_BOX, label=self.SEDAN, conf=0.9)
+
+    def test_each_car_leaving_fires_its_own_impulse(self):
+        """The whole bug, end to end.
+
+        The second car's first frame is one the parked first car was missed on — a
+        motion-woken camera's opening frames routinely are — so there is no instance of
+        its own for it to land on and the first car's open dwell adopts it. From then on
+        one instance holds both cars' track ids, and which car owns it depends on cluster
+        ordering.
+        """
+        spec = self._spec()
+        hatchback, sedan = self._hatchback(), self._sedan()
+        frames = [
+            (0.0, [hatchback]),
+            (3.0, [hatchback]),  # the Hatchback is parked and armed
+            # The camera sleeps, then wakes on the Sedan. The parked Hatchback is missed on
+            # the opening frames — the moment adoption used to fire.
+            (100.0, [sedan]),
+            (103.0, [sedan]),
+            # Both cars, plainly two objects in one frame, for a good while.
+            (110.0, [hatchback, sedan]),
+            (120.0, [hatchback, sedan]),
+            (130.0, [hatchback, sedan]),
+            # The Hatchback drives away. The Sedan stays put.
+            (200.0, [sedan]),
+            (210.0, [sedan]),
+            (220.0, [sedan]),
+            # ...and much later the Sedan goes too.
+            (400.0, []),
+            (410.0, []),
+            (420.0, []),
+        ]
+
+        _machine, emitted = self._drive(spec, frames)
+
+        departures = [s for s in emitted if s.phase is EventPhase.END]
+        assert [s.subject_ref for s in departures] == [
+            self.HATCHBACK,
+            self.SEDAN,
+        ], "each car's own departure, named after the car that actually left"
+        assert departures[0].at == pytest.approx(200.0), "the Hatchback left at 200, not when the Sedan did"
+        assert departures[1].at == pytest.approx(400.0)
+
+    def test_the_second_car_does_not_join_the_first_cars_event(self):
+        """The mechanism, isolated: once the two have shared a frame, neither may adopt
+        the other however long the first has been sitting there."""
+        spec = self._spec()
+        hatchback, sedan = self._hatchback(), self._sedan()
+        _machine, emitted = self._drive(
+            spec,
+            [
+                (0.0, [hatchback]),
+                (3.0, [hatchback]),
+                (10.0, [hatchback, sedan]),  # coexistence: two objects, on the record
+                (13.0, [hatchback, sedan]),
+                (20.0, [sedan]),  # the Hatchback is missed, not gone
+                (23.0, [sedan]),
+                (40.0, [hatchback, sedan]),  # and it was there all along
+                (50.0, [hatchback, sedan]),
+            ],
+        )
+
+        assert emitted == [], "neither car has left, so nothing has departed"
+
+    def test_a_dropout_handing_the_subject_back_under_a_new_id_still_adopts(self):
+        """The case adoption exists for, which coexistence must leave alone.
+
+        One car, hidden and handed back under a fresh track id somewhere else in the
+        zone. The new id never shared a frame with the old one, so it is the same object
+        and must extend the open dwell rather than start a second one.
+        """
+        spec = self._spec()
+        before = _track(track_id=1, bbox=self.HATCHBACK_BOX, label=self.HATCHBACK, conf=0.9)
+        after = _track(track_id=77, bbox=self.SEDAN_BOX, label=self.HATCHBACK, conf=0.9)
+        _machine, emitted = self._drive(
+            spec,
+            [
+                (0.0, [before]),
+                (3.0, [before]),
+                (5.0, []),  # obstruction
+                (7.0, []),
+                (9.0, [after]),  # back, new id, elsewhere in the zone
+                (12.0, [after]),
+                (60.0, []),  # and now it really goes
+                (65.0, []),
+                (71.0, []),
+            ],
+        )
+
+        departures = [s for s in emitted if s.phase is EventPhase.END]
+        assert len(departures) == 1, "one car, one departure — the dropout is not a second car"
+        assert departures[0].at == pytest.approx(60.0)
+
+
 class TestMasking:
     """Masks suppress by centroid — see `is_masked` for why not by overlap."""
 

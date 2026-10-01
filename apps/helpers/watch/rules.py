@@ -524,6 +524,14 @@ EVENT_CLUSTER_IOU = 0.3
 #: drop a real event.
 MAX_EVENT_INSTANCES = 16
 
+#: How many track ids one machine remembers coexistence for. Bounded because track ids
+#: are minted forever while the map only has to survive from "both subjects were seen
+#: together" to the frame one of them is missed on — seconds, not days.
+MAX_COEXIST_TRACKS = 512
+
+#: Shared empty set for the coexistence lookups, so a miss allocates nothing.
+_NO_TRACKS: Set[int] = set()
+
 
 def _bbox_iou(a: BBox, b: BBox) -> float:
     ax1, ay1, ax2, ay2 = a
@@ -761,11 +769,56 @@ class RuleMachine:
         self._cluster_iou = cluster_iou
         self._instances: Dict[str, _EventInstance] = {}
         self._next_instance = 0
+        #: Track ids that have been seen in the same frame as each other, in *different*
+        #: clusters. Two tracks that have ever been apart in one frame are two objects,
+        #: whatever the detector called them, and this is the only thing in a frame that
+        #: says so — a dropout's replacement id never shares a frame with the id it
+        #: replaced, while two cars in one garage share hundreds.
+        self._coexist: Dict[int, Set[int]] = {}
         #: Totalled on the machine, not the instance, so a tuning hint survives the
         #: eviction of the instance that flapped.
         self.flap_count: int = 0
 
     # ------------------------------------------------------------------ helpers
+
+    def _record_coexistence(self, clusters: Sequence[MatchCluster]) -> None:
+        """Note which of this frame's tracks are provably about different objects.
+
+        Across clusters only. Two tracks the clusterer put in *one* cluster are its
+        verdict that they are one body carried by two ids, which is the case adoption is
+        for; recording those as rivals would make `_disown_rival_tracks` throw away the
+        very association that found them.
+        """
+        if len(clusters) < 2:
+            return
+        for index, cluster in enumerate(clusters):
+            rivals = {t for other in clusters[index + 1 :] for t in other.track_ids}
+            if not rivals:
+                continue
+            for track_id in cluster.track_ids:
+                self._coexist.setdefault(track_id, set()).update(rivals)
+                for rival in rivals:
+                    self._coexist.setdefault(rival, set()).add(track_id)
+        while len(self._coexist) > MAX_COEXIST_TRACKS:
+            # Insertion order, so the oldest track id goes first. Its id lingers in other
+            # entries' sets, which is harmless: a stale id never appears in a frame again.
+            self._coexist.pop(next(iter(self._coexist)))
+
+    def _coexisted(self, left: Set[int], right: Set[int]) -> bool:
+        return any(self._coexist.get(track_id, _NO_TRACKS) & right for track_id in left)
+
+    def _disown_rival_tracks(self, instance: _EventInstance, cluster: MatchCluster) -> None:
+        """Drop tracks this instance cannot still be about.
+
+        `track_ids` is unioned and never replaced, so one wrong adoption leaves an
+        instance permanently ambiguous: both objects' clusters then match it on a shared
+        id and which one owns it comes down to cluster ordering. A track that has been in
+        the frame alongside this cluster is a different object, so it is not this one.
+        """
+        rivals = {
+            t for t in instance.track_ids - cluster.track_ids if self._coexist.get(t, _NO_TRACKS) & cluster.track_ids
+        }
+        instance.track_ids -= rivals
 
     def _group_of(self, label_uuid: Optional[str]) -> str:
         key = label_uuid or ""
@@ -886,6 +939,9 @@ class RuleMachine:
            have been placed, so on the very frame a dropout replaces one track id with
            another it is still ACTIVE — and keying on CLOSING let exactly that mint a
            second event, observed live as three overlapping `Maple Present` cards.
+
+           Bounded by coexistence as well as by group: a cluster whose tracks have shared
+           a frame with the instance's is a second object, not its subject returning.
         4. **Nothing** — a genuinely new object, unless the machine is at its cap, in
            which case it joins its nearest neighbour rather than being dropped.
 
@@ -938,6 +994,7 @@ class RuleMachine:
             if i.state in (RuleState.ACTIVE, RuleState.CLOSING)
             and not (i.track_ids & present)
             and self._compatible(cluster, i)
+            and not self._coexisted(cluster.track_ids, i.track_ids)
         ]
         if adoptable:
             # Longest-waiting first, and an instance that lost its subject this very frame
@@ -957,6 +1014,10 @@ class RuleMachine:
         licence to file it under the first one. An unknown label on either side is
         permitted rather than refused — refusing would make an unlabelled `any` rule
         unable to extend any event at all.
+
+        Necessary, not sufficient. The group is a statement about one frame's labels, so
+        two siblings that are genuinely two bodies — a Hatchback and a Sedan in one garage —
+        both pass it; `_coexisted` is what separates those.
         """
         if cluster.subject_ref is None or instance.subject_ref is None:
             return True
@@ -971,7 +1032,11 @@ class RuleMachine:
 
         signals: List[WatchEventSignal] = []
         matched: Set[str] = set()
-        for cluster, instance in self._associate(self._clusters(result)):
+        clusters = self._clusters(result)
+        # Before association, so this frame's own verdict about what is distinct is
+        # already on the record when adoption asks.
+        self._record_coexistence(clusters)
+        for cluster, instance in self._associate(clusters):
             if instance is None:
                 instance = self._new_instance()
             matched.add(instance.instance_id)
@@ -1023,6 +1088,7 @@ class RuleMachine:
                 # Keep following the subject while latched. A latch tracking a stale box
                 # loses the object as soon as it moves, and then a new instance opens
                 # beside it — the cap defeated by the very motion it was watching.
+                self._disown_rival_tracks(instance, cluster)
                 instance.observe(cluster, now, spec.max_duration_s)
                 instance.false_since = None
                 return signals
@@ -1036,6 +1102,7 @@ class RuleMachine:
 
         if holds:
             assert cluster is not None
+            self._disown_rival_tracks(instance, cluster)
             instance.observe(cluster, now, spec.max_duration_s)
             instance.false_since = None
 
