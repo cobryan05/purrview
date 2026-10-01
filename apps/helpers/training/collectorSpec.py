@@ -327,6 +327,13 @@ class CollectorSpec:
     #: choice. Independent of `max_unverified_images`: either can be set alone.
     max_unverified_bytes: Optional[int] = None
     eviction_strategy: str = EVICTION_FIFO
+    #: Share of `max_unverified_images` that confusable frames may hold onto.
+    #: They are evicted last, so without a ceiling they accumulate and the
+    #: rolling window shrinks to whatever is left — a queue that is mostly
+    #: protected has stopped being a rolling buffer. Past this share the
+    #: oldest confusables lose their protection and queue up for eviction by
+    #: age like anything else. 1.0 restores unlimited protection; 0 drops it.
+    confusable_protection_fraction: float = 0.2
 
     @property
     def target_label_bands(self) -> Dict[str, ConfidenceBand]:
@@ -452,6 +459,9 @@ class CollectorSpec:
                 int(_max_unverified_mb_raw * 1024 * 1024)
                 if (_max_unverified_mb_raw := _as_float(params.get("max_unverified_mb"), 0.0)) > 0
                 else None
+            ),
+            confusable_protection_fraction=min(
+                1.0, max(0.0, _as_float(params.get("confusable_protection_fraction"), 0.2))
             ),
             eviction_strategy=(
                 params.get("eviction_strategy")
@@ -1167,6 +1177,20 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                         "blank / 0 for unlimited."
                     ),
                     "default": 0,
+                },
+                "confusable_protection_fraction": {
+                    "type": "float",
+                    "label": "Confusable Protection Share",
+                    "min": 0.0,
+                    "max": 1.0,
+                    "description": (
+                        "How much of the image limit above frames flagged confusable may occupy. "
+                        "They are deleted last, so without a ceiling they build up and the part of "
+                        "the queue that still rolls keeps shrinking. Past this share the oldest "
+                        "confusable frames give up their protection and are evicted by age like any "
+                        "other. 1 protects every one of them; 0 protects none."
+                    ),
+                    "default": 0.2,
                 },
                 "eviction_strategy": {
                     "type": "select",

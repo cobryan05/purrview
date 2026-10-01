@@ -9,6 +9,15 @@ return that many, worst-first. The caller decides how many that is (a function
 of the configured caps and how far over them the queue currently sits) and does
 the actual deleting.
 
+Protection is bounded. Confusable frames are evicted last, so left unchecked
+they accumulate until the part of the queue that still rolls is a sliver of the
+configured cap — a buffer that is mostly protected has stopped being a rolling
+buffer at all. `protected_budget` caps how many may hold their tier; past it
+the oldest give the protection up and rejoin the ordinary round, where they are
+ranked by age like anything else. The newest confusables keep it, which is the
+right way round: protection exists to buy review time, and the ones nobody has
+got to yet are the ones still waiting on it.
+
 Above the strategies sits a tier order that none of them can override, because
 *which* image is worth keeping is not a question about what it looks like. A
 frame the model was confident and confused about is the scarcest thing in the
@@ -77,19 +86,29 @@ TIER_CONFUSABLE = 2
 TIER_ORDER = (TIER_ORDINARY, TIER_RECENT, TIER_CONFUSABLE)
 
 
-def select_for_eviction(candidates: Sequence[EvictionCandidate], count: int, strategy: str) -> list[EvictionCandidate]:
+def select_for_eviction(
+    candidates: Sequence[EvictionCandidate],
+    count: int,
+    strategy: str,
+    protected_budget: Optional[int] = None,
+) -> list[EvictionCandidate]:
     """The `count` candidates to delete, worst-first, under `strategy`.
 
     `count` is clamped to `len(candidates)` — the caller may ask for more than
     exist when its own bookkeeping (`total_count` from a paginated query) sees
     more unverified images than fit in the bounded candidate page it fetched;
     this pass simply does what it can and a later one continues the cleanup.
+
+    `protected_budget` is how many confusable frames may keep their tier; None
+    means all of them, which is the behaviour before the budget existed.
     """
     count = max(0, min(count, len(candidates)))
     if count == 0:
         return []
     if strategy not in (EVICTION_LEAST_UNIQUE, EVICTION_LABEL_BALANCE, EVICTION_FIFO):
         raise ValueError(f"Unknown eviction strategy {strategy!r}")
+
+    tiers = _effective_tiers(candidates, protected_budget)
 
     # Tier first, strategy within it. The strategies rank on appearance, labels or
     # age, none of which can see that a frame is the one worth keeping — so the
@@ -98,13 +117,40 @@ def select_for_eviction(candidates: Sequence[EvictionCandidate], count: int, str
     # near-duplicate, which is the opposite of what it is worth.
     ordered: list[EvictionCandidate] = []
     for tier in TIER_ORDER:
-        members = [c for c in candidates if c.tier == tier]
+        members = [c for c in candidates if tiers[id(c)] == tier]
         if not members:
             continue
         ordered.extend(_rank_within_tier(members, strategy, candidates))
         if len(ordered) >= count:
             break
     return ordered[:count]
+
+
+def _effective_tiers(
+    candidates: Sequence[EvictionCandidate],
+    protected_budget: Optional[int],
+) -> dict[int, int]:
+    """Each candidate's tier for this pass, keyed by identity.
+
+    Keyed on `id()` rather than uuid because two candidates may legitimately
+    carry the same uuid in a caller's page, and because nothing here should
+    depend on uuid being populated at all. Returned as a map rather than
+    written onto the candidates: the caller's list is borrowed, not owned, and
+    a demotion is a fact about this pass, not about the image.
+    """
+    tiers = {id(c): c.tier for c in candidates}
+    if protected_budget is None:
+        return tiers
+    protected = sorted(
+        (c for c in candidates if c.tier == TIER_CONFUSABLE),
+        key=lambda c: c.created_at,
+    )
+    excess = len(protected) - max(0, protected_budget)
+    # Oldest first: the newest confusables are the ones still waiting to be
+    # looked at, and protection is only worth anything to them.
+    for candidate in protected[: max(0, excess)]:
+        tiers[id(candidate)] = TIER_ORDINARY
+    return tiers
 
 
 def _rank_within_tier(

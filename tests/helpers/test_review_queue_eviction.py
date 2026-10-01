@@ -205,3 +205,93 @@ class TestTiers:
         evicted = select_for_eviction([protected, duplicate_of_it, distinct], 1, EVICTION_LEAST_UNIQUE)
 
         assert [c.uuid for c in evicted] == ["duplicate"]
+
+
+class TestProtectedBudget:
+    """Confusable protection has a ceiling, so the buffer keeps rolling.
+
+    Protection is unbounded by default and confusable frames are evicted last,
+    so a steady trickle of them accumulates until the part of the queue that
+    still turns over is a sliver of the configured cap. The budget caps how
+    many may hold the tier; the oldest beyond it rejoin the ordinary round.
+    Which ones lose it matters: the newest are the ones still waiting to be
+    reviewed, and protection is only worth anything to them.
+    """
+
+    def test_no_budget_protects_every_confusable_frame(self):
+        # The behaviour before the budget existed, kept reachable by None.
+        candidates = [_candidate(f"c{i}", age_s=i, confusable=True) for i in range(3)]
+        candidates.append(_candidate("ordinary", age_s=99))
+
+        picked = select_for_eviction(candidates, 1, EVICTION_FIFO, None)
+
+        assert [c.uuid for c in picked] == ["ordinary"]
+
+    def test_confusables_over_the_budget_are_evicted_before_newer_ordinary_frames(self):
+        # Three confusable, budget of one: the two oldest lose protection and
+        # are older than the ordinary frame, so they go first.
+        candidates = [
+            _candidate("conf-old", age_s=0, confusable=True),
+            _candidate("conf-mid", age_s=1, confusable=True),
+            _candidate("conf-new", age_s=2, confusable=True),
+            _candidate("ordinary", age_s=50),
+        ]
+
+        picked = select_for_eviction(candidates, 2, EVICTION_FIFO, 1)
+
+        assert [c.uuid for c in picked] == ["conf-old", "conf-mid"]
+
+    def test_the_newest_confusables_keep_their_protection(self):
+        candidates = [_candidate(f"c{i}", age_s=i, confusable=True) for i in range(4)]
+
+        picked = select_for_eviction(candidates, 4, EVICTION_FIFO, 2)
+
+        # Oldest two demoted and taken first; the newest two only once the
+        # ordinary round is empty — so they are still last, not exempt.
+        assert [c.uuid for c in picked] == ["c0", "c1", "c2", "c3"]
+
+    def test_a_demoted_confusable_still_loses_to_an_older_ordinary_frame(self):
+        # Demotion rejoins the ordinary round, it does not jump the queue:
+        # within that round age decides, as FIFO always has.
+        candidates = [
+            _candidate("ordinary-oldest", age_s=0),
+            _candidate("conf-demoted", age_s=5, confusable=True),
+            _candidate("conf-kept", age_s=6, confusable=True),
+        ]
+
+        picked = select_for_eviction(candidates, 1, EVICTION_FIFO, 1)
+
+        assert [c.uuid for c in picked] == ["ordinary-oldest"]
+
+    def test_a_zero_budget_strips_protection_entirely(self):
+        candidates = [
+            _candidate("conf", age_s=0, confusable=True),
+            _candidate("ordinary", age_s=5),
+        ]
+
+        picked = select_for_eviction(candidates, 1, EVICTION_FIFO, 0)
+
+        assert [c.uuid for c in picked] == ["conf"]
+
+    def test_a_budget_larger_than_the_confusable_set_changes_nothing(self):
+        candidates = [
+            _candidate("conf", age_s=0, confusable=True),
+            _candidate("ordinary", age_s=5),
+        ]
+
+        picked = select_for_eviction(candidates, 1, EVICTION_FIFO, 99)
+
+        assert [c.uuid for c in picked] == ["ordinary"]
+
+    def test_recent_frames_are_not_demoted_by_the_confusable_budget(self):
+        # The budget is about confusable protection only; a frame nobody has
+        # had time to open yet is a separate guarantee.
+        candidates = [
+            _candidate("conf", age_s=0, confusable=True),
+            _candidate("recent", age_s=1, recent=True),
+        ]
+
+        picked = select_for_eviction(candidates, 1, EVICTION_FIFO, 0)
+
+        # conf is demoted to ordinary, so it goes before the still-protected recent one.
+        assert [c.uuid for c in picked] == ["conf"]

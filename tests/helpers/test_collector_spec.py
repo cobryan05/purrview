@@ -162,6 +162,21 @@ class TestCollectorSpecFromParams:
             spec = CollectorSpec.from_params({"output_dir": "out", "eviction_strategy": strategy})
             assert spec.eviction_strategy == strategy
 
+    def test_confusable_protection_defaults_to_a_fifth_of_the_cap(self):
+        # Not 1.0: confusable frames are evicted last, so unlimited protection
+        # lets them accumulate until the queue stops rolling.
+        spec = CollectorSpec.from_params({"output_dir": "out"})
+        assert spec.confusable_protection_fraction == 0.2
+
+    def test_confusable_protection_is_clamped_to_a_fraction(self):
+        for raw, expected in ((-1, 0.0), (0, 0.0), (0.5, 0.5), (1, 1.0), (7, 1.0)):
+            spec = CollectorSpec.from_params({"output_dir": "out", "confusable_protection_fraction": raw})
+            assert spec.confusable_protection_fraction == expected
+
+    def test_unparseable_confusable_protection_falls_back_to_the_default(self):
+        spec = CollectorSpec.from_params({"output_dir": "out", "confusable_protection_fraction": "most of it"})
+        assert spec.confusable_protection_fraction == 0.2
+
 
 class TestSchemaGrouping:
     """The form is grouped (plan: the flat run of a dozen fields had no shape), and a

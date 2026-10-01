@@ -42,6 +42,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import time
 import uuid as uuid_module
 from collections import deque
@@ -1124,8 +1125,28 @@ class TrainingCollector:
             # on a full queue. This coroutine shares its loop with the frame
             # pipeline that called it, so ranking runs in a thread for the same
             # reason the hashing and the stat() calls above do.
+            # Budgeted against the configured cap, not against the queue as it
+            # stands: a share of what the queue is *allowed* to be is a fixed
+            # number of slots, while a share of what it currently holds grows
+            # with the very accumulation the budget exists to bound.
+            #
+            # Rounded up, so a share that works out below one slot still buys
+            # one. Truncating instead silently cancels the protection outright
+            # for any cap under 1/fraction — a small queue is exactly where a
+            # confusable frame is scarcest, not where it matters least. A
+            # fraction of zero still means zero: that is the setting asking for
+            # no protection, rather than arithmetic taking it away.
+            protected_budget = (
+                math.ceil(self._spec.max_unverified_images * self._spec.confusable_protection_fraction)
+                if self._spec.max_unverified_images is not None
+                else None
+            )
             ranked = await asyncio.to_thread(
-                select_for_eviction, candidates, len(candidates), self._spec.eviction_strategy
+                select_for_eviction,
+                candidates,
+                len(candidates),
+                self._spec.eviction_strategy,
+                protected_budget,
             )
             # The page, not `total`. `total` comes from the review-queue count,
             # which db_server caches for 60s and does not invalidate on delete —
