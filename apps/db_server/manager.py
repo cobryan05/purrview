@@ -8,13 +8,14 @@ import logging
 import os
 import random
 import re
+import shutil
 import sys
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import aiofiles
 import jstyleson
@@ -33,6 +34,7 @@ from apps.db_server.hash_index import HashIndex
 from apps.helpers.actions.outputDir import has_placeholder, resolve_output_dir, static_prefix
 from apps.helpers.actions.Registry import action_registry
 from apps.helpers.actions.saveTimelapseAction import DEFAULT_TIMELAPSE_DIR
+from apps.helpers.archiveUtils import extract_archive, is_archive_name
 from apps.helpers.consts import TaskStatus
 from apps.helpers.datasetExport import (
     EXPORT_FORMAT_IDS,
@@ -42,6 +44,8 @@ from apps.helpers.datasetExport import (
     sanitize_stem,
     split_images,
 )
+from apps.helpers.datasetImport import detect as dataset_detect
+from apps.helpers.datasetImport import detected_to_dict
 from apps.helpers.db.db_client import (
     BBOX_VERIFICATION_STATE_TO_TAG_UUID,
     DbClient,
@@ -2285,6 +2289,158 @@ class Manager:
             "duplicate_distance": duplicate_distance,
             "renamed_from": renamed_from,
         }
+
+    async def register_images(self, rel_paths: Sequence[str]) -> Dict[str, Any]:
+        """Create image rows for files already sitting under FILES_ROOT.
+
+        The counterpart to `save_uploaded_image` for an import that does not
+        copy: the bytes are already in place, so all that is missing is the
+        record. Without this an unannotated in-place import would be invisible
+        — a row only appears on its own when something writes annotations, and
+        an images-only dataset never does.
+
+        Per-path outcomes, like the upload endpoint: one unreadable file in a
+        10,000-image dataset must not fail the other 9,999.
+        """
+        registered: List[Dict[str, str]] = []
+        failed: List[Dict[str, str]] = []
+        for rel_path in rel_paths:
+            safe_path = get_safe_path(self._files_root, rel_path) if self._files_root else None
+            if safe_path is None or not safe_path.is_file():
+                failed.append({"path": rel_path, "message": "not found under FILES_ROOT"})
+                continue
+            try:
+                image = await self._db_client.add_image(safe_path)
+                registered.append({"path": self._image_rel_path(str(safe_path)), "uuid": image.uuid})
+            except Exception as exc:  # noqa: BLE001 - reported per path, never fatal
+                logger.warning("register_images: %s failed: %s", rel_path, exc)
+                failed.append({"path": rel_path, "message": str(exc)})
+        return {"registered": registered, "failed": failed}
+
+    # ── Dataset import ────────────────────────────────────────────────────
+    #
+    # Two ways in, one shape out. A folder already visible to the container is
+    # read where it sits; an uploaded archive is unpacked into a staging area
+    # outside FILES_ROOT and referred to by an opaque id. Staging avoids
+    # FILES_ROOT deliberately: a half-inspected dataset sitting in the image
+    # library would be picked up by directory scans and collector globs before
+    # the user has agreed to import any of it.
+
+    #: Where uploaded archives are unpacked while the wizard inspects them.
+    DATASET_STAGING_DIR = CACHE_DIR / "dataset_imports"
+
+    #: Staging trees older than this are swept on the next upload. Closing the
+    #: tab mid-wizard sends no signal, so nothing else would ever remove them.
+    DATASET_STAGING_TTL_S = 24 * 3600
+
+    def _staging_root(self, staging_uuid: str) -> Path:
+        """Resolve a staging id to its directory, rejecting anything crafted.
+
+        The id arrives in task params, which are user-controlled, so it is
+        parsed as a uuid rather than joined onto a path.
+        """
+        try:
+            parsed = UUID(str(staging_uuid))
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError(f"Not a staging id: {staging_uuid!r}")
+        root = self.DATASET_STAGING_DIR / str(parsed)
+        if not root.is_dir():
+            raise ValueError("That upload is no longer staged; upload the archive again")
+        return root
+
+    def resolve_import_root(self, *, path: Optional[str] = None, staging_uuid: Optional[str] = None) -> Path:
+        """The directory an import reads from, from whichever handle was given."""
+        if staging_uuid:
+            return self._staging_root(staging_uuid)
+        if not self._files_root or not self._files_root.is_dir():
+            raise ValueError("FILES_ROOT is not configured")
+        resolved = get_safe_path(self._files_root, path or "")
+        if resolved is None:
+            raise ValueError(f"Path is outside FILES_ROOT: {path!r}")
+        if not resolved.is_dir():
+            raise ValueError(f"Not a folder: {path!r}")
+        return resolved
+
+    async def _sweep_dataset_staging(self) -> None:
+        """Delete staging trees the wizard abandoned."""
+
+        def _sweep() -> None:
+            if not self.DATASET_STAGING_DIR.is_dir():
+                return
+            cutoff = time.time() - self.DATASET_STAGING_TTL_S
+            for entry in self.DATASET_STAGING_DIR.iterdir():
+                try:
+                    if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                        shutil.rmtree(entry, ignore_errors=True)
+                except OSError:
+                    continue
+
+        await asyncio.to_thread(_sweep)
+
+    async def stage_dataset_archive(self, filename: str, data: bytes) -> str:
+        """Unpack an uploaded archive into staging; return its staging id.
+
+        The bytes are written to a temp file first because both zip and tar
+        need to seek, and holding a multi-gigabyte dataset in memory to avoid
+        one write is the wrong trade.
+        """
+        if not is_archive_name(filename or ""):
+            raise ValueError(f"{filename!r} is not a .zip or .tar archive")
+
+        await self._sweep_dataset_staging()
+        staging_uuid = str(uuid4())
+        root = self.DATASET_STAGING_DIR / staging_uuid
+
+        def _unpack() -> int:
+            root.mkdir(parents=True, exist_ok=True)
+            archive = root.with_name(f"{staging_uuid}.upload")
+            try:
+                archive.write_bytes(data)
+                return extract_archive(archive, root)
+            finally:
+                archive.unlink(missing_ok=True)
+
+        try:
+            count = await asyncio.to_thread(_unpack)
+        except Exception:
+            await asyncio.to_thread(shutil.rmtree, root, True)
+            raise
+        if not count:
+            await asyncio.to_thread(shutil.rmtree, root, True)
+            raise ValueError("That archive contained no files")
+        return staging_uuid
+
+    async def discard_dataset_staging(self, staging_uuid: str) -> None:
+        """Drop a staged upload the user backed out of. Never raises."""
+        try:
+            root = self._staging_root(staging_uuid)
+        except ValueError:
+            return
+        await asyncio.to_thread(shutil.rmtree, root, True)
+
+    async def detect_dataset_import(
+        self,
+        *,
+        path: Optional[str] = None,
+        staging_uuid: Optional[str] = None,
+        format: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Describe the dataset at a handle: format, classes, counts, warnings.
+
+        A full parse, run in a thread — the wizard shows these numbers as what
+        is about to be imported, and an estimate that turns out wrong once the
+        task runs is worse than a slower dialog.
+        """
+        directory = self.resolve_import_root(path=path, staging_uuid=staging_uuid)
+
+        def _detect() -> Dict[str, Any]:
+            detected = dataset_detect(directory, format or None)
+            # Roots come back relative to whichever tree they live in, so the
+            # caller gets a handle it can send back rather than a container path.
+            base = directory if staging_uuid else self._files_root
+            return detected_to_dict(detected, root_relative_to=base)
+
+        return await asyncio.to_thread(_detect)
 
     async def _rehash_bboxes_after_replace(self, image_uuid: str, path: Path, bboxes: List[Any]) -> None:
         """Re-hash every bbox crop after the picture underneath it was replaced.

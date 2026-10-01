@@ -93,10 +93,33 @@ async function fetchCounts() {
 
 /**
  * @param {Record<string, number|null>} counts
- * @returns {Array<{title: string, entries: Array<{name: string, count: number|null, tab: string, hint: string}>}>}
+ * @returns {Array<{title: string, entries: Array<{name: string, hint: string,
+ *   count?: number|null, tab?: string, glyph?: string,
+ *   action?: () => (void|Promise<void>)}>}>}
+ *   An entry either navigates (`tab` + a live `count`) or does something
+ *   (`action` + a `glyph` where the count would be). The two are exclusive.
  */
 function buildGroups(counts) {
   return [
+    {
+      title: 'Bring data in',
+      entries: [
+        {
+          name: 'Import dataset', glyph: '\u{1F4E6}', hint: 'YOLO, COCO or Pascal VOC \u2014 a folder on the server, or an upload',
+          action: async () => {
+            const mod = await import('/app-static/js/ui/datasetImportModal.js');
+            await mod.showDatasetImportModal();
+          },
+        },
+        {
+          name: 'Collect images', glyph: '\u{1F39E}', hint: 'Set up a collector over a folder, video or camera in three steps',
+          action: async () => {
+            const mod = await import('/app-static/js/ui/collectWizardModal.js');
+            await mod.showCollectWizardModal();
+          },
+        },
+      ],
+    },
     {
       title: 'Vocabulary',
       entries: [
@@ -181,12 +204,20 @@ function buildEntry(entry, activateTab) {
   const el = document.createElement('button');
   el.type = 'button';
   el.className = 'config-landing__entry';
-  el.dataset.testid = `config-landing-entry-${entry.tab}-${entry.name.toLowerCase().replace(/\s+/g, '-')}`;
+  const slug = entry.name.toLowerCase().replace(/\s+/g, '-');
+  el.dataset.testid = `config-landing-entry-${entry.tab ?? 'action'}-${slug}`;
 
+  // An action entry has no count to show, so its glyph takes the same slot —
+  // the grid column is fixed, and leaving it empty would ragged the whole card.
   const count = document.createElement('span');
   count.className = 'config-landing__count';
-  count.textContent = entry.count === null ? '—' : String(entry.count);
-  if (entry.count === null) count.classList.add('config-landing__count--error');
+  if (entry.action) {
+    count.textContent = entry.glyph ?? '+';
+    count.classList.add('config-landing__count--action');
+  } else {
+    count.textContent = entry.count === null ? '—' : String(entry.count);
+    if (entry.count === null) count.classList.add('config-landing__count--error');
+  }
   el.appendChild(count);
 
   const text = document.createElement('span');
@@ -205,7 +236,19 @@ function buildEntry(entry, activateTab) {
   text.appendChild(hint);
 
   el.appendChild(text);
-  el.addEventListener('click', () => activateTab(entry.tab));
+  el.addEventListener('click', async () => {
+    if (!entry.action) return void activateTab(entry.tab);
+    // Disabled for the duration: the module is fetched on first press, which
+    // is slow enough over a cold cache to invite a second click.
+    el.disabled = true;
+    try {
+      await entry.action();
+    } catch (err) {
+      Logger.warn('configLanding: action failed', err);
+    } finally {
+      el.disabled = false;
+    }
+  });
   return el;
 }
 

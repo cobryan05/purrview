@@ -44,9 +44,9 @@ export function init(runtime, container, options = {}) {
   const buttonDefs = [
     {
       key: 'import',
-      label: '⬆ Import',
+      label: '⬆ Upload',
       flex: '0 0 auto',
-      title: 'Import images from this computer',
+      title: 'Upload images from this computer',
       // Opens the imported image straight onto the canvas — importing from here
       // means you want to annotate it now.
       onClick: () => importImages({ openFirst: true }),

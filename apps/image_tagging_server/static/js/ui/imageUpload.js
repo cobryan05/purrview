@@ -283,7 +283,7 @@ export function createUploadControls({ getCurrentPath, onUploaded = null }) {
   uploadBtn.className = 'fb-upload-btn';
   uploadBtn.dataset.testid = 'file-upload-button';
   uploadBtn.dataset.tour = 'files.upload';
-  uploadBtn.textContent = '⬆ Import images';
+  uploadBtn.textContent = '⬆ Upload images';
   uploadBtn.addEventListener('click', async () => {
     uploadBtn.disabled = true;
     try {

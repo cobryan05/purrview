@@ -5877,6 +5877,15 @@ button.filter-active {
   color: var(--text-faint);
 }
 
+/* An action entry puts an emoji where a count goes. Tabular figures and the
+   accent colour are both for numbers, and neither survives contact with an
+   emoji — the glyph keeps its own colours and needs the slot centred. */
+.config-landing__count--action {
+  font-variant-numeric: normal;
+  text-align: center;
+  color: inherit;
+}
+
 .config-landing__entry-text {
   display: flex;
   flex-direction: column;

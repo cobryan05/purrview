@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from apps.db_server.manager import _THUMB_MEDIA_TYPE, Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.datasetExport import EXPORT_FORMATS
+from apps.helpers.datasetImport import IMPORT_FORMATS
 from apps.helpers.db.types import (
     DEFAULT_SESSION_GAP_S,
     ApiModel,
@@ -536,6 +537,25 @@ class UploadImagesResponse(StatusResponse):
     results: List[UploadedImageRead] = []
 
 
+class RegisterImagesPayload(ApiPayload):
+    paths: List[str] = Field(default_factory=list)
+
+
+class RegisteredImageRead(ApiModel):
+    path: str
+    uuid: str
+
+
+class RegisterImageFailure(ApiModel):
+    path: str
+    message: str
+
+
+class RegisterImagesResponse(StatusResponse):
+    registered: List[RegisteredImageRead] = Field(default_factory=list)
+    failed: List[RegisterImageFailure] = Field(default_factory=list)
+
+
 class GetImageMetadataPayload(ApiPayload):
     image_path: str
 
@@ -740,6 +760,39 @@ class DatasetExportFormat(ApiModel):
 
 class DatasetExportFormatsResponse(StatusResponse):
     formats: List[DatasetExportFormat] = Field(default_factory=list)
+
+
+class DatasetImportDetectPayload(ApiPayload):
+    """Where to look, and optionally how to read it.
+
+    Exactly one of `path` (a FILES_ROOT-relative folder) and `staging_uuid` (an
+    uploaded archive already unpacked) identifies the dataset. `format` forces
+    a reading; left empty, the layout decides.
+    """
+
+    path: Optional[str] = None
+    staging_uuid: Optional[str] = None
+    format: Optional[str] = None
+
+
+class DatasetImportDetectResponse(StatusResponse):
+    format: Optional[str] = None
+    #: Dataset root, relative to FILES_ROOT or to the staging tree. Reported so
+    #: the wizard can say *which* folder it settled on after descending past a
+    #: single wrapping directory.
+    root: Optional[str] = None
+    class_names: List[str] = Field(default_factory=list)
+    image_count: int = 0
+    annotation_count: int = 0
+    warnings: List[str] = Field(default_factory=list)
+
+
+class DatasetImportStagePayload(ApiPayload):
+    staging_uuid: str
+
+
+class DatasetImportStageResponse(StatusResponse):
+    staging_uuid: Optional[str] = None
 
 
 class DatasetPreviewPayload(ApiModel):
@@ -2416,6 +2469,30 @@ class WebApp:
             # the detail. A partial failure is not a failed request.
             return UploadImagesResponse(status=JsonValues.SUCCESS, results=results)
 
+        @self._app.post(
+            "/api/images/register",
+            response_model=RegisterImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="register_images",
+        )
+        async def register_images(payload: RegisterImagesPayload) -> RegisterImagesResponse:
+            """Create image rows for files already under FILES_ROOT.
+
+            What an in-place dataset import uses instead of `/upload`: the
+            bytes are already where they belong, and copying a dataset onto the
+            same volume to register it would double its size for nothing.
+            """
+            try:
+                result = await self._manager.register_images(payload.paths)
+                return RegisterImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    registered=[RegisteredImageRead(**r) for r in result["registered"]],
+                    failed=[RegisterImageFailure(**f) for f in result["failed"]],
+                )
+            except Exception as e:
+                logger.exception("Failed to register images")
+                return RegisterImagesResponse(status=JsonValues.FAILURE, message=str(e))
+
         @self._app.get(
             "/api/images/{image_path:path}/file",
             response_model=GetFileResponse,
@@ -3758,6 +3835,77 @@ class WebApp:
                 status=JsonValues.SUCCESS,
                 formats=[DatasetExportFormat(**f) for f in EXPORT_FORMATS],
             )
+
+        @self._app.get(
+            "/api/datasets/import-formats",
+            response_model=DatasetExportFormatsResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="list_dataset_import_formats",
+        )
+        async def list_dataset_import_formats() -> DatasetExportFormatsResponse:
+            # Same {id, name, description} shape as the export list, so the two
+            # wizards share one renderer.
+            return DatasetExportFormatsResponse(
+                status=JsonValues.SUCCESS,
+                formats=[DatasetExportFormat(**f) for f in IMPORT_FORMATS],
+            )
+
+        @self._app.post(
+            "/api/datasets/import/archive",
+            response_model=DatasetImportStageResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="stage_dataset_archive",
+        )
+        async def stage_dataset_archive(file: UploadFile = File(...)) -> DatasetImportStageResponse:
+            """Unpack an uploaded .zip/.tar into staging, ready to be inspected.
+
+            Nothing is imported here and nothing is written under FILES_ROOT:
+            the wizard inspects the staged tree first, and the import task is a
+            separate, explicit step.
+            """
+            try:
+                data = await file.read()
+                staging_uuid = await self._manager.stage_dataset_archive(file.filename or "", data)
+                return DatasetImportStageResponse(status=JsonValues.SUCCESS, staging_uuid=staging_uuid)
+            except ValueError as e:
+                return DatasetImportStageResponse(status=JsonValues.FAILURE, message=str(e))
+            except Exception as e:
+                logger.exception("Failed to stage uploaded dataset archive")
+                return DatasetImportStageResponse(status=JsonValues.FAILURE, message=str(e))
+            finally:
+                await file.close()
+
+        @self._app.post(
+            "/api/datasets/import/discard",
+            response_model=StatusResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="discard_dataset_staging",
+        )
+        async def discard_dataset_staging(payload: DatasetImportStagePayload) -> StatusResponse:
+            """Delete a staged upload the user backed out of."""
+            await self._manager.discard_dataset_staging(payload.staging_uuid)
+            return StatusResponse(status=JsonValues.SUCCESS)
+
+        @self._app.post(
+            "/api/datasets/import/detect",
+            response_model=DatasetImportDetectResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="detect_dataset_import",
+        )
+        async def detect_dataset_import(payload: DatasetImportDetectPayload) -> DatasetImportDetectResponse:
+            """Report the format, classes and counts of a folder or staged upload."""
+            try:
+                detected = await self._manager.detect_dataset_import(
+                    path=payload.path,
+                    staging_uuid=payload.staging_uuid,
+                    format=payload.format,
+                )
+                return DatasetImportDetectResponse(status=JsonValues.SUCCESS, **detected)
+            except ValueError as e:
+                return DatasetImportDetectResponse(status=JsonValues.FAILURE, message=str(e))
+            except Exception as e:
+                logger.exception("Failed to inspect dataset for import")
+                return DatasetImportDetectResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/datasets/{uuid}/export",

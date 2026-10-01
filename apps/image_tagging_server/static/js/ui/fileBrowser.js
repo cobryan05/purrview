@@ -2,7 +2,7 @@ import { fetchImageList, createDirectory } from '/app-static/js/shared/api/image
 import { toast } from '/app-static/js/ui/utils/logging.js';
 import { attachFileEntryHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
-import { createUploadControls } from '/app-static/js/ui/imageUpload.js';
+import { createImportControls } from '/app-static/js/ui/importControls.js';
 
 /**
  * @typedef {import('@ui_types').FileNavigation} FileNavigation
@@ -20,10 +20,11 @@ import { createUploadControls } from '/app-static/js/ui/imageUpload.js';
  *   showThumbnails  — enables a grid/list view toggle; image files render as thumbnails.
  *   showDbStatus    — shows a "DB" badge on entries whose uuid is populated from the server.
  *   allowCreateDir  — shows an inline "New Folder" affordance in the toolbar.
- *   allowUpload     — shows an "Import images" affordance in the toolbar, which
- *                     writes files from the user's machine into the CURRENT
- *                     directory's tree (destination is asked for once, then
- *                     remembered as a user setting).
+ *   allowUpload     — shows the import affordances in the toolbar: upload from
+ *                     this computer, import a dataset, set up a collector. The
+ *                     upload half writes files into the CURRENT directory's
+ *                     tree (the destination is asked for once, then remembered
+ *                     as a user setting).
  */
 export class FileBrowser {
   /**
@@ -278,13 +279,13 @@ export class FileBrowser {
       toolbar.appendChild(inputRow);
     }
 
-    // Import affordance. Reads the browser's location at click time (not at
-    // build time) so it follows the user as they navigate — the toolbar is only
-    // rebuilt on a full rerender.
+    // Import affordances. Read the browser's location at click time (not at
+    // build time) so they follow the user as they navigate — the toolbar is
+    // only rebuilt on a full rerender.
     if (this.allowUpload) {
-      toolbar.appendChild(createUploadControls({
+      toolbar.appendChild(createImportControls({
         getCurrentPath: () => this.currentPath,
-        onUploaded: async () => {
+        onChanged: async () => {
           await this.load(this.currentPath);
           await this.onUploaded?.();
         },
