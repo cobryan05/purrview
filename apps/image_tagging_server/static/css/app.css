@@ -2108,6 +2108,17 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   gap: var(--space-2);
 }
 
+/* The Export button and the checkbox that changes what it does. A unit, because the
+   tools row wraps and a checkbox that lands on its own line reads as belonging to
+   whatever sits above it. `flex-wrap: nowrap` keeps the pair together; the row's own
+   wrapping moves them as one. */
+.event-detail__export {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .event-detail__media-tabs {
   display: flex;
   gap: var(--space-1);

@@ -399,6 +399,12 @@ def _mock(
         )
 
     def _fulfil_recordings(route):
+        if "/export" in route.request.url:
+            # The annotated render, which the real endpoint produces with ffmpeg. The
+            # bytes do not matter here; what matters is that the page asked for this URL
+            # rather than the clip, and saved what came back under an annotated name.
+            route.fulfill(status=200, content_type="video/mp4", body=b"annotated-bytes")
+            return
         if "/overlay" in route.request.url:
             # 404 is the ordinary "this clip has no boxes" answer, not an error: clips
             # written before overlays existed have none.
@@ -1227,6 +1233,98 @@ class TestTheDetectionOverlay:
 
         expect(page.locator("[data-testid='event-detail-video']")).to_be_visible()
         expect(page.locator("[data-testid='event-detail-overlay-toggle']")).to_have_count(0)
+
+
+class TestExportingTheVideo:
+    """Taking the video out of the app, with or without the boxes in the picture.
+
+    The two halves are deliberately different mechanisms, and the difference is the
+    point. Unannotated is the file on disk, so it is an anchor with a `download`
+    attribute and nothing is computed. Annotated is a server-side re-encode that does
+    not start arriving until ffmpeg has finished, so it goes through `fetch` and the
+    button has to say it is working.
+    """
+
+    def _open_modal(self, page: Page, base_url: str, **mock_kwargs):
+        _mock(page, playable=True, **mock_kwargs)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']")
+
+    def test_a_clip_with_no_sidecar_can_still_be_exported_but_not_annotated(self, page: Page, base_url: str):
+        """There are no boxes to burn in, so offering the choice would be offering a
+        tick-box that silently does nothing. The plain download stays."""
+        self._open_modal(page, base_url, overlay=None)
+
+        expect(page.locator("[data-testid='event-detail-export-video']")).to_be_visible()
+        expect(page.locator("[data-testid='event-detail-export-annotated']")).to_have_count(0)
+
+    def test_annotations_are_off_until_asked_for(self, page: Page, base_url: str):
+        """Unlike `Show Overlays`, which defaults on: the export costs a re-encode, so
+        the cheap answer is the default one."""
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        expect(page.locator("[data-testid='event-detail-export-annotated']")).not_to_be_checked()
+
+    def test_the_checkbox_sits_on_the_button_it_modifies(self, page: Page, base_url: str):
+        """The tools row wraps, and the checkbox is appended a tick later than the button
+        when the sidecar loads. Appended straight into the row it landed on the next line,
+        reading as a second opinion about the overlay above it rather than as an option on
+        the export."""
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        button = page.locator("[data-testid='event-detail-export-video']").bounding_box()
+        checkbox = page.locator("[data-testid='event-detail-export-annotated']").bounding_box()
+        # Vertical overlap is the test, not equal `y`: the checkbox is shorter than the
+        # button, so they share a line without sharing a top edge.
+        assert checkbox["y"] < button["y"] + button["height"]
+        assert button["y"] < checkbox["y"] + checkbox["height"]
+
+    def test_unticked_downloads_the_clip_as_recorded(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay())
+        expect(page.locator("[data-testid='event-detail-export-annotated']")).to_have_count(1)
+
+        with page.expect_download() as info:
+            page.locator("[data-testid='event-detail-export-video']").click()
+        download = info.value
+
+        # The file endpoint, not the renderer: nothing should be re-encoded to hand back
+        # bytes that already exist on disk.
+        assert f"/api/recordings/{RECORDING_UUID}/file" in download.url
+        assert download.suggested_filename == "a.mp4"
+
+    def test_ticked_downloads_the_burnt_in_render_under_its_own_name(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay())
+        asked = []
+        page.on("request", lambda r: asked.append(r.url))
+
+        page.locator("[data-testid='event-detail-export-annotated']").check()
+        with page.expect_download() as info:
+            page.locator("[data-testid='event-detail-export-video']").click()
+        download = info.value
+
+        assert any(f"/api/recordings/{RECORDING_UUID}/export" in url for url in asked)
+        # Named apart from the clip on purpose: the two files are easy to confuse once
+        # they are side by side in a downloads folder, and only one is safe to annotate.
+        assert download.suggested_filename == "a_annotated.mp4"
+
+    def test_a_failed_render_says_so_and_leaves_the_button_usable(self, page: Page, base_url: str):
+        """A render can fail for reasons the page cannot predict. The one unacceptable
+        outcome is a button stuck on "Rendering…", which reads as a hung app."""
+        self._open_modal(page, base_url, overlay=_overlay())
+        page.route(
+            "**/api/recordings/*/export",
+            lambda route: route.fulfill(
+                status=500, content_type="application/json", body=json.dumps({"detail": "ffmpeg fell over"})
+            ),
+        )
+
+        page.locator("[data-testid='event-detail-export-annotated']").check()
+        page.locator("[data-testid='event-detail-export-video']").click()
+
+        button = page.locator("[data-testid='event-detail-export-video']")
+        expect(button).to_be_enabled()
+        expect(button).to_have_text("Export Video")
 
 
 class TestSavingTheSameFrameTwice:

@@ -511,6 +511,21 @@ export function recordingFileUrl(recordingUuid) {
   return `/api/recordings/${recordingUuid}/file`;
 }
 
+/**
+ * The same clip with the detection overlay composited into the picture.
+ *
+ * Rendered on demand, so this is a download URL and never a `<video>` src: the response
+ * does not start arriving until ffmpeg has finished, and it supports no Range requests.
+ * The clip as recorded needs no endpoint of its own — `recordingFileUrl` already serves
+ * it, and a `download` attribute is enough to save it.
+ *
+ * @param {string} recordingUuid
+ * @returns {string}
+ */
+export function recordingExportUrl(recordingUuid) {
+  return `/api/recordings/${recordingUuid}/export`;
+}
+
 export async function fetchRecordings({ profileUuid, sourceUuid, limit = 100 } = {}) {
   const params = new URLSearchParams();
   if (profileUuid) params.set('profile_uuid', profileUuid);

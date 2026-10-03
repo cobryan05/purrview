@@ -31,6 +31,7 @@ import {
   deleteWatchEvent,
   fetchRecording,
   fetchWatchEvent,
+  recordingExportUrl,
   recordingFileUrl,
   updateWatchEvent,
   watchEventSnapshotUrl,
@@ -417,6 +418,12 @@ export function openEventDetailModal(
   let _fullscreenSyncs = [];
   let saveBtn = null;
   let annotateBtn = null;
+  let exportBtn = null;
+  //: The export button and its checkbox, as one unwrappable unit — see `buildFrameTools`.
+  let exportGroup = null;
+  //: "Include annotations" — only rendered once a sidecar has loaded, so a null here
+  //: means this clip has no overlay and the export is a plain download of the file.
+  let burnBox = null;
   let mediaSwitcher = null;
   //: The recording the media pane is showing, for the one thing the sidecar cannot
   //: say: how much real time a second of it covers — see `playbackTimeScale`.
@@ -783,6 +790,18 @@ export function openEventDetailModal(
     label.appendChild(el('span', null, 'Show Overlays'));
     tools.appendChild(label);
 
+    // Into the export group, not the tools row: this checkbox changes what the Export
+    // button does, and read anywhere else it looks like a second opinion about the
+    // overlay on screen.
+    const burnLabel = el('label', 'event-detail__toggle');
+    burnBox = document.createElement('input');
+    burnBox.type = 'checkbox';
+    burnBox.dataset.testid = 'event-detail-export-annotated';
+    burnLabel.appendChild(burnBox);
+    burnLabel.appendChild(el('span', null, 'Include annotations'));
+    burnLabel.title = 'Composite the boxes into the exported video instead of downloading the clip as recorded.';
+    exportGroup.appendChild(burnLabel);
+
     tools.appendChild(_fullscreenButton());
   }
 
@@ -875,8 +894,17 @@ export function openEventDetailModal(
     tools.dataset.tour = 'eventDetail.frameTools';
     saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
     annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
+    exportBtn = button('Export Video', () => void exportVideo(), { testid: 'event-detail-export-video' });
+    exportBtn.title = 'Download this video. Tick "Include annotations" to burn the boxes into the picture.';
+    // The checkbox that modifies this button arrives later, once the sidecar has loaded,
+    // so it cannot simply be appended next to it: the tools row wraps, and anything
+    // appended in between pushes the two onto separate lines where the tick-box reads as
+    // belonging to whatever ends up above it. They share a group instead.
+    exportGroup = el('div', 'event-detail__export');
+    exportGroup.appendChild(exportBtn);
     tools.appendChild(saveBtn);
     tools.appendChild(annotateBtn);
+    tools.appendChild(exportGroup);
     tools.appendChild(savedHint);
     return tools;
   }
@@ -886,6 +914,67 @@ export function openEventDetailModal(
     overlay?.destroy();
     overlay = null;
     overlayDoc = null;
+    // Goes with them: the checkbox lives in a tools row that is about to be discarded,
+    // and a stale reference would let the export read a tick-box nobody can see.
+    burnBox = null;
+    exportGroup = null;
+  }
+
+  // ---------------------------------------------------------------- export
+
+  /**
+   * Download the open video, with or without the boxes drawn into it.
+   *
+   * Unticked, this is the file on disk and nothing is computed — an anchor with a
+   * `download` attribute, which is also the only form that keeps working for a clip
+   * large enough that holding it in memory would not.
+   *
+   * Ticked, the server re-encodes the clip with the overlay composited in, and the
+   * response does not begin until ffmpeg has finished. That is why this goes through
+   * `fetch` rather than a second anchor: a render takes seconds, and a bare navigation
+   * would give no sign anything was happening and would show a JSON error page if it
+   * failed. The cost is the file passing through memory as a blob, which is the right
+   * trade for clips bounded by the recorder's `max_length_s`.
+   */
+  async function exportVideo() {
+    const recording = currentRecording;
+    if (!recording?.uuid) return;
+    const base = (recording.filePath || '').split('/').pop() || `${recording.kind || 'clip'}-${recording.uuid}.mp4`;
+
+    if (!burnBox?.checked) {
+      const link = document.createElement('a');
+      link.href = recordingFileUrl(recording.uuid);
+      link.download = base;
+      link.click();
+      return;
+    }
+
+    const original = exportBtn.textContent;
+    exportBtn.disabled = true;
+    exportBtn.textContent = 'Rendering…';
+    let url = null;
+    try {
+      const res = await fetch(recordingExportUrl(recording.uuid));
+      if (!res.ok) {
+        // The endpoint answers JSON on failure; a body that is not JSON means something
+        // in front of it failed, and its status is more use than a parse error.
+        const detail = await res.json().catch(() => null);
+        throw new Error(detail?.detail || `Export failed (${res.status})`);
+      }
+      url = URL.createObjectURL(await res.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = base.replace(/\.mp4$/i, '') + '_annotated.mp4';
+      link.click();
+    } catch (err) {
+      toast(err.message || 'Could not export this video', 5000, 'error');
+    } finally {
+      // Revoked on a timer rather than immediately: the click is queued, and revoking
+      // in the same task cancels the download it was for.
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 60000);
+      exportBtn.disabled = false;
+      exportBtn.textContent = original;
+    }
   }
 
   /**

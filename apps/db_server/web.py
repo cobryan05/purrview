@@ -1,8 +1,11 @@
 """Web API for DB Server"""
 
+import json
 import logging
 import mimetypes
+import shutil
 import sys
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 from sqlalchemy.exc import IntegrityError
+from starlette.background import BackgroundTask
 
 from apps.db_server.manager import _THUMB_MEDIA_TYPE, Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
@@ -93,6 +97,7 @@ from apps.helpers.db.types import (
     WatchProfileUpdate,
 )
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.recordings.burnOverlay import burn_overlay_async
 from apps.helpers.training.collectorSpec import collector_params_schema, collector_status_schema
 from apps.helpers.types import (
     Base64Image,
@@ -5779,6 +5784,57 @@ class WebApp:
             if not path.is_file():
                 raise HTTPException(status_code=404, detail="Overlay file is missing on disk")
             return FileResponse(path, media_type="application/json", filename=path.name)
+
+        @self._app.get(
+            "/api/recordings/{uuid}/export",
+            tags=[ApiTags.RECORDINGS],
+            operation_id="export_recording_annotated",
+        )
+        async def export_recording_annotated(uuid: str):
+            """Serve a clip with its detection overlay composited into the picture.
+
+            Only the *annotated* export lives here. Downloading the clip as recorded
+            needs no endpoint at all — `/file` already serves it with range support —
+            so adding a flag to this one would mean a second code path that re-serves
+            what the player is already streaming.
+
+            Rendered per request and deleted once sent. Caching it would mean a second
+            copy of every clip on disk, invalidated by any change to how the overlay is
+            drawn, to save a few seconds on a download nobody does twice.
+            """
+            recording = await self._manager.get_recording(uuid)
+            if recording is None or not recording.file_path:
+                raise HTTPException(status_code=404, detail="Recording not found")
+            clip = Path(recording.file_path)
+            if not clip.is_file():
+                raise HTTPException(status_code=404, detail="Recording file is missing on disk")
+            if not recording.overlay_path or not Path(recording.overlay_path).is_file():
+                # 404 rather than 400: the caller asked for a representation this clip
+                # does not have, and the UI only offers the annotated export when the
+                # player found an overlay to draw.
+                raise HTTPException(status_code=404, detail="Recording has no overlay to burn in")
+
+            try:
+                doc = json.loads(Path(recording.overlay_path).read_text())
+            except (OSError, ValueError) as e:
+                raise HTTPException(status_code=500, detail=f"Overlay is unreadable: {e}")
+
+            work = Path(tempfile.mkdtemp(prefix="recording-export-"))
+            dest = work / f"{clip.stem}_annotated.mp4"
+            try:
+                await burn_overlay_async(clip, doc, dest)
+            except Exception as e:
+                shutil.rmtree(work, ignore_errors=True)
+                logger.error(e, exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Could not render the annotated clip: {e}")
+            # Deleted after the body has been sent, not before: FileResponse streams
+            # from the path, so unlinking on the way out truncates the download.
+            return FileResponse(
+                dest,
+                media_type="video/mp4",
+                filename=dest.name,
+                background=BackgroundTask(shutil.rmtree, work, ignore_errors=True),
+            )
 
     def _register_model_group_routes(self) -> None:
         @self._app.get(
