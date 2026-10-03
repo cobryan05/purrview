@@ -2329,6 +2329,28 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   margin-top: var(--space-2);
 }
 
+/* The cross-event switch review queue. Wider than the single-blip compare: the two
+   crops carry the decision, and the queue only adds a line of provenance above them. */
+.blip-queue {
+  width: var(--modal-w-lg, 44rem);
+}
+
+.blip-queue__claim {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.blip-queue__todo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border);
+}
+
 /* Dark text, unlike the media badges: the warning token is a light yellow, and the
    inherited #fff would put white on it. */
 .event-card__badge--blips {

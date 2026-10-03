@@ -21,6 +21,16 @@ import {
   setWatchEventReviewStates,
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
+import { fetchEventBlips } from '/app-static/js/shared/api/eventBlips.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import {
+  KIND_IDENTITY_SWITCH,
+  blipKindText,
+  harvestBlocker,
+  switchReviewable,
+} from '/app-static/js/shared/domain/blips.js';
+import { startHarvest } from './harvestRun.js';
+import { openSwitchReviewQueue } from './switchReviewQueue.js';
 import { Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
 import { buildEventCard } from './eventCard.js';
@@ -93,6 +103,22 @@ const SESSION_GAP_OPTIONS = [
   [600, 'Group repeats within 10 min'],
   [900, 'Group repeats within 15 min'],
 ];
+
+/**
+ * Event uuids per blips request.
+ *
+ * A group selection resolves into however many events are behind it, and each uuid is
+ * a query parameter — so the requests are chunked rather than one URL per selection.
+ */
+const FINDINGS_CHUNK = 100;
+
+/**
+ * Most findings one bulk action will act on.
+ *
+ * Mirrors `HarvestBlipFramesTask._SANITY_MAX_BLIPS`: past it the task refuses the run,
+ * and saying so before the confirm is better than after the launch.
+ */
+const MAX_BULK_FINDINGS = 2000;
 
 /** The triage states offered in bulk, as `[value, button label]`. */
 const REVIEW_ACTIONS = [
@@ -633,6 +659,19 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   selectionActions.appendChild(button('Unpin', () => void applyPinned(false), {
     testid: 'event-search-unpin',
   }));
+  // Before delete, after triage: these two are the reason a selection gets made in the
+  // first place, and both are additive — nothing is written to the dataset by either
+  // until a preview run is applied.
+  const harvestBtn = button('Harvest findings…', () => void harvestSelected(), {
+    testid: 'event-search-harvest',
+  });
+  harvestBtn.title = 'Pull training frames from every harvestable tracking finding in the selection.';
+  selectionActions.appendChild(harvestBtn);
+  const switchesBtn = button('Review identity switches…', () => void reviewSwitchesSelected(), {
+    testid: 'event-search-review-switches',
+  });
+  switchesBtn.title = 'Walk the identity switches in the selection, comparing a frame either side of each.';
+  selectionActions.appendChild(switchesBtn);
   selectionActions.appendChild(deleteBtn);
   selectionActions.appendChild(button('Clear selection', () => {
     selected.clear();
@@ -783,6 +822,153 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       Logger.error(err);
       toast(err.message || 'Could not update those events', 5000, 'error');
     }
+  }
+
+  /**
+   * The events the selection covers, as rows rather than uuids.
+   *
+   * Both findings actions need the rows: the switch queue date-stamps each item from
+   * its event, and a group key cannot say when or where anything happened.
+   */
+  async function eventsForSelection() {
+    if (view === 'all') return pageEvents.filter(e => selected.has(e.uuid));
+    return eventsForSelectedGroups();
+  }
+
+  /**
+   * Run a selection-bar action that has to resolve something first, with the button
+   * saying so. Returns null when it failed, having already said why.
+   */
+  async function withBusy(btn, label, fn) {
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+    try {
+      return await fn();
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not read the findings for that selection', 5000, 'error');
+      return null;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }
+
+  /** Every finding on a set of events, worst first. */
+  async function blipsForEvents(eventUuids, params = {}) {
+    const chunks = [];
+    for (let i = 0; i < eventUuids.length; i += FINDINGS_CHUNK) {
+      chunks.push(eventUuids.slice(i, i + FINDINGS_CHUNK));
+    }
+    const pages = await Promise.all(chunks.map(chunk => fetchEventBlips({
+      eventUuids: chunk,
+      limit: MAX_BULK_FINDINGS,
+      ...params,
+    })));
+    const blips = [];
+    for (const page of pages) blips.push(...page.blips);
+    // Each chunk came back severity-ordered; the merge has to re-impose it, or "worst
+    // first" would mean "worst within whichever hundred events happened to be chunked
+    // together".
+    return blips.sort((a, b) => (b.severity ?? 0) - (a.severity ?? 0));
+  }
+
+  /** `4 × identity flip, 2 × merged while overlapping` — most numerous first. */
+  function kindBreakdown(blips) {
+    const counts = new Map();
+    for (const blip of blips) counts.set(blip.kind, (counts.get(blip.kind) ?? 0) + 1);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([kind, n]) => `${n} × ${blipKindText(kind)}`)
+      .join(', ');
+  }
+
+  /**
+   * Harvest every harvestable finding in the selection, in one run.
+   *
+   * The breakdown is in the confirm rather than on the button for two reasons: a card's
+   * `⚠ N` badge counts identity switches too, so the number on screen is not the number
+   * this harvests, and resolving it eagerly would cost a request per selection change.
+   */
+  async function harvestSelected() {
+    const events = await withBusy(harvestBtn, 'Loading events…', eventsForSelection);
+    if (!events?.length) return;
+    const blips = await withBusy(harvestBtn, 'Reading findings…', async () => (
+      await blipsForEvents(events.map(e => e.uuid), { harvestable: true })
+    ).filter(b => harvestBlocker(b) === null));
+    if (!blips) return;
+    if (!blips.length) {
+      toast(
+        `Nothing to harvest in ${events.length} event${events.length === 1 ? '' : 's'} — `
+        + 'their findings are already harvested, dismissed, or the tracker\'s own fault',
+        5000,
+      );
+      return;
+    }
+    if (blips.length > MAX_BULK_FINDINGS) {
+      toast(`${blips.length} findings is more than one run takes — narrow the selection`, 5000, 'error');
+      return;
+    }
+
+    const eventsWithFindings = new Set(blips.map(b => b.eventUuid)).size;
+    const confirmed = await showConfirmModal({
+      title: `Harvest ${blips.length} finding${blips.length === 1 ? '' : 's'}?`,
+      message: `${kindBreakdown(blips)} — across ${eventsWithFindings} of the `
+        + `${events.length} event${events.length === 1 ? '' : 's'} selected. `
+        + 'Three frames are pulled from each incident and land in a preview run with a '
+        + 'suggested box. Nothing joins the dataset until you apply that run.',
+      confirmText: 'Harvest',
+      cancelText: 'Cancel',
+    });
+    if (!confirmed) return;
+
+    await withBusy(harvestBtn, 'Starting…', async () => {
+      await startHarvest({
+        blipUuids: blips.map(b => b.uuid),
+        name: `Blip frames · ${eventsWithFindings} event${eventsWithFindings === 1 ? '' : 's'}`,
+      });
+      // Deliberately not cleared: the harvest marks its blips itself when frames land,
+      // and a refresh after the run is what moves the badges. Keeping the selection
+      // means the switch review beside it still has something to act on.
+      await search();
+    });
+  }
+
+  /**
+   * Walk the selection's identity switches, one before/after compare at a time.
+   *
+   * A separate action from the harvest because it is a separate question. Every switch
+   * is a tracker fault, so none of its frames are training data; what it needs is a
+   * person saying whether the watcher confused two animals.
+   */
+  async function reviewSwitchesSelected() {
+    const events = await withBusy(switchesBtn, 'Loading events…', eventsForSelection);
+    if (!events?.length) return;
+    const blips = await withBusy(switchesBtn, 'Reading findings…', async () => (
+      await blipsForEvents(events.map(e => e.uuid), { kinds: [KIND_IDENTITY_SWITCH] })
+    ).filter(switchReviewable));
+    if (!blips) return;
+    if (!blips.length) {
+      toast(
+        `No identity switches left to review in ${events.length} event${events.length === 1 ? '' : 's'}`,
+        4000,
+      );
+      return;
+    }
+
+    const labels = await fetchLabels().catch(() => new Map());
+    openSwitchReviewQueue({
+      blips,
+      labels,
+      events: new Map(events.map(e => [e.uuid, e])),
+      sourceNames,
+      onOpenEvent: (eventUuid) => {
+        const event = events.find(e => e.uuid === eventUuid);
+        if (event) openEventDetailModal(event, { sourceNames, onDeleted: () => void search() });
+      },
+      onFinished: () => void search(),
+    });
   }
 
   async function deleteSelected() {

@@ -14,6 +14,15 @@
  * and showing "unknown" would hide it.
  */
 
+/**
+ * The one kind the UI branches on by name.
+ *
+ * `identity_switch` is attributed to the tracker and never harvested, so it gets a
+ * before/after compare — "was this the same animal, or a real identity change?" —
+ * where every other kind gets a harvest checkbox.
+ */
+export const KIND_IDENTITY_SWITCH = 'identity_switch';
+
 /** Human-readable names for the blip kinds the analyser emits. */
 export const BLIP_KIND_TEXT = {
   identity_flip: 'identity flip',
@@ -101,4 +110,22 @@ export function harvestBlocker(blip) {
       : 'these frames are diagnostic only';
   }
   return null;
+}
+
+/**
+ * Whether an `identity_switch` still has a question worth asking.
+ *
+ * Shared by the per-event panel and the cross-event queue so one rule decides what
+ * counts as pending: a switch already decided is not re-offered, and an expired one has
+ * no frames left to compare. `harvestBlocker` cannot answer this — every switch is
+ * unharvestable by construction, which is exactly why it needs its own review.
+ *
+ * @param {Object} blip
+ * @returns {boolean}
+ */
+export function switchReviewable(blip) {
+  return blip?.kind === KIND_IDENTITY_SWITCH
+    && blip?.state !== 'dismissed'
+    && blip?.state !== 'harvested'
+    && blip?.state !== 'expired';
 }

@@ -5413,6 +5413,7 @@ class WebApp:
         async def list_event_blips(
             uuids: Optional[List[str]] = Query(default=None),
             event_uuid: Optional[str] = None,
+            event_uuids: Optional[List[str]] = Query(default=None),
             recording_uuid: Optional[str] = None,
             kinds: Optional[List[str]] = Query(default=None),
             states: Optional[List[str]] = Query(default=None),
@@ -5424,6 +5425,7 @@ class WebApp:
                 blips, total = await self._manager.list_event_blips(
                     uuids=uuids,
                     event_uuid=event_uuid,
+                    event_uuids=event_uuids,
                     recording_uuid=recording_uuid,
                     kinds=kinds,
                     states=states,

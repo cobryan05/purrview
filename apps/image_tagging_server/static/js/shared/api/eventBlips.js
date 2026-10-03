@@ -17,6 +17,8 @@ import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
  *
  * @param {Object} [opts]
  * @param {?string} [opts.eventUuid]
+ * @param {string[]} [opts.eventUuids] - a whole selection's worth in one request. AND-ed
+ *   with `eventUuid`, so pass one or the other, never both.
  * @param {?string} [opts.recordingUuid]
  * @param {string[]} [opts.uuids] - fetch specific blips, e.g. to re-read after a run
  * @param {string[]} [opts.kinds]
@@ -28,6 +30,7 @@ import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
  */
 export async function fetchEventBlips({
   eventUuid = null,
+  eventUuids = null,
   recordingUuid = null,
   uuids = null,
   kinds = null,
@@ -38,6 +41,7 @@ export async function fetchEventBlips({
 } = {}) {
   const params = new URLSearchParams();
   if (eventUuid) params.set('event_uuid', eventUuid);
+  for (const uuid of eventUuids || []) params.append('event_uuids', uuid);
   if (recordingUuid) params.set('recording_uuid', recordingUuid);
   for (const uuid of uuids || []) params.append('uuids', uuid);
   for (const kind of kinds || []) params.append('kinds', kind);

@@ -296,12 +296,17 @@ def _mock(
     playable=False,
     crop_previews=None,
     labels=None,
+    blip_queries=None,
 ):
     """Route every call the Events page makes, and record the search queries.
 
     Returns the list of parsed query dicts, so a test can assert that a filter actually
     reached the server rather than merely appearing on screen. Pass `deletes` a list to
     also capture the uuid batches sent to the bulk-delete endpoint.
+
+    Pass `blip_queries` a list to capture the parsed query of every blip *listing*
+    request, which is how a test asserts that a bulk action scoped itself to the
+    selection rather than to the whole page.
 
     `blips` defaults to none found. It is routed unconditionally rather than only when a
     test asks for it: the detail modal now fetches them for every event it opens, and an
@@ -523,6 +528,8 @@ def _mock(
         # real endpoint would answer, rather than a mock that always returns everything
         # and would silently hide a regression in either filter.
         query = parse_qs(urlparse(url).query)
+        if blip_queries is not None:
+            blip_queries.append(query)
         harvestable_param = query.get("harvestable", [None])[0]
         kinds_param = query.get("kinds")
         rows = rows_blips
@@ -1663,6 +1670,192 @@ class TestSelectingEvents:
 
         expect(page.locator("[data-testid='event-card']")).to_have_count(4)
         assert deletes == []
+
+
+class TestBulkHarvestFromTheGrid:
+    """Harvesting a night's findings without opening a single event.
+
+    The per-event panel is the right place to judge one clip; a page of sixty events is
+    sixty modals for one repeated decision. What has to hold here is that the bulk
+    action is *narrower* than the selection looks — a card's badge counts identity
+    switches too, and harvesting those would pad the training set with frames the
+    detector already got right.
+    """
+
+    def _open(self, page: Page, base_url: str, blips, count: int = 3, **mock_kwargs):
+        _mock(page, events=_events(count), blips=blips, **mock_kwargs)
+        _open_events_pane(page, base_url)
+        expect(page.locator("[data-testid='event-card']")).to_have_count(count)
+
+    def _mock_launch(self, page: Page, calls: list):
+        def handle_create(route):
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "tc-harvest-bulk"}),
+            )
+
+        page.route("**/api/tasks/configs/create", handle_create)
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-harvest-bulk"}),
+            ),
+        )
+
+    def test_the_confirm_counts_the_harvestable_findings_not_every_finding(self, page: Page, base_url: str):
+        """The number on the card and the number this acts on are different numbers. A
+        confirm that repeated the badge would promise frames from a tracker fault, which
+        the task then refuses — after the user has already agreed to it."""
+        self._open(
+            page,
+            base_url,
+            blips=[
+                _blip(),
+                _blip(uuid="blip-uuid-0002", kind="identity_switch", fault="tracker", harvestable=False),
+            ],
+        )
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-harvest']").click()
+
+        dialog = page.locator("[data-testid='modal-shell-dialog']")
+        expect(dialog).to_contain_text("Harvest 1 finding?")
+        expect(dialog).to_contain_text("identity flip")
+        expect(dialog).not_to_contain_text("identity switch")
+
+    def test_a_selection_whose_findings_are_all_tracker_faults_offers_no_harvest(self, page: Page, base_url: str):
+        """The negative half, and the one that carries the weight: a confirm dialog
+        proposing zero frames is a dialog that should never have opened."""
+        self._open(
+            page,
+            base_url,
+            blips=[_blip(kind="identity_switch", fault="tracker", harvestable=False)],
+        )
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-harvest']").click()
+
+        expect(page.locator("[data-testid='modal-shell-dialog']")).to_have_count(0)
+        expect(page.locator("#toast-container")).to_contain_text("Nothing to harvest")
+
+    def test_findings_are_read_for_the_selected_events_only(self, page: Page, base_url: str):
+        """The scope of the whole feature. A dropped filter answers with the unfiltered
+        table, so the harvest would quietly reach every event on the page — which looks
+        identical on screen and is only discoverable by the frames that turn up."""
+        blip_queries = []
+        self._open(page, base_url, blips=[_blip()], blip_queries=blip_queries)
+        boxes = page.locator("[data-testid='event-card-select']")
+
+        boxes.nth(0).check()
+        boxes.nth(2).check()
+        page.locator("[data-testid='event-search-harvest']").click()
+        expect(page.locator("[data-testid='modal-shell-dialog']")).to_contain_text("Harvest")
+
+        listings = [q for q in blip_queries if "event_uuids" in q]
+        assert listings, blip_queries
+        assert listings[-1]["event_uuids"] == ["event-uuid-0000", "event-uuid-0002"], listings[-1]
+
+    def test_the_launched_run_carries_every_selected_events_findings(self, page: Page, base_url: str):
+        """One run for the whole selection, not one per event: the task groups its work
+        by recording, so splitting it per event would re-open the same clip repeatedly."""
+        calls = []
+        self._mock_launch(page, calls)
+        self._open(
+            page,
+            base_url,
+            blips=[
+                _blip(),
+                _blip(uuid="blip-uuid-0002", eventUuid="event-uuid-0001", startS=4.0, endS=6.0),
+            ],
+        )
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-harvest']").click()
+        page.get_by_role("button", name="Harvest", exact=True).click()
+
+        wait_until(page, lambda: len(calls) >= 1, "the harvest never reached the task API")
+        params = calls[0]["params"]
+        assert sorted(params["blip_uuids"]) == ["blip-uuid-0001", "blip-uuid-0002"], params
+
+
+class TestTheSwitchReviewQueue:
+    """Identity switches, decided across a selection rather than one event at a time.
+
+    A switch is the one tracker-fault finding with a question behind it, and the
+    question takes one look at two crops. The queue exists so that look costs a
+    keystroke instead of a navigation — and so that only the findings actually decided
+    are written, since a queue that dismissed everything it *showed* would silently
+    settle the ones the reviewer skipped.
+    """
+
+    def _open_queue(self, page: Page, base_url: str, blips, count: int = 2, **mock_kwargs):
+        _mock(page, events=_events(count), blips=blips, **mock_kwargs)
+        _open_events_pane(page, base_url)
+        expect(page.locator("[data-testid='event-card']")).to_have_count(count)
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-review-switches']").click()
+
+    @staticmethod
+    def _switch(**overrides) -> dict:
+        return _blip(kind="identity_switch", fault="tracker", harvestable=False, **overrides)
+
+    def test_the_queue_walks_the_switches_and_states_its_position(self, page: Page, base_url: str):
+        self._open_queue(
+            page,
+            base_url,
+            blips=[self._switch(), self._switch(uuid="blip-uuid-0002", eventUuid="event-uuid-0001")],
+        )
+
+        expect(page.locator("[data-testid='blip-queue-progress']")).to_contain_text("1 of 2")
+        page.locator("[data-testid='blip-queue-glitch']").click()
+        expect(page.locator("[data-testid='blip-queue-progress']")).to_contain_text("2 of 2")
+
+    def test_only_the_findings_decided_are_written(self, page: Page, base_url: str):
+        """Skip is the assertion. A queue that settled every item it displayed would
+        look identical walking forwards and would quietly close findings nobody judged."""
+        states = []
+
+        def capture(route):
+            states.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "updated": 1}),
+            )
+
+        self._open_queue(
+            page,
+            base_url,
+            blips=[self._switch(), self._switch(uuid="blip-uuid-0002", eventUuid="event-uuid-0001")],
+        )
+        page.route(re.compile(r"/api/event-blips/states"), capture)
+
+        page.locator("[data-testid='blip-queue-glitch']").click()
+        page.locator("[data-testid='blip-queue-skip']").click()
+
+        expect(page.locator("[data-testid='blip-queue-done']")).to_be_visible()
+        assert [s["uuids"] for s in states] == [["blip-uuid-0001"]], states
+
+    def test_a_real_identity_change_is_kept_and_listed_to_correct(self, page: Page, base_url: str):
+        """The outcome that is not a dismissal. Correcting labels is event-scoped, so
+        the queue records which events need it rather than opening that flow mid-walk."""
+        self._open_queue(page, base_url, blips=[self._switch()], count=1)
+
+        page.locator("[data-testid='blip-queue-real']").click()
+
+        expect(page.locator("[data-testid='blip-queue-todo']")).to_have_count(1)
+        expect(page.locator("[data-testid='blip-queue-todo-open']")).to_be_visible()
+
+    def test_a_selection_with_nothing_pending_opens_no_queue(self, page: Page, base_url: str):
+        """A switch already dismissed is not a question any more."""
+        self._open_queue(page, base_url, blips=[self._switch(state="dismissed")], count=1)
+
+        expect(page.locator("[data-testid='blip-queue-modal']")).to_have_count(0)
+        expect(page.locator("#toast-container")).to_contain_text("No identity switches")
 
 
 class TestWalkingTheEventsFromTheModal:

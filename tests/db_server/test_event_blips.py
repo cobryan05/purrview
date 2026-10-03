@@ -162,6 +162,39 @@ class TestFilteringAndOrder:
         assert (await _list(http_client, event_uuid=event_uuid))["total"] == 2
 
 
+class TestSelectingSeveralEvents:
+    """The filter the bulk surfaces run on. A misspelt or ignored param answers with the
+    *unfiltered* table, so the failure mode is a harvest that silently reaches events the
+    user never selected."""
+
+    async def test_only_the_named_events_come_back(self, http_client):
+        profile = await _make_profile(http_client)
+        picked = [await _make_event(http_client, profile) for _ in range(2)]
+        left_out = await _make_event(http_client, profile)
+        for event in [*picked, left_out]:
+            await _replace(http_client, event, [_blip()])
+
+        body = await _list(http_client, event_uuids=picked)
+
+        assert body["total"] == 2
+        assert {b["eventUuid"] for b in body["blips"]} == set(picked)
+
+    async def test_harvestable_still_narrows_within_the_selection(self, http_client):
+        profile = await _make_profile(http_client)
+        first = await _make_event(http_client, profile)
+        second = await _make_event(http_client, profile)
+        await _replace(http_client, first, [_blip(kind="identity_flip")])
+        await _replace(
+            http_client,
+            second,
+            [_blip(kind="identity_switch", fault="tracker", harvestable=False)],
+        )
+
+        body = await _list(http_client, event_uuids=[first, second], harvestable=True)
+
+        assert [b["eventUuid"] for b in body["blips"]] == [first]
+
+
 class TestTriageState:
     async def test_moving_a_selection_reports_how_many_moved(self, http_client, event_uuid):
         created = await _replace(http_client, event_uuid, [_blip(), _blip(track_id=9)])

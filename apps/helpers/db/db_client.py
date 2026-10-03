@@ -8812,6 +8812,7 @@ class DbClient:
         self,
         uuids: Optional[Sequence[str]] = None,
         event_uuid: Optional[str] = None,
+        event_uuids: Optional[Sequence[str]] = None,
         recording_uuid: Optional[str] = None,
         kinds: Optional[Sequence[str]] = None,
         states: Optional[Sequence[str]] = None,
@@ -8824,6 +8825,11 @@ class DbClient:
         Ordered by severity descending rather than by time, because severity here means
         "how sure the detector was about what it got wrong" — so the most valuable
         training data sorts to the top of the queue rather than merely the earliest.
+
+        `event_uuid` and `event_uuids` intersect rather than union: both are AND-ed into
+        the query, so passing a singular uuid outside a plural list matches nothing. The
+        plural form exists for the bulk surfaces, which resolve a whole page of selected
+        events in one request instead of one request per card.
         """
         async with self._async_session_maker() as session:
             stmt = select(EventBlip)
@@ -8831,6 +8837,8 @@ class DbClient:
                 stmt = stmt.where(EventBlip.uuid.in_(list(uuids)))
             if event_uuid:
                 stmt = stmt.where(EventBlip.event_uuid == event_uuid)
+            if event_uuids:
+                stmt = stmt.where(EventBlip.event_uuid.in_(list(event_uuids)))
             if recording_uuid:
                 stmt = stmt.where(EventBlip.recording_uuid == recording_uuid)
             if kinds:
