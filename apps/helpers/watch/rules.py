@@ -383,6 +383,11 @@ def evaluate_predicate(
                     target_ref=None,
                     score=t.confidence,
                     confidence=t.confidence,
+                    # Explicit because the field defaults to True: the event layer
+                    # reads it to tell one body under two ids from two bodies, and a
+                    # coasting track must not look like a fresh detection.
+                    matched=bool(getattr(t, "matched_this_update", True)),
+                    first_seen=float(getattr(t, "first_seen", 0.0) or 0.0),
                 )
                 for t in firing
             ],
@@ -810,7 +815,14 @@ class RuleMachine:
         verdict that they are one body carried by two ids, which is the case adoption is
         for; recording those as rivals would make `_disown_rival_tracks` throw away the
         very association that found them.
+
+        Matched clusters only. Two tracks are two objects by the tracker's own verdict
+        only where it had a separate detection for each; an unmatched cluster is coasting
+        on a frozen box where the body used to be, so pairing it with the id that
+        replaced it files one body as two. The record is permanent, so that split never
+        heals.
         """
+        clusters = [cluster for cluster in clusters if cluster.matched]
         if len(clusters) < 2:
             return
         for index, cluster in enumerate(clusters):
@@ -962,19 +974,39 @@ class RuleMachine:
            another it is still ACTIVE — and keying on CLOSING let exactly that mint a
            second event, observed live as three overlapping `Maple Present` cards.
 
+           Absent counts only *matched* tracks. The tracker does not predict motion, so a
+           dropped track coasts on a frozen box for its whole TTL; counting that as the
+           subject being present withholds the one instance the returning body could have
+           adopted, for as long as the ghost outlives the gap.
+
            Bounded by coexistence as well as by group: a cluster whose tracks have shared
            a frame with the instance's is a second object, not its subject returning.
         4. **Nothing** — a genuinely new object, unless the machine is at its cap, in
            which case it joins its nearest neighbour rather than being dropped.
 
+        An unmatched cluster carrying track ids is exempt from rule 4: it may feed an
+        event it already belongs to, so a brief dropout does not start the rearm
+        countdown, but it may never open one. A ghost whose event has moved on is the
+        residue of a body already accounted for elsewhere in the frame, and minting an
+        instance for it turns one dropout into a second card.
+
+        A *trackless* cluster is not a ghost and keeps rule 4. It is what a `motion` rule
+        produces — pixels and a zone, no track to be unmatched — and `MatchCluster.matched`
+        is False there only because nothing ever absorbed a match into it.
+
         One instance per cluster per frame: a claimed instance is withdrawn from the pool
         so two objects can never collapse into one event by both matching it.
         """
         available = list(self._instances.values())
-        present = {track_id for cluster in clusters for track_id in cluster.track_ids}
+        present = {track_id for cluster in clusters if cluster.matched for track_id in cluster.track_ids}
         pairs: List[Tuple[MatchCluster, Optional[_EventInstance]]] = []
-        for cluster in clusters:
+        # Matched clusters choose first. A coasting cluster still carries the open event's
+        # track id, so left to frame order it claims that event by rule 1 and the re-found
+        # body has nothing left to adopt.
+        for cluster in sorted(clusters, key=lambda cluster: not cluster.matched):
             match = self._claim(cluster, available, present)
+            if match is None and cluster.track_ids and not cluster.matched:
+                continue
             if match is not None:
                 available.remove(match)
             pairs.append((cluster, match))

@@ -1546,6 +1546,106 @@ class TestOneEventPerSubject:
         assert len(hints) == 1, "one rule, one piece of advice — not one per cat"
 
 
+class TestACoastingTrackIsNotASecondObject:
+    """A track the tracker did not match this frame is not evidence of a second body.
+
+    No tracker here predicts motion, so a dropped track coasts on a frozen box for the
+    whole of its TTL while the body walks on. When the detector finds it again the new id
+    overlaps the ghost not at all, and three separate guards used to read that ghost as a
+    rival object: it claimed the open event by shared track id, it counted as the
+    subject being "present" so adoption was refused, and `_record_coexistence` filed the
+    two ids as provably distinct — permanently, so the split could never heal.
+
+    One person crossing a porch through two dropouts therefore produced four cards.
+    """
+
+    LEFT = (0, 0, 100, 100)
+    MIDDLE = (300, 300, 400, 400)
+    RIGHT = (600, 600, 700, 700)
+
+    def _spec(self, **overrides):
+        kwargs = dict(
+            relation="present",
+            subject_a_refs=[CAT_A],
+            subject_b_kind="none",
+            subject_b_refs=[],
+            threshold=0.6,
+            min_duration_s=1.0,
+            rearm_delay_s=10.0,
+            max_duration_s=0.0,
+        )
+        kwargs.update(overrides)
+        return _rule(**kwargs)
+
+    def _drive(self, spec, frames):
+        machine = RuleMachine(spec, source_uuid="src-1")
+        emitted = []
+        for now, tracks in frames:
+            emitted.extend(machine.step(evaluate_predicate(spec, tracks, ALL_ZONES, FRAME_W, FRAME_H), now))
+        return machine, emitted
+
+    def _ghost(self, track_id, bbox, first_seen=0.0):
+        return _track(track_id=track_id, bbox=bbox, label=CAT_A, matched=False, first_seen=first_seen)
+
+    def _seen(self, track_id, bbox, first_seen=0.0):
+        return _track(track_id=track_id, bbox=bbox, label=CAT_A, matched=True, first_seen=first_seen)
+
+    def test_a_dropout_that_moves_the_body_still_opens_one_event(self):
+        spec = self._spec()
+        frames = [(0.0, [self._seen(1, self.LEFT)]), (1.5, [self._seen(1, self.LEFT)])]
+        # The detector loses it. Track 1 coasts on the box it last had.
+        frames += [(2.0, [self._ghost(1, self.LEFT)]), (3.0, [self._ghost(1, self.LEFT)])]
+        # Found again, well away from the frozen ghost, so the tracker mints a new id.
+        frames += [(t, [self._ghost(1, self.LEFT), self._seen(2, self.RIGHT, first_seen=3.5)]) for t in (3.5, 4.5)]
+        frames += [(5.5, [self._seen(2, self.RIGHT, first_seen=3.5)])]
+
+        _, emitted = self._drive(spec, frames)
+        assert len(self._starts(emitted)) == 1, "one body through one dropout is one event"
+
+    def test_a_second_dropout_still_does_not_split_the_event(self):
+        """The coexistence record is permanent, so poisoning it once is forever."""
+        spec = self._spec()
+        frames = [(0.0, [self._seen(1, self.LEFT)]), (1.5, [self._seen(1, self.LEFT)])]
+        frames += [(t, [self._ghost(1, self.LEFT), self._seen(2, self.MIDDLE, first_seen=2.5)]) for t in (2.5, 3.5)]
+        frames += [(4.5, [self._seen(2, self.MIDDLE, first_seen=2.5)])]
+        frames += [(t, [self._ghost(2, self.MIDDLE), self._seen(3, self.RIGHT, first_seen=5.5)]) for t in (5.5, 6.5)]
+        frames += [(7.5, [self._seen(3, self.RIGHT, first_seen=5.5)])]
+
+        _, emitted = self._drive(spec, frames)
+        assert len(self._starts(emitted)) == 1, "two dropouts, one body, still one event"
+
+    def test_an_unmatched_track_still_feeds_the_event_it_belongs_to(self):
+        """A ghost may not open an event, but it must keep its own one alive.
+
+        Suppressing it outright would start the rearm countdown on every dropout, which
+        ends the event early and hands the body back as a fresh arrival.
+        """
+        spec = self._spec(rearm_delay_s=10.0)
+        frames = [(0.0, [self._seen(1, self.LEFT)]), (1.5, [self._seen(1, self.LEFT)])]
+        frames += [(t, [self._ghost(1, self.LEFT)]) for t in (2.0, 3.0, 4.0)]
+        frames += [(5.0, [self._seen(1, self.LEFT)])]
+
+        machine, emitted = self._drive(spec, frames)
+        assert len(self._starts(emitted)) == 1
+        assert self._ends(emitted) == [], "a dropout inside the rearm window must not end the event"
+        assert machine.state is RuleState.ACTIVE
+
+    def test_a_ghost_alone_in_the_frame_opens_nothing(self):
+        """Nothing was ever matched, so there is no object to open an event about."""
+        spec = self._spec()
+        frames = [(t, [self._ghost(9, self.LEFT)]) for t in (0.0, 1.5, 3.0)]
+        _, emitted = self._drive(spec, frames)
+        assert emitted == []
+
+    @staticmethod
+    def _starts(emitted):
+        return [s for s in emitted if s.phase is EventPhase.START]
+
+    @staticmethod
+    def _ends(emitted):
+        return [s for s in emitted if s.phase is EventPhase.END]
+
+
 class TestTwoSubjectsInOneZoneKeepSeparateEvents:
     """Two cars in one garage are two events, however alike the detector thinks they are.
 
