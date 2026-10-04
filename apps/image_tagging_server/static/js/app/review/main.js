@@ -3728,6 +3728,13 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     _updateNavButtons = () => {
       prevBtn.disabled = _navIndex <= 0 && !navContext.canLoadPage?.(-1);
       nextBtn.disabled = _navIndex >= navContext.items.length - 1 && !navContext.canLoadPage?.(1);
+      // The nav position, published only once a load has settled: this runs on open and
+      // in the nav handler's `finally`, never between the index moving and the image
+      // arriving. Two consecutive entries can share an image, so the title does not
+      // change on every step and there is otherwise nothing observable to wait for —
+      // which is why the hotkey tests used to sleep for a fixed 600ms and drop the
+      // keypress that followed it under load.
+      dialog.dataset.navIndex = String(_navIndex);
     };
     _updateNavButtons();
     prevBtn.addEventListener('click', () => prev_image(instance.runtime));

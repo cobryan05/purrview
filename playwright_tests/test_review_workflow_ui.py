@@ -2315,7 +2315,25 @@ class TestCanvasModalHotkeys:
         expect(modal).to_be_visible(timeout=8000)
         # Wait for the sidebar/inference panels, i.e. the fully-wired modal.
         expect(modal.locator("button[data-toolbar-key='bbox']")).to_be_enabled(timeout=8000)
+        # ...and then for file navigation, which is wired a further ~300ms later: the
+        # step buttons are display:none until `setFileNavigation` has run, so their
+        # visibility is the signal that `[`/`]` can do anything at all. Without this the
+        # first `]` lands before `runtime.fileNavigation` exists and `next_image` returns
+        # at its first line — silently, which is what made these tests fail "because the
+        # modal never navigated" on 2 of 3 runs.
+        expect(modal.get_by_test_id("canvas-edit-modal-next")).to_be_visible(timeout=8000)
         return modal
+
+    @staticmethod
+    def _settled_on(modal, index: int):
+        """Wait until the modal has finished loading nav entry `index`.
+
+        `data-nav-index` is stamped in the nav handler's `finally`, so it moves only once
+        the image load behind a `]` has resolved. Waiting on it is what makes a second
+        keypress safe; the title cannot serve here because entries 0 and 1 are both on
+        image1, so the first `]` changes no text at all.
+        """
+        expect(modal.get_by_test_id("canvas-edit-modal-dialog")).to_have_attribute("data-nav-index", str(index))
 
     def test_tool_hotkey_works_when_modal_opens(self, page: Page, base_url: str):
         modal = self._open_modal(page, base_url)
@@ -2328,12 +2346,11 @@ class TestCanvasModalHotkeys:
         modal = self._open_modal(page, base_url)
 
         page.keyboard.press("]")
-        page.wait_for_timeout(600)  # let the nav-triggered image load settle
+        self._settled_on(modal, 1)
         page.keyboard.press("b")
 
         expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
 
-    @pytest.mark.quarantine("second ] swallowed after a fixed 600ms sleep; 1 of 2 runs")
     def test_bracket_navigation_still_works_after_bracket_navigation(self, page: Page, base_url: str):
         """']' twice must reach the third entry (bbox-3, on image2)."""
         modal = self._open_modal(page, base_url)
@@ -2341,21 +2358,19 @@ class TestCanvasModalHotkeys:
         expect(title).to_have_text("Edit: folder/image1.jpg")
 
         page.keyboard.press("]")
-        page.wait_for_timeout(600)
+        self._settled_on(modal, 1)
         page.keyboard.press("]")
 
         expect(title).to_have_text("Edit: folder/image2.jpg", timeout=5000)
 
-    @pytest.mark.quarantine("modal never navigated; worst entry, 2 of 3 runs")
     def test_tool_hotkey_still_works_after_navigating_to_another_image(self, page: Page, base_url: str):
         modal = self._open_modal(page, base_url)
         title = modal.get_by_test_id("canvas-edit-modal-title")
 
         page.keyboard.press("]")
-        page.wait_for_timeout(600)
+        self._settled_on(modal, 1)
         page.keyboard.press("]")
         expect(title).to_have_text("Edit: folder/image2.jpg", timeout=5000)
-        page.wait_for_timeout(600)
 
         page.keyboard.press("b")
 
