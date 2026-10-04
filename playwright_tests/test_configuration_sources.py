@@ -92,10 +92,26 @@ def _name_input(page: Page):
 
 
 def _open_source(page: Page, name: str = FAKE_SOURCE["name"]):
-    """Click a source row in the list to load it into the editor."""
+    """Click a source row in the list to load it into the editor.
+
+    The wait is on the editor actually holding this source, not on a fixed delay: the
+    list can re-render after the click (a later fetch resolving), which detaches the row
+    that was clicked and leaves the editor back on "New Source" — so the Delete button
+    the caller is about to reach for never appears. Retried for the same reason; a click
+    that lost its row has to be made again, and asserting the outcome is the only way to
+    know which happened. See FLAKY_TESTS.md (test_delete_accepted_calls_api).
+    """
     page.wait_for_selector("#source-management-box .le-list-item")
-    page.locator("#source-management-box .le-list-item", has_text=name).first.click()
-    page.wait_for_timeout(700)
+    row = page.locator("#source-management-box .le-list-item", has_text=name).first
+    last: Exception | None = None
+    for _ in range(3):
+        row.click()
+        try:
+            expect(_name_input(page)).to_have_value(name, timeout=5000)
+            return
+        except AssertionError as err:  # the list re-rendered under the click
+            last = err
+    raise AssertionError(f"source {name!r} never loaded into the editor") from last
 
 
 def _fill_url_field(page: Page, value: str):
@@ -473,7 +489,6 @@ class TestDeleteSource:
         expect(modal).to_be_visible()
         expect(modal).to_contain_text(FAKE_SOURCE["name"])
 
-    @pytest.mark.quarantine("editor bar never produced a Delete button inside 60s; 1 of 2 runs")
     def test_delete_accepted_calls_api(self, page: Page, base_url: str):
         """Confirming delete POSTs to /api/sources/delete."""
         calls: list[dict] = []
