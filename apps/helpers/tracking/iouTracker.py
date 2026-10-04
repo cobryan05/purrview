@@ -240,6 +240,8 @@ class IouTracker(Tracker):
         for idx, track in enumerate(self._tracks):
             track.matched_this_update = idx in matched_t_idx
             track.forget_observation()
+            if not track.matched_this_update:
+                track.miss()
 
         for t_idx, d_idx in pairs:
             track = self._tracks[t_idx]

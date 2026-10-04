@@ -1630,6 +1630,33 @@ class TestACoastingTrackIsNotASecondObject:
         assert self._ends(emitted) == [], "a dropout inside the rearm window must not end the event"
         assert machine.state is RuleState.ACTIVE
 
+    def test_one_detection_then_only_ghosts_confirms_nothing(self):
+        """A single blip must not buy its own `min_duration` out of the coast.
+
+        The tracker keeps a dropped track's frozen box for the whole TTL, so a predicate
+        that held once goes on holding for seconds with no detector behind it. Counting
+        those frames towards the dwell makes the min-duration guard measure the TTL
+        instead of the subject: a spider web crossing the lens once fired an arrival and,
+        when the ghost expired, a departure — with a clip cut for each.
+        """
+        spec = self._spec(min_duration_s=2.0)
+        frames = [(0.0, [self._seen(1, self.LEFT)])]
+        frames += [(t, [self._ghost(1, self.LEFT)]) for t in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)]
+
+        machine, emitted = self._drive(spec, frames)
+        assert emitted == [], "one detection is not a two-second dwell"
+        assert machine.state is RuleState.PENDING
+
+    def test_a_dwell_bridged_by_real_detections_still_confirms(self):
+        """The dropout tolerance this must not cost: detections either side of a gap."""
+        spec = self._spec(min_duration_s=2.0)
+        frames = [(0.0, [self._seen(1, self.LEFT)])]
+        frames += [(t, [self._ghost(1, self.LEFT)]) for t in (0.5, 1.0, 1.5)]
+        frames += [(2.5, [self._seen(1, self.LEFT)])]
+
+        _, emitted = self._drive(spec, frames)
+        assert len(self._starts(emitted)) == 1
+
     def test_a_ghost_alone_in_the_frame_opens_nothing(self):
         """Nothing was ever matched, so there is no object to open an event about."""
         spec = self._spec()

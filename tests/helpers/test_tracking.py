@@ -112,6 +112,27 @@ class TestConfirmation:
         assert len(tracks) == 1
         assert tracks[0].hits == 3
 
+    def test_blips_separated_by_misses_never_confirm(self):
+        """`min_hits` is "in a row", not a lifetime total.
+
+        A counter that only ever grows is not a false-alarm guard: each sighting revives
+        the same track inside its TTL, so three unrelated flickers minutes apart confirm
+        an object that was never there for two consecutive frames. Observed as a floating
+        spider web opening a hundred garage events overnight.
+        """
+        tracker = IouTracker(min_hits=3, max_age_s=6.0)
+        for i in range(6):
+            # One detection, then a miss, repeatedly. The track survives its TTL
+            # throughout, so nothing ever expires it between blips.
+            assert tracker.update([_det(0, 0, 10, 10)], now=i * 2.0) == []
+            assert tracker.update([], now=i * 2.0 + 1.0) == []
+
+    def test_a_confirmed_track_stays_confirmed_through_a_miss(self):
+        """Dropout tolerance is `max_age_s`'s job — a miss must not de-confirm."""
+        tracker = IouTracker(min_hits=2, max_age_s=6.0)
+        _feed(tracker, [[_det(0, 0, 10, 10)]] * 2)
+        assert len(tracker.update([], now=1.0)) == 1
+
     def test_min_hits_of_one_confirms_immediately(self):
         tracker = IouTracker(min_hits=1)
         assert len(tracker.update([_det(0, 0, 10, 10)], now=0.0)) == 1

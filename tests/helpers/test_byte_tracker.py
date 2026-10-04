@@ -183,6 +183,13 @@ class TestConfirmation:
         assert tracker.update([_det(0, 0, 0.9)], now=0.2) == []
         assert len(tracker.update([_det(0, 0, 0.9)], now=0.4)) == 1
 
+    def test_blips_separated_by_misses_never_confirm(self):
+        """`min_hits` counts consecutive sightings, not a running total over the TTL."""
+        tracker = _tracker(min_hits=3, max_age_s=6.0)
+        for i in range(6):
+            assert tracker.update([_det(0, 0, 0.9)], now=i * 2.0) == []
+            assert tracker.update([], now=i * 2.0 + 1.0) == []
+
     def test_low_confidence_hits_count_toward_confirmation(self):
         tracker = _tracker(min_hits=2)
         tracker.update([_det(0, 0, 0.9)], now=0.0)

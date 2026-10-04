@@ -579,6 +579,15 @@ class MatchCluster:
     #: Earliest `first_seen` across the cluster's tracks; +inf for a trackless cluster.
     first_seen: float = float("inf")
 
+    @property
+    def coasting(self) -> bool:
+        """Carries track ids but no detection this frame — the tracker's frozen box.
+
+        A trackless cluster is not coasting: a `motion` rule has no track to miss, and
+        its `matched` is False only because nothing ever absorbed a match into it.
+        """
+        return bool(self.track_ids) and not self.matched
+
 
 def cluster_matches(
     matches: Sequence[PredicateMatch],
@@ -1173,7 +1182,12 @@ class RuleMachine:
                 instance.true_since = now
             elif instance.state is RuleState.PENDING:
                 assert instance.true_since is not None
-                if now - instance.true_since >= spec.min_duration_s:
+                # A coasting frame keeps the dwell alive but cannot complete it. The
+                # tracker holds a dropped track's frozen box for its whole TTL, so
+                # counting those frames would make `min_duration_s` measure the TTL
+                # rather than the subject — one blip confirms, and a `max_age_s` later
+                # its expiry fires the closing edge too.
+                if not cluster.coasting and now - instance.true_since >= spec.min_duration_s:
                     instance.state = RuleState.ACTIVE
                     instance.started_at = instance.true_since
                     if spec.trigger == TRIGGER_ON_ENTER:

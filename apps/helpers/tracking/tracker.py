@@ -189,7 +189,7 @@ class Track:
     first_seen: float = 0.0
     #: Wallclock seconds of the most recent *detection* (not the most recent frame).
     last_seen: float = 0.0
-    #: Detections matched so far. Used for the min-hits confirmation gate.
+    #: Consecutive detections matched, reset by `miss()`. Used for the min-hits gate.
     hits: int = 0
     #: True once the track has enough hits to be reported. Unconfirmed tracks exist so
     #: a single spurious detection doesn't immediately open an event.
@@ -227,6 +227,18 @@ class Track:
         self.observed_label_uuid = None
         self.observed_confidence = 0.0
         self.observed_margin = None
+
+    def miss(self) -> None:
+        """Record that this update had no detection for this track.
+
+        `hits` restarts rather than accumulating. The gate is "seen this many times in a
+        row": a counter that only grows lets unrelated flickers, each one reviving the
+        same track inside its TTL, add up to a confirmation the detector never supported.
+        A confirmed track keeps its count — de-confirming on a dropout is `max_age_s`'s
+        job, and `merge_rank` reads the history.
+        """
+        if not self.confirmed:
+            self.hits = 0
 
     def age_s(self, now: float) -> float:
         """Seconds since this track last matched a detection."""

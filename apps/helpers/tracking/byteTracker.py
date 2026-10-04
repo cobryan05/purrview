@@ -259,6 +259,12 @@ class ByteTracker(Tracker):
         for t_idx, d_idx in second_pass:
             self._absorb(self._tracks[t_idx], detections[d_idx], now)
 
+        # Both passes are in: a track still unmatched is one the detector said nothing
+        # about, so its consecutive-hit run ends here rather than carrying over.
+        for track in self._tracks:
+            if not track.matched_this_update:
+                track.miss()
+
         # New tracks come only from confident, unmatched detections. A weak box with no
         # history is far likelier to be noise than a new object, so low detections that
         # matched nothing are dropped rather than promoted.
