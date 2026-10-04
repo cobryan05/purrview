@@ -93,8 +93,13 @@ def _route_labels(page: Page, labels: list):
 
 
 def _boot(page: Page, base_url: str):
-    # Init scripts run in registration order, so this undoes the fixture's switch.
-    page.add_init_script("try { localStorage.removeItem('ww_tours_auto'); } catch (_) {}")
+    # Init scripts run in registration order, so this undoes the fixture's switches —
+    # both of them. The seeded tour-state cache is what readTourState() falls back to
+    # when `tour_state` 404s, which is exactly the fresh install these tests set up, so
+    # leaving it in place would suppress the very hint and auto-start they assert.
+    page.add_init_script(
+        "try { localStorage.removeItem('ww_tours_auto');" " localStorage.removeItem('ww_tour_state'); } catch (_) {}"
+    )
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 

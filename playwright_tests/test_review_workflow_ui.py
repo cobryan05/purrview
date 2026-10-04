@@ -2333,6 +2333,7 @@ class TestCanvasModalHotkeys:
 
         expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
 
+    @pytest.mark.quarantine("second ] swallowed after a fixed 600ms sleep; 1 of 2 runs")
     def test_bracket_navigation_still_works_after_bracket_navigation(self, page: Page, base_url: str):
         """']' twice must reach the third entry (bbox-3, on image2)."""
         modal = self._open_modal(page, base_url)
@@ -2345,6 +2346,7 @@ class TestCanvasModalHotkeys:
 
         expect(title).to_have_text("Edit: folder/image2.jpg", timeout=5000)
 
+    @pytest.mark.quarantine("modal never navigated; worst entry, 2 of 3 runs")
     def test_tool_hotkey_still_works_after_navigating_to_another_image(self, page: Page, base_url: str):
         modal = self._open_modal(page, base_url)
         title = modal.get_by_test_id("canvas-edit-modal-title")

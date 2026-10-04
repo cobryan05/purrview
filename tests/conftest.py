@@ -14,6 +14,33 @@ def pytest_addoption(parser):
         default=False,
         help="Run smoke tests against live services",
     )
+    parser.addoption(
+        "--run-quarantined",
+        action="store_true",
+        default=False,
+        help="Also run tests marked @pytest.mark.quarantine (known flaky; see FLAKY_TESTS.md)",
+    )
+
+
+# `@pytest.mark.quarantine("<why>")` takes a known-flaky test out of the default run.
+#
+# The point is not to hide failures, it is to stop paying for them twice: a flake that
+# fails one run in three is rediscovered from scratch every time, and re-verifying it
+# costs far more than the coverage it still provides. Every quarantined test has an entry
+# in FLAKY_TESTS.md recording the verbatim failure, the observed frequency and the
+# mechanism (or UNDIAGNOSED); the reason string points there.
+#
+# Not xfail: an xfail that starts passing tells no one. Run them deliberately with
+# `--run-quarantined`, which is how a fix gets confirmed or a rate gets sampled.
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-quarantined"):
+        return
+    for item in items:
+        marker = item.get_closest_marker("quarantine")
+        if marker is None:
+            continue
+        why = (marker.args[0] if marker.args else "known flaky") + " [FLAKY_TESTS.md]"
+        item.add_marker(pytest.mark.skip(reason=f"quarantined: {why}"))
 
 
 def make_png(pixel: bytes = b"\xff\xff\xff") -> bytes:

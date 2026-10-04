@@ -2177,6 +2177,7 @@ class TestTheTrackingBlipsPanel:
             ),
         )
 
+    @pytest.mark.quarantine("run modal opened with an empty title; 1 of 2 runs")
     def test_a_finished_harvest_opens_the_run_it_produced(self, page: Page, base_url: str):
         """The frames are three clicks deep in Saved Previews, so a harvest that files
         them and says nothing is a harvest the user reports as never having finished —

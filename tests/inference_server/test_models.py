@@ -352,6 +352,7 @@ class TestClassMapCache:
         classes = await manager.get_models_classes(["yolo_test"])
         assert classes["yolo_test"]["cat"] == "label-uuid-abc"
 
+    @pytest.mark.quarantine("measures event-loop latency, so load is the input; 2 of 4 runs")
     async def test_sidecar_stat_does_not_block_event_loop(self, manager, monkeypatch):
         """get_models_classes() is awaited per-detection during a bulk inference
         run; a synchronous os.stat() there would stall every other in-flight

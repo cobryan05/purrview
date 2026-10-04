@@ -11,6 +11,7 @@ Run with:
 import base64
 import json
 
+import pytest
 from playwright.sync_api import Page, expect
 
 from playwright_tests.waits import wait_until
@@ -187,6 +188,7 @@ class TestAskThenRemember:
 
 
 class TestPickerDismissal:
+    @pytest.mark.quarantine("import button still disabled when read; 1 of 2 runs")
     def test_a_picker_that_fires_no_event_still_frees_the_import_button(self, page: Page, base_url: str):
         """`<input type=file>` does not fire 'cancel' everywhere, and a dismissed
         picker fires no 'change' either — without a fallback the promise never

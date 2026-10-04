@@ -13,6 +13,7 @@ Run with:
 
 import base64
 
+import pytest
 from playwright.sync_api import Page
 
 from playwright_tests.test_review_workflow_ui import (
@@ -86,6 +87,7 @@ def _open_menu_and_apply_label(page: Page, on_bbox_uuid: str, label_name: str):
 
 
 class TestMultiSelectRelabelRefreshesEveryCard:
+    @pytest.mark.quarantine("one card of several kept its old blob src; 1 of 3 runs")
     def test_every_selected_card_gets_a_fresh_crop(self, page: Page, base_url: str):
         """Applying a label to a 2-card selection re-requests BOTH crops.
 

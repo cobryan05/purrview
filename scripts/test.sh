@@ -29,8 +29,23 @@
 set -uo pipefail
 
 CONTAINER=purrview_mono_dev
+
+# CPU budget. `nice` alone is not enough: it reorders access to a core, it does not stop
+# eight chromium pairs demanding every core at once. Measured on a full Playwright run at
+# -n 8 with nice already in place: 6.5 of 8 cores busy at the median, 7.7 at p99, load
+# average 24 — 0.3 cores left for the live app, which is what makes it go unresponsive.
+#
+# So the run is also *pinned*, which is a guarantee rather than a preference. This box is
+# an 8-core Ryzen 5700G with SMT, so physical core N is CPUs N and N+8 (verified via
+# /sys/devices/system/cpu/cpuN/topology): 0-5,8-13 is six whole cores and leaves cores 6
+# and 7 — all four of their threads — free for the app at every moment of the run.
+#
+# Oversubscribing the pinned set is deliberate: workers spend much of a test waiting on
+# the browser, so more workers than cores still buys throughput, and the pin means it can
+# no longer be bought out of the app's share.
+TEST_CPUS="${PURRVIEW_TEST_CPUS:-0-5,8-13}"
 # Lowering priority never needs privileges; raising it would.
-PRIORITY=(nice -n 19 ionice -c3)
+PRIORITY=(nice -n 19 ionice -c3 taskset -c "$TEST_CPUS")
 
 # Near-miss tracing (playwright_tests/waits.py). Exported here rather than left to the
 # caller because `docker exec` does not inherit the host environment — a bare

@@ -6,6 +6,7 @@ Run with:
 (xdist is incompatible with session-scoped browser fixtures)
 """
 
+import json
 import socket
 import threading
 import time
@@ -351,7 +352,29 @@ def base_url(live_server: str) -> str:
 # a test that wants the tour clears it (see test_tour.py). Done in localStorage
 # rather than by mocking `tour_state`, because tests that route `/api/settings/**`
 # themselves would silently override that mock and get the tour back.
-_TOURS_OFF_SCRIPT = "try { localStorage.setItem('ww_tours_auto', 'off'); } catch (_) {}"
+#
+# The kill switch stops a tour auto-*starting*; it does not stop the one-time "there is a
+# tour here" callout beside the ? button, which is a separate gate (helpButton.js reads
+# `fabHintSeen` / `neverShow` from the tour state). That callout is an overlay, so it
+# intercepts clicks on whatever it covers and fails an unrelated test with "subtree
+# intercepts pointer events". Seeding the tour-state *cache* closes both gates with no
+# request: readTourState() falls back to this key whenever `tour_state` is absent, which
+# is every test that does not route /api/settings itself. test_tour.py clears both keys.
+_TOUR_STATE_CACHE_KEY = "ww_tour_state"
+_TOUR_STATE_SEEN = {
+    "completed": [],
+    "dismissed": [],
+    "paused": [],
+    "neverShow": True,
+    "progress": {},
+    "stack": [],
+    "fabHintSeen": True,
+}
+_TOURS_OFF_SCRIPT = (
+    "try { localStorage.setItem('ww_tours_auto', 'off'); "
+    f"localStorage.setItem('{_TOUR_STATE_CACHE_KEY}', '{json.dumps(_TOUR_STATE_SEEN)}'); "
+    "} catch (_) {}"
+)
 
 
 def _block_sse(page) -> None:
@@ -369,13 +392,34 @@ def _block_sse(page) -> None:
         )
 
 
+@pytest.fixture(scope="module")
+def shared_context(browser, browser_context_args):
+    """One BrowserContext per module, so its HTTP and V8 caches outlive a single test.
+
+    The SPA is served unbundled: one `page.goto` pulls ~205 separate ES modules, and on a
+    cold context that costs ~1.6s — times the ~1500 tests that boot the app, which is
+    essentially the whole suite's runtime. The same boot on a *new page in a warm context*
+    costs ~0.54s. Measured: a fresh context gains nothing (1.62s/1.57s), and re-`goto`ing
+    one page gains nothing either (1.64s/1.70s/1.69s) because `no-cache` makes a reload
+    revalidate; only a new page over a warm cache is cheap.
+
+    What makes this safe is that isolation here is page-scoped, not context-scoped: tests
+    mock with `page.route`, and nothing in the suite uses `context.route`,
+    `add_cookies`, `storage_state` or context-level init scripts. The two things that
+    would leak — cookies and this origin's localStorage — are cleared per test below.
+    """
+    ctx = browser.new_context(**browser_context_args)
+    yield ctx
+    ctx.close()
+
+
 @pytest.fixture()
-def page(context, base_url):  # noqa: F811
+def page(shared_context, base_url):  # noqa: F811
     """
     Override pytest-playwright's page fixture to block SSE endpoints.
     All tests that receive a `page: Page` argument get this version.
     """
-    p = context.new_page()
+    p = shared_context.new_page()
     p.add_init_script(_TOURS_OFF_SCRIPT)
     _block_sse(p)
     # -n auto runs many workers per host; under contention (many chromium
@@ -386,7 +430,17 @@ def page(context, base_url):  # noqa: F811
     # action/wait_for_selector on this page benefits, not just one call site.
     p.set_default_timeout(60000)
     yield p
+    # State that outlives a page now that the context is shared. The HTTP cache
+    # deliberately survives — it is the whole point — but cookies and this origin's
+    # storage must not: test_hotkey_bindings reads DEFAULT_BINDINGS *because* storage is
+    # empty. Cleared here rather than in an init script so a test that reloads to assert
+    # its own persistence still sees what it wrote.
+    try:
+        p.evaluate("try { localStorage.clear(); sessionStorage.clear(); } catch (_) {}")
+    except Exception:
+        pass  # navigated away, closed, or never reached the origin
     p.close()
+    shared_context.clear_cookies()
 
 
 @pytest.fixture(scope="module")
@@ -428,3 +482,38 @@ def _canvas_dom_cleanup(request):
             "document.querySelectorAll('body > div[style*=\"position:fixed\"]').forEach(d => d.remove());"
             "document.querySelectorAll('.ctx-menu').forEach(m => m.remove());"
         )
+
+
+# ---------------------------------------------------------------------------
+# Quarantine
+# ---------------------------------------------------------------------------
+#
+# `@pytest.mark.quarantine("<why>")` takes a known-flaky test out of the default run.
+#
+# The point is not to hide failures, it is to stop paying for them twice: a flake that
+# fails one run in three is rediscovered from scratch every time, and the cost of
+# re-verifying it is far higher than the coverage it still provides. Every quarantined
+# test has an entry in FLAKY_TESTS.md recording the verbatim failure, the observed
+# frequency and the mechanism (or UNDIAGNOSED) — the marker's reason string points at it.
+#
+# Nothing is deleted and nothing is marked xfail: xfail would quietly start *passing*
+# and tell no one. Run them deliberately with `--run-quarantined`, which is how you
+# confirm a fix or sample a flake's real rate.
+def pytest_addoption(parser):  # noqa: F811
+    parser.addoption(
+        "--run-quarantined",
+        action="store_true",
+        default=False,
+        help="Also run tests marked @pytest.mark.quarantine (known flaky; see FLAKY_TESTS.md)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):  # noqa: F811
+    if config.getoption("--run-quarantined"):
+        return
+    for item in items:
+        marker = item.get_closest_marker("quarantine")
+        if marker is None:
+            continue
+        why = (marker.args[0] if marker.args else "known flaky") + " [FLAKY_TESTS.md]"
+        item.add_marker(pytest.mark.skip(reason=f"quarantined: {why}"))
