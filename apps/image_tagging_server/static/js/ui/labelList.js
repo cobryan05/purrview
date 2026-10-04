@@ -249,6 +249,10 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
  * entirely; the second only controls the per-camera breakdown *within* that device,
  * which is the tier whose size is (labels × rules × cameras) and the one worth thinking
  * before enabling.
+ *
+ * The name field is the third setting rather than a fourth panel because it answers the
+ * question the two flags raise: having opted a label in, what is it called over there,
+ * and does correcting the label's wording here move it?
  */
 function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
   const existing = anchorRow.nextElementSibling;
@@ -298,15 +302,52 @@ function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
       + '(labels × cameras), so it is off unless you want the breakdown specifically; the '
       + 'label\'s own device already reports where it was last seen.',
   );
-  // The breakdown lives inside the device, so it cannot apply without one.
+  const nameWrap = document.createElement('label');
+  nameWrap.className = 'label-ha-check label-ha-name';
+  nameWrap.title =
+    'The name this label publishes under in Home Assistant and in MQTT topics. Blank uses the '
+    + 'label\u2019s own name. Set it when the label is one you automate on: the vocabulary gets '
+    + 'corrected — a spelling, a species narrowed — and without an override every correction '
+    + 'moves the topics an automation is written against. Entities Home Assistant has already '
+    + 'created survive a rename either way; their unique ids come from the label\u2019s uuid.';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = label.mqttName || '';
+  nameInput.placeholder = label.name || 'label name';
+  nameInput.dataset.testid = 'label-ha-mqtt-name';
+  nameWrap.append(document.createTextNode('Publish as '), nameInput);
+
+  // The answer to "what do I type in here", and the reason this panel is reachable at all
+  // from the row someone opened to rename the label: the name that keeps the topics where
+  // they are is the one it is publishing under now, and a blank box does not say what that
+  // is. Not a prefill — that would freeze the topics on every visit, including the ones
+  // that came only to read.
+  const pinBtn = document.createElement('button');
+  pinBtn.type = 'button';
+  pinBtn.className = 'label-move-cancel label-ha-pin';
+  pinBtn.dataset.testid = 'label-ha-mqtt-name-pin';
+  pinBtn.textContent = `Pin \u201c${label.name}\u201d`;
+  pinBtn.title =
+    'Fill the box with the name this label publishes under today, so renaming it below leaves '
+    + 'Home Assistant where it is \u2014 the entity keeps its history either way, but anything '
+    + 'subscribed to the topics follows the name until it is pinned.';
+  pinBtn.onclick = () => {
+    nameInput.value = label.name || '';
+    nameInput.focus();
+  };
+
+  // Both the breakdown and the name live inside the device, so neither applies without one.
   const syncEnabled = () => {
     perSource.box.disabled = !publish.box.checked;
     perSource.wrap.classList.toggle('label-ha-check--muted', !publish.box.checked);
+    nameInput.disabled = !publish.box.checked;
+    pinBtn.disabled = !publish.box.checked;
+    nameWrap.classList.toggle('label-ha-check--muted', !publish.box.checked);
   };
   publish.box.addEventListener('change', syncEnabled);
   syncEnabled();
 
-  haRow.append(publish.wrap, perSource.wrap);
+  haRow.append(publish.wrap, perSource.wrap, nameWrap, pinBtn);
 
   const applyBtn = document.createElement('button');
   applyBtn.type = 'button';
@@ -318,6 +359,9 @@ function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
       await onSave({
         publishToHa: publish.box.checked,
         publishPerSource: publish.box.checked && perSource.box.checked,
+        // `null`, not omitted: the endpoint distinguishes "cleared" from "not sent", and
+        // emptying this field has to actually clear the override.
+        mqttName: nameInput.value.trim() || null,
       });
     } catch (err) {
       toast(err.message, 5000, 'error');

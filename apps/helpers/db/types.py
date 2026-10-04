@@ -274,6 +274,14 @@ class LabelBase(SQLModel):
     # rule-level event entity's attributes already answer for automations. Opt in per
     # label where the per-camera breakdown is genuinely wanted as long-term statistics.
     publish_per_source: bool = Field(default=False)
+    # What this label's Home Assistant device and topics are keyed on. NULL or blank falls
+    # back to `name`.
+    #
+    # The label name is annotation vocabulary and gets corrected — spelling, a species
+    # narrowed, a cat renamed — while the subject topics it keys are what someone's
+    # automation subscribes to. Same split as `WatchProfileSource.mqtt_name` and
+    # `InteractionRule.mqtt_name`; see the latter for what a rename does and does not break.
+    mqtt_name: Optional[str] = Field(default=None)
     # When True, this label's children are alternate guesses for the SAME physical
     # object (e.g. breed/color variants), not different objects that can coexist. NMS
     # groups them together at inference time instead of by raw class_id, so an
@@ -356,6 +364,7 @@ class LabelRead(OrmModel):
     #: before the column existed arrive at the UI ticked.
     publish_to_ha: bool = False
     publish_per_source: bool = False
+    mqtt_name: Optional[str] = None
     exclusive_variants: bool = False
     exclusive_variants_iou_threshold: Optional[float] = None
 
@@ -368,8 +377,20 @@ class LabelUpdate(ApiModel):
     scope: Optional[LabelScope] = None
     publish_to_ha: Optional[bool] = None
     publish_per_source: Optional[bool] = None
+    #: `None` here means "clear the override", not "leave it alone" — which is why the
+    #: endpoint forwards it on `model_fields_set` rather than on the value, the same way
+    #: it already has to for `parent_uuid`.
+    mqtt_name: Optional[str] = None
     exclusive_variants: Optional[bool] = None
     exclusive_variants_iou_threshold: Optional[float] = None
+
+    @field_validator("mqtt_name")
+    @classmethod
+    def _normalise_mqtt_name(cls, v: Optional[str]) -> Optional[str]:
+        """Blank clears the override — see `WatchProfileSourceWrite._normalise_mqtt_name`."""
+        if v is None:
+            return None
+        return v.strip() or None
 
 
 class ImageTagLink(SQLModel, table=True):
@@ -2071,6 +2092,17 @@ class InteractionRule(SQLModel, table=True):
         default=False,
         sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("0")),
     )
+    # What this rule's Home Assistant topics are keyed on. NULL or blank falls back to
+    # `name`, which is what every existing rule keeps.
+    #
+    # Same split as `WatchProfileSource.mqtt_name`, for the same reason: `name` is how the
+    # rule reads in the editor and in an action's picker, while this is a topic level
+    # someone's automation subscribes to. Renaming the rule otherwise re-routes every topic
+    # it publishes and leaves the retained old ones on the broker for good.
+    #
+    # It does not touch `unique_id`, which is uuid-keyed, so an entity HA already created
+    # survives a rename either way. This protects whatever reads the topics directly.
+    mqtt_name: Optional[str] = Field(default=None)
     # Which sources this rule is evaluated on. **Empty means every source in the
     # profile**, matching `WatchAction`'s two scope lists, so a rule written before this
     # column existed — or by someone who never opens the picker — still runs everywhere.
@@ -2709,6 +2741,7 @@ class InteractionRuleRead(OrmModel):
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
     event_label: Optional[str] = None
+    mqtt_name: Optional[str] = None
 
 
 class InteractionRuleWrite(ApiModel):
@@ -2742,6 +2775,16 @@ class InteractionRuleWrite(ApiModel):
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
     event_label: Optional[str] = None
+    # Blank is stored as NULL, exactly as on `WatchProfileSourceWrite` — see the
+    # normaliser there for why a stored `""` or `"  "` is worse than no override at all.
+    mqtt_name: Optional[str] = None
+
+    @field_validator("mqtt_name")
+    @classmethod
+    def _normalise_mqtt_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return v.strip() or None
 
     @model_validator(mode="after")
     def _validate_arity(self) -> "InteractionRuleWrite":

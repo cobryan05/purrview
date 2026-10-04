@@ -816,12 +816,13 @@ function noteHelp(text, { testid = 'watch-note-help', label = 'Show more informa
  * also frees it from the action row's `overflow` — the other reason a popover anchored
  * inside a dense row is hard to see.
  *
- * @param {{testid: string, label: string, build: (panel: HTMLElement, close: () => void) => void}} opts
+ * @param {{testid: string, label: string, glyph?: string,
+ *           build: (panel: HTMLElement, close: () => void) => void}} opts
  */
-function helpPopover({ testid, label, build }) {
+function helpPopover({ testid, label, glyph = '?', build }) {
   const wrap = el('span', 'watch-template-help');
 
-  const btn = el('button', 'watch-template-help__btn', '?');
+  const btn = el('button', 'watch-template-help__btn', glyph);
   btn.type = 'button';
   btn.dataset.testid = `${testid}-btn`;
   btn.title = label;
@@ -847,7 +848,82 @@ function helpPopover({ testid, label, build }) {
   });
 
   wrap.appendChild(btn);
+  // The caller needs the button to mark it when an override is set — see `haNameField`.
+  wrap.button = btn;
   return wrap;
+}
+
+/**
+ * The ✎ beside a row's HA tag: the name this thing's Home Assistant topics are keyed on.
+ *
+ * A popover, not a field on the row, and that is a density decision rather than a
+ * preference: the rule row is held to `test_a_rule_row_does_not_fill_the_screen`'s 175px
+ * and its sentence to one line, and an 8rem labelled input is enough to wrap one of them.
+ * The camera row has the space and spells the same setting out as “MQTT as”.
+ *
+ * The button is marked when an override exists, because the cost of this control being
+ * invisible is specific: a blank field and a field holding the rule's own name look
+ * identical from the outside, and only one of them survives a rename.
+ *
+ * ⚠️ `pinnable` must be the name as last **saved**, never the one in the row's name box.
+ * The moment this field is wanted is the moment someone has come to rename the rule, and
+ * the name that keeps its topics where they are is the one it was already publishing
+ * under — reading the live input would offer the new name, which pins nothing and reads
+ * as though it had.
+ *
+ * The field is not pre-filled with it, for the same reason the popover offers it as a
+ * button: a prefill makes every visit to this panel freeze the topics at whatever the
+ * name happened to be that day, including the visits that only came to read it.
+ *
+ * @param {string|null} current stored override, or null for "use the row's own name"
+ * @param {() => void} onAnyChange the editor's dirty hook
+ * @param {{testid: string, intro: string, pinnable: () => string,
+ *          placeholderFor: () => string}} opts
+ * @returns {{element: HTMLElement, value: () => string|null}}
+ */
+function haNameField(current, onAnyChange, { testid, intro, pinnable, placeholderFor }) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = current || '';
+  input.dataset.testid = testid;
+
+  const wrap = helpPopover({
+    testid,
+    label: 'Home Assistant name',
+    glyph: '✎',
+    build: (panel) => {
+      panel.classList.add('watch-ha-name__panel');
+      panel.appendChild(el('p', 'watch-template-help__intro', intro));
+      // Resolved on open rather than once: it mirrors the name field beside it, which
+      // the user is as likely to be editing right now as not.
+      input.placeholder = placeholderFor();
+      panel.appendChild(input);
+
+      // The answer to "what do I type in here". Shares the placeholder list's row shape
+      // because it is the same gesture — click a value to put it in the field.
+      const saved = pinnable();
+      if (!saved) return;
+      const pin = el('button', 'watch-template-help__item');
+      pin.type = 'button';
+      pin.dataset.testid = `${testid}-pin`;
+      pin.appendChild(el('code', 'watch-template-help__token', saved));
+      pin.appendChild(el('span', 'watch-template-help__desc', 'Publishing as this now — pin it'));
+      pin.addEventListener('click', () => {
+        input.value = saved;
+        input.focus();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      panel.appendChild(pin);
+    },
+  });
+  wrap.classList.add('watch-ha-name');
+  wrap.button.title = 'Home Assistant name — what this row publishes as. Blank uses its own name.';
+
+  const syncMark = () => wrap.button.classList.toggle('watch-ha-name--set', input.value.trim() !== '');
+  input.addEventListener('input', () => { syncMark(); onAnyChange(); });
+  syncMark();
+
+  return { element: wrap, value: () => input.value.trim() || null };
 }
 
 /** The small ✕ that ends every row. Full-width "Remove" buttons cost a line each. */
@@ -1427,6 +1503,21 @@ function buildRuleRow(rule, ctx) {
   nameInput.addEventListener('change', () => ctx.onNameCommitted?.());
   // Explicitly narrow so the name and the sentence share a line. At its natural width
   // the pair overflowed the row by a handful of pixels and cost a whole extra line.
+  const haName = haNameField(rule.mqttName, ctx.onAnyChange, {
+    testid: 'watch-rule-ha-name',
+    intro:
+      'What this rule publishes as in Home Assistant and in MQTT topics. Blank follows the '
+      + 'rule\u2019s name, so renaming it moves every topic it publishes to and strands the '
+      + 'retained ones \u2014 pin the name below first and the rename becomes cosmetic. '
+      + 'Entities Home Assistant has already created survive either way; their unique ids '
+      + 'come from the rule\u2019s uuid, not its name.',
+    // The name the rule was loaded with, not the one in the box beside this: see
+    // `haNameField`. A rule being added right now has neither, so it falls back to what
+    // has been typed — there is no history to preserve yet.
+    pinnable: () => (rule.name || '').trim(),
+    placeholderFor: () => (rule.name || '').trim() || nameInput.value.trim() || 'rule name',
+  });
+
   row.appendChild(wfield('Rule', nameInput, {
     width: '10rem',
     help: 'What this rule is called — how it reads in an action’s Rules picker, and what '
@@ -1434,6 +1525,7 @@ function buildRuleRow(rule, ctx) {
       + 'not its name, so renaming it keeps every action pointed at it. A rule added here can '
       + 'only be picked in an action once the watcher has been saved.',
   }));
+  row.appendChild(haName.element);
 
   // The sentence: [subject A] [relation] [subject B]. Each subject is a *list* — "any of
   // these three cats is inside any of these two litter boxes" is one rule, not six, and
@@ -1986,6 +2078,7 @@ function buildRuleRow(rule, ctx) {
         enabled: enabledBox.checked,
         publishToHa: publishBox.checked,
         publishSnapshotToHa: snapshotBox.checked,
+        mqttName: haName.value(),
         // Always sent: a watch profile saves as a whole-list replace, so a field the
         // editor omits is a field the save resets to its default.
         sourceUuidsJson: [...sourceScope],

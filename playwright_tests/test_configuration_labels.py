@@ -1218,3 +1218,93 @@ class TestLabelHomeAssistantPanel:
         wait_until(page, lambda: "publishToHa" in patched)
         assert patched["publishToHa"] is False, patched
         assert patched["publishPerSource"] is False, patched
+
+
+class TestLabelHomeAssistantName:
+    """The name the label publishes under, in the same panel as the flags it qualifies.
+
+    The field is the answer to "may I correct this label's wording now that something
+    automates on it", so the two states that matter are an override that survives a rename
+    and an emptied field that genuinely clears rather than storing a blank.
+    """
+
+    def _panel(self, page: Page, base_url: str, label, on_patch):
+        def handle(route):
+            if route.request.method == "PATCH":
+                on_patch(json.loads(route.request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labels": [label]}),
+            )
+
+        _mock_labels(page, [label])
+        page.route("**/api/labels/**", handle)
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{label['uuid']}']")
+        row.locator("button[title='Home Assistant']").click()
+
+    def test_the_field_is_blank_and_hints_the_labels_own_name(self, page: Page, base_url: str):
+        """Blank means "follow the name", so a field pre-filled with it would read as an
+        override that is not there."""
+        self._panel(page, base_url, ROOT_LABEL, lambda body: None)
+
+        field = page.get_by_test_id("label-ha-mqtt-name")
+        expect(field).to_have_value("")
+        expect(field).to_have_attribute("placeholder", ROOT_LABEL["name"])
+
+    def test_it_is_unavailable_while_the_label_is_not_published(self, page: Page, base_url: str):
+        """It names a device that does not exist yet, exactly like the breakdown box
+        beside it."""
+        self._panel(page, base_url, ROOT_LABEL, lambda body: None)
+        field = page.get_by_test_id("label-ha-mqtt-name")
+
+        expect(field).to_be_disabled()
+        page.get_by_test_id("label-publish-to-ha").check()
+        expect(field).to_be_enabled()
+
+    def test_saving_sends_the_typed_name(self, page: Page, base_url: str):
+        patched = {}
+        self._panel(page, base_url, ROOT_LABEL, patched.update)
+
+        page.get_by_test_id("label-publish-to-ha").check()
+        page.get_by_test_id("label-ha-mqtt-name").fill("housecat")
+        page.get_by_test_id("label-ha-panel").locator("button:has-text('Save')").click()
+
+        wait_until(page, lambda: "mqttName" in patched)
+        assert patched["mqttName"] == "housecat", patched
+
+    def test_the_pin_button_names_the_label_and_fills_the_box(self, page: Page, base_url: str):
+        """A blank box does not say what to type, and this panel is opened on the way to a
+        rename — so the name that keeps the topics still is offered as a value, not implied
+        by a placeholder."""
+        self._panel(page, base_url, ROOT_LABEL, lambda body: None)
+        page.get_by_test_id("label-publish-to-ha").check()
+
+        pin = page.get_by_test_id("label-ha-mqtt-name-pin")
+        expect(pin).to_contain_text(ROOT_LABEL["name"])
+        pin.click()
+
+        expect(page.get_by_test_id("label-ha-mqtt-name")).to_have_value(ROOT_LABEL["name"])
+
+    def test_the_pin_button_is_unavailable_while_the_label_is_not_published(self, page: Page, base_url: str):
+        """It writes into a field that names a device there is none of yet."""
+        self._panel(page, base_url, ROOT_LABEL, lambda body: None)
+
+        expect(page.get_by_test_id("label-ha-mqtt-name-pin")).to_be_disabled()
+        page.get_by_test_id("label-publish-to-ha").check()
+        expect(page.get_by_test_id("label-ha-mqtt-name-pin")).to_be_enabled()
+
+    def test_emptying_it_sends_null_rather_than_nothing(self, page: Page, base_url: str):
+        """The endpoint reads an absent field as "leave it alone", so a cleared box that
+        sent nothing would be a control that cannot be undone."""
+        pinned = {**ROOT_LABEL, "publishToHa": True, "mqttName": "housecat"}
+        patched = {}
+        self._panel(page, base_url, pinned, patched.update)
+
+        expect(page.get_by_test_id("label-ha-mqtt-name")).to_have_value("housecat")
+        page.get_by_test_id("label-ha-mqtt-name").fill("")
+        page.get_by_test_id("label-ha-panel").locator("button:has-text('Save')").click()
+
+        wait_until(page, lambda: "mqttName" in patched)
+        assert patched["mqttName"] is None, patched

@@ -247,6 +247,43 @@ class TestNestedWrites:
         body = await _create_profile(http_client, "House cams", sources=[{"sourceUuid": source_uuid}])
         assert body["profile"]["sources"][0]["mqttName"] is None
 
+    async def test_a_rules_mqtt_name_round_trips_and_blank_clears_it(self, http_client):
+        """The rule half of the same override: what its Home Assistant topics are keyed
+        on, so renaming the rule does not move them. Blank must store NULL for the reason
+        `_normalise_mqtt_name` gives — `""` reads as an override at every `or` call site."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(mqttName="litterbox")],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["mqttName"] == "litterbox"
+
+        blank = await _create_profile(
+            http_client,
+            "Other cams",
+            sources=[{"sourceUuid": source_uuid}],
+            # A uuid of its own: `_rule`'s default is fixed, and rule uuids are unique
+            # across profiles.
+            rules=[_rule(uuid="33333333-3333-3333-3333-333333333333", mqttName="   ")],
+        )
+        assert blank["profile"]["rules"][0]["mqttName"] is None
+
+    async def test_a_rule_without_an_mqtt_name_keeps_none(self, http_client):
+        """Every rule predating the field must publish exactly where it did."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule()],
+        )
+        assert body["profile"]["rules"][0]["mqttName"] is None
+
     async def test_update_preserves_rule_uuids_and_zone_references(self, http_client):
         """Regenerating uuids on save would silently break every zone-based rule."""
         source_uuid = await _make_source(http_client)

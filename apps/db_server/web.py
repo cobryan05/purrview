@@ -1953,12 +1953,15 @@ class WebApp:
             and/or parent (re-parent / "move" it in the hierarchy).
             """
             try:
-                # parentUuid is only forwarded when the caller explicitly set it —
-                # `None` (promote to root) must stay distinguishable from "field
-                # absent from the request body" (leave the existing parent alone).
-                parent_uuid_kwargs = {}
+                # parentUuid and mqttName are only forwarded when the caller explicitly
+                # set them — `None` is a real value for both (promote to root; clear the
+                # Home Assistant name override) and must stay distinguishable from "field
+                # absent from the request body".
+                sentinel_kwargs = {}
                 if "parent_uuid" in request.model_fields_set:
-                    parent_uuid_kwargs["parent_uuid"] = request.parent_uuid
+                    sentinel_kwargs["parent_uuid"] = request.parent_uuid
+                if "mqtt_name" in request.model_fields_set:
+                    sentinel_kwargs["mqtt_name"] = request.mqtt_name
 
                 await self._manager.update_label(
                     label_uuid=label_uuid,
@@ -1970,7 +1973,7 @@ class WebApp:
                     publish_per_source=request.publish_per_source,
                     exclusive_variants=request.exclusive_variants,
                     exclusive_variants_iou_threshold=request.exclusive_variants_iou_threshold,
-                    **parent_uuid_kwargs,
+                    **sentinel_kwargs,
                 )
                 return UpdateLabelResponse(status=JsonValues.SUCCESS)
             except Exception as e:

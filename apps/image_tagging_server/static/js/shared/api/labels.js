@@ -72,7 +72,16 @@ export async function updateLabel(
   uuid,
   name,
   color,
-  { labelType, scope, parentUuid, publishToHa, publishPerSource, exclusiveVariants, exclusiveVariantsIouThreshold } = {},
+  {
+    labelType,
+    scope,
+    parentUuid,
+    publishToHa,
+    publishPerSource,
+    mqttName,
+    exclusiveVariants,
+    exclusiveVariantsIouThreshold,
+  } = {},
 ) {
   const body = { name, color };
   if (labelType !== undefined) body.labelType = labelType;
@@ -83,6 +92,9 @@ export async function updateLabel(
   // by luck of its own filtering.
   if (publishToHa !== undefined) body.publishToHa = publishToHa;
   if (publishPerSource !== undefined) body.publishPerSource = publishPerSource;
+  // `null` is a real value here — "clear the override" — and the backend distinguishes it
+  // from the field being absent, so only `undefined` may be dropped.
+  if (mqttName !== undefined) body.mqttName = mqttName;
   if (exclusiveVariants !== undefined) body.exclusiveVariants = exclusiveVariants;
   if (exclusiveVariantsIouThreshold !== undefined) body.exclusiveVariantsIouThreshold = exclusiveVariantsIouThreshold;
   // Only send parentUuid when the caller explicitly provided it (including

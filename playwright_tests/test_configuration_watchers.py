@@ -819,6 +819,121 @@ class TestHomeAssistantPublishFlags:
         assert saved["sources"][0]["publishToHa"] is True, saved["sources"][0]
 
 
+class TestTheRuleHaNameOverride:
+    """The rule's Home Assistant name lives in a popover, not on the row — the row is at
+    the height `TestWatcherEditorDensity` bounds. That is the part worth a browser test:
+    the field is detached from the form and reparented onto `document.body` while open, so
+    whether it still reaches the save payload is a DOM question, not a backend one."""
+
+    def test_the_field_defaults_to_blank_and_shows_the_rule_name_as_its_placeholder(self, page: Page, base_url: str):
+        """Blank means "follow the name", and the placeholder is what says so — a field
+        pre-filled with the rule's name would look identical and behave differently."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        rule_name = page.locator("[data-testid='watch-rule-name']").first.input_value()
+        page.locator("[data-testid='watch-rule-ha-name-btn']").first.click()
+        field = page.locator("[data-testid='watch-rule-ha-name']").first
+        expect(field).to_have_value("")
+        assert field.get_attribute("placeholder") == rule_name
+
+    def test_the_pin_button_offers_the_saved_name_not_the_one_being_typed(self, page: Page, base_url: str):
+        """The scenario this control exists for: the panel is opened *because* a rename is
+        under way, and by then the row's name box holds the new name. Pinning that would
+        move the topics to the new name and look like it had preserved them.
+        """
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        saved_name = page.locator("[data-testid='watch-rule-name']").first.input_value()
+
+        page.locator("[data-testid='watch-rule-name']").first.fill("something else entirely")
+        page.locator("[data-testid='watch-rule-ha-name-btn']").first.click()
+        pin = page.locator("[data-testid='watch-rule-ha-name-pin']").first
+
+        expect(pin).to_contain_text(saved_name)
+        pin.click()
+        expect(page.locator("[data-testid='watch-rule-ha-name']").first).to_have_value(saved_name)
+
+    def test_pinning_then_renaming_sends_the_old_name_as_the_override(self, page: Page, base_url: str):
+        """End to end, as the payload: the rule is called the new thing and publishes as
+        the old one, which is what keeps an automation and its history attached."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        before = page.locator("[data-testid='watch-rule-name']").first.input_value()
+
+        page.locator("[data-testid='watch-rule-ha-name-btn']").first.click()
+        page.locator("[data-testid='watch-rule-ha-name-pin']").first.click()
+        page.keyboard.press("Escape")
+        page.locator("[data-testid='watch-rule-name']").first.fill("something else entirely")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        rule = saved["rules"][0]
+        assert (rule["name"], rule["mqttName"]) == ("something else entirely", before), rule
+
+    def test_typing_a_name_sends_it_and_a_later_rename_does_not_change_it(self, page: Page, base_url: str):
+        """The whole point of the setting, as a payload: the override is what the topics
+        are keyed on, so it has to survive the rename that prompted setting it."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        page.locator("[data-testid='watch-rule-ha-name-btn']").first.click()
+        page.locator("[data-testid='watch-rule-ha-name']").first.fill("litterbox")
+        page.keyboard.press("Escape")
+        page.locator("[data-testid='watch-rule-name']").first.fill("cat at the litter box")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        rule = saved["rules"][0]
+        assert (rule["name"], rule["mqttName"]) == ("cat at the litter box", "litterbox"), rule
+
+    def test_a_stored_override_loads_back_into_the_field(self, page: Page, base_url: str):
+        pinned = {**FAKE_PROFILE, "rules": [{**FAKE_PROFILE["rules"][0], "mqttName": "litterbox"}]}
+        _mock_watch_apis(page, profiles=[pinned])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        page.locator("[data-testid='watch-rule-ha-name-btn']").first.click()
+        expect(page.locator("[data-testid='watch-rule-ha-name']").first).to_have_value("litterbox")
+
+    def test_an_untouched_rule_sends_no_override(self, page: Page, base_url: str):
+        """A profile saves as a whole-list replace, so the field has to send null rather
+        than the rule's own name — storing the name would freeze the topics on whatever
+        the rule happened to be called the first time anything else was edited."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        page.locator("[data-testid='watch-rule-name']").first.fill("cat at the litter box")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["mqttName"] is None, saved["rules"][0]
+
+    def test_an_override_is_visible_on_the_row_without_opening_the_popover(self, page: Page, base_url: str):
+        """A set override that looked like an unset one would be the worst of both: the
+        marked button is the only thing on the row that says the topics are pinned."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        button = page.locator("[data-testid='watch-rule-ha-name-btn']").first
+
+        marked_before = "watch-ha-name--set" in (button.get_attribute("class") or "")
+        page.locator("[data-testid='watch-rule-ha-name-btn']").first.click()
+        page.locator("[data-testid='watch-rule-ha-name']").first.fill("litterbox")
+        page.keyboard.press("Escape")
+
+        assert not marked_before
+        assert "watch-ha-name--set" in (button.get_attribute("class") or "")
+
+
 class TestZonesModal:
     def test_zones_button_opens_the_modal(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])

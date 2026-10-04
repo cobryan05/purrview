@@ -225,6 +225,71 @@ class TestRuleUniqueIdSurvivesRename:
         )
 
 
+class TestTheHaNameOverridePinsTheTopics:
+    """`mqtt_name` on a rule or a label is what makes a rename safe to perform.
+
+    Without it a rename moves every topic the thing publishes to: the entities survive
+    (their `unique_id` is uuid-based, see `TestRuleUniqueIdSurvivesRename`) but anything
+    subscribing to the topics directly stops hearing it, and the retained messages on the
+    old path stay on the broker for good. Four separate layers turn a name into a topic,
+    which is why each is asserted rather than one standing in for the rest.
+
+    Every assertion is a comparison against the un-overridden slug, not a literal: the
+    point is that the override *decouples* the topic from the name, and pinning a string
+    would pass just as well if the override were ignored and the name happened to match.
+    """
+
+    PINNED = RuleView(uuid="rule-1", name="cat at bowl", mqtt_name="litterbox")
+    RENAMED = RuleView(uuid="rule-1", name="something else entirely", mqtt_name="litterbox")
+
+    def _camera_topic(self, rule):
+        profile = _profile(rules=(rule,))
+        return build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]["rule-1_state"]["state_topic"]
+
+    def test_a_rules_camera_topics_follow_the_override_not_the_name(self):
+        assert self._camera_topic(self.PINNED) == self._camera_topic(self.RENAMED)
+        assert self._camera_topic(self.PINNED) != self._camera_topic(RuleView(uuid="rule-1", name="cat at bowl"))
+
+    def test_the_rules_device_follows_the_override(self):
+        def topic(rule):
+            return build_rules_discovery([_profile(rules=(rule,))], PREFIX)["cmps"]["rule-1_count"]["state_topic"]
+
+        assert topic(self.PINNED) == topic(self.RENAMED)
+        assert topic(self.PINNED) != topic(RuleView(uuid="rule-1", name="cat at bowl"))
+
+    def test_the_slug_index_the_live_publishers_resolve_through_follows_it(self):
+        """The index is the half that matters at run time: discovery advertises a topic,
+        and a publisher that computed a different one leaves an entity that never updates."""
+        pinned = build_slug_index([_profile(rules=(self.PINNED,))])
+        renamed = build_slug_index([_profile(rules=(self.RENAMED,))])
+
+        assert pinned.rule_base("profile-1", "src-1", "rule-1") == renamed.rule_base("profile-1", "src-1", "rule-1")
+        assert pinned.rule_global_base("profile-1", "rule-1") == renamed.rule_global_base("profile-1", "rule-1")
+        # And the advertised topic agrees with the resolved one, which is the pairing a
+        # typo in either half breaks silently.
+        assert self._camera_topic(self.PINNED).endswith(f"{pinned.rule_base('profile-1', 'src-1', 'rule-1')}/state")
+
+    def test_a_labels_subject_topics_follow_its_override(self):
+        def cmps(name):
+            subject = SubjectView(uuid="subj-a", name=name, mqtt_name="housecat", publish_to_ha=True)
+            rules = [(self.PINNED, [SourceView(uuid="src-1", name="Kitchen")])]
+            return build_subject_discovery(subject, rules, PREFIX)["cmps"]
+
+        before, after = cmps("Tabby"), cmps("Renamed")
+        assert before["detected"]["state_topic"] == after["detected"]["state_topic"]
+        assert before["rule-1_count"]["state_topic"] == after["rule-1_count"]["state_topic"]
+        unpinned = build_subject_discovery(SubjectView(uuid="subj-a", name="Tabby", publish_to_ha=True), [], PREFIX)
+        assert before["detected"]["state_topic"] != unpinned["cmps"]["detected"]["state_topic"]
+
+    def test_the_device_is_still_named_the_way_the_app_names_it(self):
+        """The override is a topic level, not a rename. A device titled "housecat" in
+        someone's house would make the setting a cost rather than a safeguard."""
+        device = build_subject_discovery(
+            SubjectView(uuid="subj-a", name="Tabby", mqtt_name="housecat", publish_to_ha=True), [], PREFIX
+        )
+        assert device["dev"]["name"] == "Tabby"
+
+
 class TestDiscoveryReconciliation:
     """Rule/source deletion must retract, not just stop updating."""
 
@@ -2190,7 +2255,9 @@ def _presence_bridge(per_source=True, name="Luna"):
     )
     bridge, fake = _connected_bridge([profile])
     bridge._subject_slugs = {"subj-a": slugify(name)}
-    bridge._label_publish = {"subj-a": (True, per_source)}
+    bridge._label_views = {
+        "subj-a": SubjectView(uuid="subj-a", name=name, publish_to_ha=True, publish_per_source=per_source)
+    }
     # A broker holding nothing yet, which is what a first run looks like. Tests that
     # care about an existing retained value set this themselves.
     bridge._published_source_states = set()

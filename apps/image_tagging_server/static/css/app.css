@@ -2511,8 +2511,28 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   vertical-align: middle;
 }
 
-/* The per-camera breakdown lives inside the device, so it reads as unavailable rather
-   than merely unticked while the device itself is turned off. */
+/* The name the label publishes under. Narrow on purpose — the panel sits inline in the
+   label tree and a full-width field would make the row read as a form. */
+.label-ha-name input {
+  font-size: inherit;
+  width: 9rem;
+  height: auto;
+  margin: 0;
+  padding: 1px 4px;
+}
+
+/* Fills the name box with what the label publishes under today. Quiet styling — it is an
+   answer to a question, not the panel's action; Save is. */
+.label-ha-pin {
+  font-size: inherit;
+  margin: 0;
+  padding: 1px 8px;
+  width: auto;
+  white-space: nowrap;
+}
+
+/* The per-camera breakdown and the name both live inside the device, so they read as
+   unavailable rather than merely unset while the device itself is turned off. */
 .label-ha-check--muted {
   opacity: .5;
   cursor: not-allowed;
@@ -8372,6 +8392,21 @@ progress.progress-indeterminate:indeterminate {
 }
 
 .watch-template-help__panel[hidden] { display: none; }
+
+/* The ✎ that opens a row's Home Assistant name. A pencil, not a `?`, so it does not read
+   as another explanation — and filled once an override is set, because a blank field and
+   one holding the row's own name are indistinguishable from the outside. */
+.watch-ha-name .watch-template-help__btn { cursor: pointer; }
+.watch-ha-name--set {
+  border-color: var(--pico-primary, var(--color-info)) !important;
+  color: var(--pico-primary, var(--color-info)) !important;
+}
+
+/* The panel holds one field, so it needs none of the placeholder list's width. Its own
+   class rather than a descendant of `.watch-ha-name`: `openAnchoredPopup` reparents the
+   panel onto `document.body` while it is open, so nothing in the row is its ancestor. */
+.watch-ha-name__panel { width: 18rem; }
+.watch-ha-name__panel input { margin: 0; }
 
 .watch-template-help__intro {
   margin: 0 0 0.4rem;

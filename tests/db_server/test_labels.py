@@ -484,3 +484,62 @@ class TestHomeAssistantPublishing:
 
         listed = (await http_client.get("/api/labels")).json()["labels"]
         assert next(l for l in listed if l["name"] == "migrated_ha_label")["publishToHa"] is False
+
+
+class TestHomeAssistantNameOverride:
+    """`mqttName` is what makes renaming a label safe once it is published: the label's
+    own name is annotation vocabulary and gets corrected, while the topics it keys are
+    what someone's automation subscribes to.
+
+    `None` means "clear it", so this is the one field on the PATCH where absent and null
+    must not behave alike — see the endpoint's `model_fields_set` check.
+    """
+
+    async def _label(self, http_client, name="cat"):
+        r = await http_client.post("/api/labels", json={"name": name, "color": "#FF0000"})
+        return r.json()["label"]
+
+    async def _read(self, http_client, uuid):
+        listed = (await http_client.get("/api/labels")).json()["labels"]
+        return next(l for l in listed if l["uuid"] == uuid)
+
+    async def test_a_new_label_has_no_override(self, http_client):
+        assert (await self._label(http_client))["mqttName"] is None
+
+    async def test_setting_it_sticks_and_survives_a_later_rename(self, http_client):
+        uuid = (await self._label(http_client, "tabby"))["uuid"]
+
+        await http_client.patch(f"/api/labels/{uuid}", json={"mqttName": "housecat"})
+        await http_client.patch(f"/api/labels/{uuid}", json={"name": "tabby cat"})
+
+        label = await self._read(http_client, uuid)
+        assert (label["name"], label["mqttName"]) == ("tabby cat", "housecat")
+
+    async def test_a_patch_that_does_not_mention_it_leaves_it_alone(self, http_client):
+        """The regression the sentinel exists for: every rename and recolour posts no
+        `mqttName`, and reading that as "clear it" would silently move the topics on the
+        next edit of anything at all."""
+        uuid = (await self._label(http_client, "tabby"))["uuid"]
+        await http_client.patch(f"/api/labels/{uuid}", json={"mqttName": "housecat"})
+
+        await http_client.patch(f"/api/labels/{uuid}", json={"color": "#00FF00"})
+
+        assert (await self._read(http_client, uuid))["mqttName"] == "housecat"
+
+    async def test_an_explicit_null_clears_it(self, http_client):
+        uuid = (await self._label(http_client, "tabby"))["uuid"]
+        await http_client.patch(f"/api/labels/{uuid}", json={"mqttName": "housecat"})
+
+        await http_client.patch(f"/api/labels/{uuid}", json={"mqttName": None})
+
+        assert (await self._read(http_client, uuid))["mqttName"] is None
+
+    async def test_blank_clears_it_too(self, http_client):
+        """The UI sends the field as typed, and an emptied box must not store `"  "` —
+        which slugifies to the topic level "unnamed", a name nobody chose."""
+        uuid = (await self._label(http_client, "tabby"))["uuid"]
+        await http_client.patch(f"/api/labels/{uuid}", json={"mqttName": "housecat"})
+
+        await http_client.patch(f"/api/labels/{uuid}", json={"mqttName": "   "})
+
+        assert (await self._read(http_client, uuid))["mqttName"] is None

@@ -242,9 +242,10 @@ logger.setLevel(LOG_LEVEL)
 # Only bboxes explicitly carrying this tag produce PRESENT image-label rows.
 _BBOX_VERIFIED_TAG = VERIFIED_TAG_UUID
 
-# Sentinel for Manager.update_label's parent_uuid param: `None` is itself a
-# meaningful value there (promote to root), so it can't also mean "not supplied".
-_PARENT_UUID_NOT_SET = object()
+# Sentinel for the Manager.update_label params where `None` is itself a meaningful value
+# — `parent_uuid` (promote to root) and `mqtt_name` (clear the override) — so it cannot
+# also mean "not supplied".
+_NOT_SET = object()
 
 # Bulk image actions that mutate image_labels, and therefore need the sidecar's
 # image_labels slice rewritten once per batch after the action has been applied.
@@ -595,7 +596,8 @@ class Manager:
         publish_per_source: Optional[bool] = None,
         exclusive_variants: Optional[bool] = None,
         exclusive_variants_iou_threshold: Optional[float] = None,
-        parent_uuid: Any = _PARENT_UUID_NOT_SET,
+        mqtt_name: Any = _NOT_SET,
+        parent_uuid: Any = _NOT_SET,
     ) -> None:
         """
         Update a label's name, color, label_type, scope, and/or parent.
@@ -612,9 +614,13 @@ class Manager:
         "not supplied" — there is currently no way to explicitly clear an already-set
         threshold back to "use the default" via this call.
 
+        `mqtt_name` is the name the label's Home Assistant device and topics are keyed on;
+        `None` clears the override back to the label's own name, which is why it takes the
+        same sentinel treatment as `parent_uuid` rather than the `None`-means-absent filter.
+
         `parent_uuid` moves the label (None promotes it to root); it defaults to the
-        sentinel `_PARENT_UUID_NOT_SET` rather than `None` because `None` is itself a
-        meaningful value here, distinct from "don't touch the parent".
+        sentinel `_NOT_SET` rather than `None` because `None` is itself a meaningful value
+        here, distinct from "don't touch the parent".
 
         Raises ValueError if `parent_uuid` would make the label its own parent or
         descendant (a cycle).
@@ -637,7 +643,10 @@ class Manager:
             if v is not None
         }
 
-        if parent_uuid is not _PARENT_UUID_NOT_SET:
+        if mqtt_name is not _NOT_SET:
+            updates["mqtt_name"] = mqtt_name
+
+        if parent_uuid is not _NOT_SET:
             if parent_uuid is not None:
                 await self._assert_no_reparent_cycle(label_uuid, parent_uuid)
             updates["parent_uuid"] = parent_uuid

@@ -274,6 +274,9 @@ class RuleView:
     #: keep history while publishing nothing. False removes it from every device it
     #: appears on and retracts what it had.
     publish_to_ha: bool = True
+    #: The name this rule's topics are keyed on, overriding `name`. None means "use
+    #: `name`" — see `InteractionRule.mqtt_name` for why the two are separate.
+    mqtt_name: Optional[str] = None
     #: Whether this rule also gets a `camera` entity carrying a snapshot of its last
     #: event. Independent of `publish_to_ha` and off by default unlike it - see
     #: InteractionRule.publish_snapshot_to_ha for why.
@@ -311,6 +314,9 @@ class SubjectView:
 
     uuid: str
     name: str
+    #: As `RuleView.mqtt_name` and `SourceView.mqtt_name`: the name this label's topics
+    #: are keyed on, so correcting the label's wording does not move them.
+    mqtt_name: Optional[str] = None
     #: Whether this label gets a device at all.
     publish_to_ha: bool = True
     #: Whether it also gets the per-(rule, source) counter tier. Off by default: this is
@@ -338,7 +344,18 @@ def _topic_source(source: SourceView) -> str:
 
 
 def _topic_rule(rule: RuleView) -> str:
-    return slugify(rule.name)
+    # Same precedence as `_topic_source`: an explicit MQTT name wins, so a rule renamed
+    # in the Watchers editor keeps publishing where the automations expect it.
+    return slugify(rule.mqtt_name or rule.name)
+
+
+def _topic_subject(subject: "SubjectView") -> str:
+    """A label's topic level. Overridable for the same reason a rule's is.
+
+    App-wide rather than per profile — `subject_base_topic` carries no profile segment —
+    so this is the one topic level two watchers agree on by construction.
+    """
+    return slugify(subject.mqtt_name or subject.name)
 
 
 def entity_name(device_name: str, name: str) -> str:
@@ -635,7 +652,7 @@ def build_subject_discovery(
     covers is present but generates no events — and the rule-independent answer is the
     one that stays useful when rules change.
     """
-    subject_slug = slugify(subject.name)
+    subject_slug = _topic_subject(subject)
     base = f"{prefix}/{subject_base_topic(subject_slug)}"
 
     cmps: Dict[str, Any] = {
@@ -721,7 +738,7 @@ def build_subject_discovery(
             }
 
     for rule, sources in rules:
-        rule_slug = slugify(rule.name)
+        rule_slug = _topic_rule(rule)
         rule_label = entity_name(subject.name, rule.name)
         # Tier 2 — "when is this subject doing X on *any* camera", the question most
         # worth asking and the one a per-camera breakdown alone cannot answer.
@@ -804,7 +821,7 @@ def build_rules_discovery(profiles: Sequence[ProfileView], prefix: str) -> Optio
         for rule in profile.rules:
             if not rule.enabled or not rule.publish_to_ha:
                 continue
-            rule_slug = slugify(rule.name)
+            rule_slug = _topic_rule(rule)
             base = f"{prefix}/{rule_global_base_topic(profile_slug, rule_slug)}"
             label = entity_name("PurrView Rules", rule.name)
             # uuid-based like everywhere else: renaming a rule moves its topics but must
@@ -1559,16 +1576,13 @@ class MqttBridge:
         #: Label vocabulary, refreshed with the profile snapshot. Labels live in the DB
         #: and change without this process being told, so both are re-read per reconcile
         #: rather than cached at startup.
-        self._subject_names: Dict[str, str] = {}
-        self._label_ancestry: Dict[str, List[str]] = {}
-        #: label uuid → (publish_to_ha, publish_per_source). Both default off, matching
-        #: `LabelBase`: a label the bridge has not seen must not be published on a guess,
-        #: because publishing is the expensive direction — it creates a device in someone
-        #: else's Home Assistant, where absence is merely a label they have not opted in.
         #:
-        #: Absent means the defaults,
-        #: so a label the bridge has not seen behaves as it did before the flags existed.
-        self._label_publish: Dict[str, Tuple[bool, bool]] = {}
+        #: Absent means a label the bridge has not seen, which publishes nothing: the
+        #: flags default off on `LabelBase`, and publishing is the expensive direction —
+        #: it creates a device in someone else's Home Assistant, where absence is merely
+        #: a label they have not opted in.
+        self._label_views: Dict[str, SubjectView] = {}
+        self._label_ancestry: Dict[str, List[str]] = {}
         #: Entities in the last desired discovery set, for the app device's budget
         #: sensor. Zero until the first reconcile, which is honest: nothing published.
         self._entity_count: int = 0
@@ -1718,8 +1732,8 @@ class MqttBridge:
             self._publish_watcher_availability()
             await self.publish_all_discovery()
 
-    async def _load_labels(self) -> Tuple[Dict[str, str], Dict[str, List[str]], Dict[str, Tuple[bool, bool]]]:
-        """`(uuid → name, uuid → ancestor uuids, uuid → publish flags)` for the label tree.
+    async def _load_labels(self) -> Tuple[Dict[str, SubjectView], Dict[str, List[str]]]:
+        """`(uuid → SubjectView, uuid → ancestor uuids)` for the whole label tree.
 
         The ancestry half is what makes subject enumeration correct: rules commonly
         name a *parent* label with `include_descendants`, and it is the descendant that
@@ -1747,15 +1761,17 @@ class MqttBridge:
             return chain
 
         return (
-            {label.uuid: label.name for label in labels},
-            {label.uuid: _ancestors(label.uuid) for label in labels},
             {
-                label.uuid: (
-                    bool(getattr(label, "publish_to_ha", False)),
-                    bool(getattr(label, "publish_per_source", False)),
+                label.uuid: SubjectView(
+                    uuid=label.uuid,
+                    name=label.name,
+                    mqtt_name=getattr(label, "mqtt_name", None) or None,
+                    publish_to_ha=bool(getattr(label, "publish_to_ha", False)),
+                    publish_per_source=bool(getattr(label, "publish_per_source", False)),
                 )
                 for label in labels
             },
+            {label.uuid: _ancestors(label.uuid) for label in labels},
         )
 
     def _subject_views(self, profiles: Sequence[ProfileView]) -> Dict[str, SubjectView]:
@@ -1767,22 +1783,14 @@ class MqttBridge:
         something was in the room. `publish_to_ha` on the label is the opt-out, and it is
         the only one — see `build_all_discovery`.
 
-        Keyed off `_subject_names`, so a label deleted since the last reconcile drops out
-        by itself rather than becoming a device titled with a bare uuid.
+        Rebuilt from the last label read, so a label deleted since the previous reconcile
+        drops out by itself rather than becoming a device titled with a bare uuid.
 
         `profiles` is unused now and kept deliberately: the rule breakdown still comes
         from them (`subjects_in_scope`), and a signature that stopped mentioning them
         would suggest subjects and profiles had become unrelated.
         """
-        return {
-            uuid: SubjectView(
-                uuid=uuid,
-                name=name,
-                publish_to_ha=self._label_publish.get(uuid, (False, False))[0],
-                publish_per_source=self._label_publish.get(uuid, (False, False))[1],
-            )
-            for uuid, name in self._subject_names.items()
-        }
+        return dict(self._label_views)
 
     def _expand_subjects(self, rule: Any) -> Tuple[str, ...]:
         """Every label uuid this rule can match as its subject.
@@ -1813,10 +1821,9 @@ class MqttBridge:
         # `GetSourcesResponse.sources` is already keyed by uuid — iterating it yields
         # the uuid strings, not the sources.
         source_by_uuid = dict(sources_resp.sources or {})
-        label_names, ancestry, label_publish = await self._load_labels()
-        self._subject_names = label_names
+        label_views, ancestry = await self._load_labels()
+        self._label_views = label_views
         self._label_ancestry = ancestry
-        self._label_publish = label_publish
 
         views: List[ProfileView] = []
         for profile in profiles_resp.profiles or []:
@@ -1835,6 +1842,7 @@ class MqttBridge:
                 RuleView(
                     uuid=r.uuid,
                     name=r.name,
+                    mqtt_name=getattr(r, "mqtt_name", None) or None,
                     enabled=r.enabled,
                     publish_to_ha=bool(getattr(r, "publish_to_ha", True)),
                     publish_snapshot_to_ha=bool(getattr(r, "publish_snapshot_to_ha", False)),
@@ -1872,7 +1880,7 @@ class MqttBridge:
         # stale count and a stale ON into a freshly created entity. Now that the flag is
         # opt-in and `_subject_views` returns the whole vocabulary, an unfiltered map
         # would do that for *every* label the tracker ever sees.
-        self._subject_slugs = {uuid: slugify(view.name) for uuid, view in subjects.items() if view.publish_to_ha}
+        self._subject_slugs = {uuid: _topic_subject(view) for uuid, view in subjects.items() if view.publish_to_ha}
         desired = build_all_discovery(profiles, self._prefix, subjects)
         # Measured off `desired`, not off what this pass happens to publish: an
         # unchanged config publishes nothing, and a budget that read zero whenever
@@ -2587,7 +2595,8 @@ class MqttBridge:
         entity reads leaves it on the broker for good, and re-ticking the flag later
         would replay a stale ON into a freshly created entity.
         """
-        if self._publisher is None or not self._label_publish.get(subject_uuid, (False, False))[1]:
+        subject = self._label_views.get(subject_uuid)
+        if self._publisher is None or subject is None or not subject.publish_per_source:
             return
         slug = self._subject_slugs.get(subject_uuid)
         source_slug = self._slugs.source_slug(source_uuid)

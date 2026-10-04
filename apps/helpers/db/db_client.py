@@ -7808,6 +7808,7 @@ class DbClient:
                     rearm_delay_s=rule.rearm_delay_s,
                     max_duration_s=rule.max_duration_s,
                     event_label=rule.event_label,
+                    mqtt_name=rule.mqtt_name,
                 )
             )
 
