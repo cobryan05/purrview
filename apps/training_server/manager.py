@@ -568,14 +568,14 @@ class Manager:
         one you otherwise notice by a job taking hours instead of minutes. The
         notices bar is app-wide, so it is seen without going to look.
 
-        Keyed per job so two CPU jobs do not collapse into one line, and derived
-        from the live queue rather than latched, so it clears when the job ends.
+        Keyed per job so two CPU jobs do not collapse into one line, and drawn from
+        the running jobs only, so it clears when the job ends.
         """
         if not self._expects_gpu():
             return []
         notices: List[Dict[str, Any]] = []
         for job in running:
-            if not (job.last_progress or {}).get("device_warning"):
+            if not job.device_warning:
                 continue
             label = (job.config or {}).get("model_name") or job.job_id[:8]
             notices.append(

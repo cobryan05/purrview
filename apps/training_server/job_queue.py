@@ -46,6 +46,10 @@ class Job:
     # (interrupted) job has no live progress to report.
     last_progress: Optional[dict[str, Any]] = None
     started_at: Optional[datetime] = None
+    # Latched from whichever progress event carried it. `warn_if_cpu` emits the CPU-fallback
+    # warning once at the top of train(), and `last_progress` only ever holds the newest
+    # event, so the app-wide notice needs a field that outlives the next epoch tick.
+    device_warning: str = ""
 
     def _persist(self) -> None:
         """Atomically write job state to disk for crash recovery."""
@@ -285,6 +289,8 @@ class JobQueue:
 
         def progress_cb(data: dict) -> None:
             job.last_progress = data
+            if data.get("device_warning"):
+                job.device_warning = data["device_warning"]
             job.emit("progress", data)
 
         try:

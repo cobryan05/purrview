@@ -160,7 +160,7 @@ class TestTheCpuFallbackNotice:
     def test_a_cpu_job_raises_a_warning_notice(self, manager, monkeypatch):
         monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
         job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
-        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+        job.device_warning = "WARNING: no GPU detected"
 
         notices = manager.get_status()["notices"]
 
@@ -183,7 +183,7 @@ class TestTheCpuFallbackNotice:
         host with no GPU. CPU training is then what they asked for."""
         monkeypatch.setenv("TRAINING_EXPECTS_GPU", "0")
         job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
-        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+        job.device_warning = "WARNING: no GPU detected"
 
         assert manager.get_status()["notices"] == []
 
@@ -192,16 +192,16 @@ class TestTheCpuFallbackNotice:
         absent answer is 'expects a GPU', so the failure stays loud."""
         monkeypatch.delenv("TRAINING_EXPECTS_GPU", raising=False)
         job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
-        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+        job.device_warning = "WARNING: no GPU detected"
 
         assert len(manager.get_status()["notices"]) == 1
 
     def test_the_notice_clears_when_the_job_stops(self, manager, monkeypatch):
-        """Derived from the live queue rather than latched: a finished job's
-        warning must not outlive it."""
+        """Drawn from the running jobs only: a finished job's warning must not
+        outlive it, even though the job object still carries it."""
         monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
         job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
-        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+        job.device_warning = "WARNING: no GPU detected"
         assert len(manager.get_status()["notices"]) == 1
 
         job.status = "done"
@@ -214,8 +214,41 @@ class TestTheCpuFallbackNotice:
         monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
         for jid in ("j1", "j2"):
             job = _job(manager, jid, "running", config={"model_name": jid})
-            job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+            job.device_warning = "WARNING: no GPU detected"
 
         keys = {n["key"] for n in manager.get_status()["notices"]}
 
         assert keys == {"training_cpu_only_j1", "training_cpu_only_j2"}
+
+    async def test_the_notice_survives_the_epochs_that_follow_it(self, manager, monkeypatch):
+        """The half the hand-set cases above cannot reach: `warn_if_cpu` emits the
+        warning in one event at the top of `train()` and nothing repeats it, so a
+        notice read off the newest progress payload lives for one epoch tick."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        released = asyncio.Event()
+        warned = asyncio.Event()
+
+        class CpuTrainer:
+            async def train(self, config, progress_cb, cancel_event):
+                progress_cb({"log": "no GPU detected", "device_warning": "WARNING: no GPU detected"})
+                progress_cb({"progress": 0.1, "epoch": 1, "total_epochs": 100, "train_loss": 9.0})
+                warned.set()
+                await released.wait()
+                return {"model_path": "/tmp/model.onnx"}
+
+        queue = manager._queue
+        queue.register_trainer("cpu-fake", CpuTrainer())
+        queue.start()
+        try:
+            job = await queue.submit({"trainer_type": "cpu-fake", "model_name": "slow-model"})
+            ok, _ = queue.start_job(job.job_id, [])
+            assert ok
+            await asyncio.wait_for(warned.wait(), timeout=5)
+
+            notices = manager.get_status()["notices"]
+
+            assert [n["key"] for n in notices] == [f"training_cpu_only_{job.job_id}"]
+            assert "slow-model" in notices[0]["message"]
+        finally:
+            released.set()
+            await queue.shutdown()
