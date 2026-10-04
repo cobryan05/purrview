@@ -7865,6 +7865,7 @@ class DbClient:
                 default_model_name=data.default_model_name,
                 default_analysis_fps=data.default_analysis_fps,
                 default_analysis_width=data.default_analysis_width,
+                default_manual_recording_s=data.default_manual_recording_s,
             )
             session.add(profile)
             await session.flush()

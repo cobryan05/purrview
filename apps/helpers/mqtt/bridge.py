@@ -544,6 +544,35 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         "name": None,
         "topic": f"{base}/image",
     }
+    # Start and stop a recording that no rule asked for. A switch rather than a button
+    # because it has a state worth seeing and an automation has to be able to turn it
+    # *off* — a button could only ever start one, and the cap would then be the only way
+    # it ever stopped.
+    #
+    # Not optimistic, for the same reason the armed switch is not: the state topic is
+    # published once the watcher has actually opened the recording, so the switch cannot
+    # show recording while the camera is still waking up.
+    cmps["recording"] = {
+        "p": "switch",
+        "unique_id": f"{source_device_id(source.uuid)}_recording",
+        "name": "recording",
+        "icon": "mdi:record-rec",
+        "command_topic": f"{base}/recording/set",
+        "state_topic": f"{base}/recording",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+    }
+    cmps["recording_remaining"] = {
+        "p": "sensor",
+        "unique_id": f"{source_device_id(source.uuid)}_recording_remaining",
+        "name": "recording remaining",
+        "device_class": "duration",
+        "unit_of_measurement": "s",
+        "state_class": "measurement",
+        "entity_category": "diagnostic",
+        "state_topic": telemetry_state_topic,
+        "value_template": "{{ value_json.recordingRemainingS | default(0) }}",
+    }
     cmps["tracked_count"] = {
         "p": "sensor",
         "unique_id": f"{source_device_id(source.uuid)}_tracked_count",
@@ -1371,6 +1400,34 @@ class SlugIndex:
                     return rule_uuid
         return None
 
+    def source_base(self, source_uuid: str) -> Optional[str]:
+        """`<profile>/<source>` for a source, from its uuid alone.
+
+        Unlike `rule_base` there is no profile uuid to key on: the recording switch is a
+        property of the camera, and whoever flips it has a source device, not a profile.
+        A source watched by two profiles resolves to the first — the same camera, and the
+        topic only has to name it.
+        """
+        for profile_slug, sources, _rules in self.profiles.values():
+            slug = sources.get(source_uuid)
+            if slug is not None:
+                return source_base_topic(profile_slug, slug)
+        return None
+
+    def source_uuid_for_slugs(self, profile_slug: str, source_slug: str) -> Optional[str]:
+        """A slug pair off an inbound source-scoped command topic back to a source uuid.
+
+        The source counterpart of `rule_uuid_for_slugs`, and linear for the same reason:
+        it runs on a switch being flipped, not per frame.
+        """
+        for profile_slug_candidate, sources, _rules in self.profiles.values():
+            if profile_slug_candidate != profile_slug:
+                continue
+            for source_uuid, slug in sources.items():
+                if slug == source_slug:
+                    return source_uuid
+        return None
+
     def count_topic(self, profile_uuid: str, source_uuid: str, rule_uuid: str) -> Optional[str]:
         base = self.rule_base(profile_uuid, source_uuid, rule_uuid)
         return None if base is None else f"{base}/count"
@@ -1607,6 +1664,17 @@ class MqttBridge:
         #: Set once the command subscription is registered. The subscription is a
         #: wildcard, so it covers rules renamed or added later and never needs redoing.
         self._armed_subscribed: bool = False
+        #: source_uuid → whether Home Assistant currently wants a manual recording on it.
+        #: Polled by the watchers, exactly as `_armed` is, so a watcher that starts later
+        #: gets the current answer without anything being pushed at it.
+        #:
+        #: Deliberately **not** restored from a retained topic, which is the one way this
+        #: differs from `_armed`. Arming is a standing policy and should survive a
+        #: restart; a recording is an action, and resuming one because a retained `ON`
+        #: outlived the process would start a recording nobody asked for — on a Ring
+        #: camera, silently blinding it. The reconcile publishes `OFF` instead.
+        self._recording: Dict[str, bool] = {}
+        self._recording_subscribed: bool = False
         #: The loop this bridge was started on, captured so inbound MQTT callbacks —
         #: which arrive on paho's network thread — have somewhere to hand work back to.
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1618,6 +1686,36 @@ class MqttBridge:
     def is_rule_armed(self, rule_uuid: str) -> bool:
         """Whether a rule is currently armed. Unknown rules are armed — see `_armed`."""
         return self._armed.get(rule_uuid, True)
+
+    def wants_recording(self, source_uuid: str) -> bool:
+        """Whether Home Assistant currently wants a manual recording on this source.
+
+        Defaults to False, the opposite of `is_rule_armed`'s default, and for the same
+        reason: an unknown rule should keep working, an unknown source should not start
+        recording.
+        """
+        return self._recording.get(source_uuid, False)
+
+    def set_source_recording(self, source_uuid: str, recording: bool) -> None:
+        """Record a recording request and echo it. **Must be called on the event loop.**
+
+        The one writer, like `set_rule_armed` — the HA switch arrives here via
+        `_on_recording_command`, and the watcher calls it to report what it actually did,
+        so the switch settles on the truth rather than on what was asked.
+        """
+        if self._recording.get(source_uuid) == recording:
+            return
+        self._recording[source_uuid] = recording
+        self._publish_source_recording(source_uuid, recording)
+
+    def _publish_source_recording(self, source_uuid: str, recording: bool) -> None:
+        base = self._slugs.source_base(source_uuid) if self._slugs else None
+        if base is None or self._publisher is None:
+            return
+        # Retained, so HA shows the right switch position on reconnect rather than an
+        # unknown one — and `OFF` is republished on reconcile, so a retained `ON` left by
+        # a killed process cannot outlive it.
+        self._publisher.publish(f"{base}/recording", "ON" if recording else "OFF", retain=True)
 
     async def ensure_started(self) -> bool:
         if self._publisher is not None:
@@ -1722,6 +1820,13 @@ class MqttBridge:
         # property of the connection, and dropping it would re-arm every rule on a
         # reconnect.
         self._armed_subscribed = False
+        # Same argument for the subscription flag. `_recording` is dropped rather than
+        # kept, which is where this differs from `_armed`: a recording is an action in
+        # flight, and the watcher holding it has no connection to echo through, so
+        # carrying the request across a reconnect would claim a recording that is not
+        # running. See `_recording`.
+        self._recording_subscribed = False
+        self._recording.clear()
 
     async def reconcile(self) -> None:
         """Connect if not already connected, then republish discovery against current
@@ -1871,6 +1976,13 @@ class MqttBridge:
         # subscription is a wildcard and so covers rules added or renamed later.
         await self._restore_armed_state()
         self._ensure_armed_subscription()
+        # No restore counterpart on purpose — see `_recording`. The publish below is what
+        # clears a retained `ON` a killed process left behind, so the switch starts off
+        # and no camera is recording because of a message that outlived its watcher.
+        self._subscribe_recording()
+        for profile in profiles:
+            for source in profile.sources:
+                self._publish_source_recording(source.uuid, self.wants_recording(source.uuid))
         subjects = self._subject_views(profiles)
         # ⚠️ Opted-out labels are **left out**, for the same reason `build_slug_index`
         # drops an opted-out rule or camera: this map is the gate every subject publisher
@@ -2035,6 +2147,43 @@ class MqttBridge:
             return
         self._publisher.subscribe("+/rules/+/armed/set", self._on_armed_command)
         self._armed_subscribed = True
+
+    def _subscribe_recording(self) -> None:
+        """Subscribe to every source's recording command topic, once.
+
+        A wildcard for the same reason as `_subscribe_armed`'s, and shaped
+        `<profile>/<source>/recording/set`. The fixed `recording` segment is what keeps
+        it from matching a rule's topics, which carry a `rule` segment at that depth.
+        """
+        if self._publisher is None or self._recording_subscribed:
+            return
+        self._publisher.subscribe("+/+/recording/set", self._on_recording_command)
+        self._recording_subscribed = True
+
+    def _on_recording_command(self, topic: str, payload: bytes) -> None:
+        """Handle the recording switch being flipped in Home Assistant.
+
+        ⚠️ Runs on paho's network thread — see `_on_armed_command`. Parses and hops back
+        to the loop, and does nothing else here.
+        """
+        parts = topic.split("/")
+        # <prefix> <profile> <source> recording set
+        if len(parts) < 5 or parts[-1] != "set" or parts[-2] != "recording":
+            return
+        source_uuid = self._slugs.source_uuid_for_slugs(parts[-4], parts[-3])
+        if source_uuid is None:
+            return
+        value = payload.decode(errors="replace").strip().upper()
+        if value not in ("ON", "OFF"):
+            logger.debug("Ignoring unrecognised recording payload %r on %s", value, topic)
+            return
+        loop = self._loop
+        if loop is None:
+            # Nothing to echo to yet. Recorded so a watcher polling `wants_recording`
+            # still sees it; the next reconcile publishes the state.
+            self._recording[source_uuid] = value == "ON"
+            return
+        loop.call_soon_threadsafe(self.set_source_recording, source_uuid, value == "ON")
 
     def _rule_uuid_from_topic(self, topic: str) -> Optional[str]:
         """`<prefix>/<profile>/rules/<rule>/armed[/set]` → rule uuid, or None.

@@ -29,6 +29,8 @@ import logging
 import os
 import tempfile
 import time
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -80,6 +82,13 @@ from apps.helpers.training.collectorSpec import CollectorSpec
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventCloseReason, EventPhase, WatchEventSignal
 from apps.helpers.watch.geometry import zone_from_row
+from apps.helpers.watch.manualRecording import (
+    DEFAULT_MAX_DURATION_S,
+    MANUAL_RULE_NAME,
+    MANUAL_RULE_UUID,
+    ManualRecording,
+    clamp_max_duration,
+)
 from apps.helpers.watch.motion import MotionDetector
 from apps.helpers.watch.rules import TRIGGER_ON_EXIT, RuleSpec, expand_descendants
 from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies, in_scope
@@ -124,6 +133,30 @@ MEDIA_ACTION_KINDS = {
 }
 #: Shared, stateless, and never used for a real run — see the class docstring.
 _NULL_RECORDER = NullWatchEventRecorder()
+
+
+@dataclass(frozen=True)
+class _ManualClipRow:
+    """Stands in for the `watch_actions` row a manual recording's clip would have.
+
+    A plain object rather than a `WatchAction`, because this one must never reach the
+    database: the profile's children are replaced wholesale on every save, so a real row
+    the user never created would either be written out or vanish on the next edit. The
+    action layer only ever reads these fields off it.
+
+    The scope lists stay empty because nothing resolves this row through `action_applies`
+    — `_actions_for` returns it directly — but they are present so anything that walks an
+    action row generically sees the shape it expects.
+    """
+
+    uuid: str = "manual-clip"
+    kind: str = CLIP_ACTION_KIND
+    name: str = MANUAL_RULE_NAME
+    trigger: str = "event_ended"
+    enabled: bool = True
+    order: int = 0
+    rule_uuids_json: Tuple[str, ...] = ()
+    source_uuids_json: Tuple[str, ...] = ()
 
 
 @register_task()
@@ -207,6 +240,23 @@ class StreamWatcherTask(Task):
         #: Ring camera reports no motion — so closing the view says so explicitly
         #: rather than leaving the camera blind for the rest of the window.
         self._release_requests: Set[str] = set()
+        #: source_uuid → cap, for recordings asked for but not yet opened. Same
+        #: no-I/O-in-handle_command reason as the two sets above: the START signal has to
+        #: be dispatched from the loop, because dispatching it writes a row and cuts into
+        #: the action layer.
+        self._manual_requests: Dict[str, float] = {}
+        #: source_uuid → the recording currently open on it. One per source, not per
+        #: request: a second Record press on a camera already recording extends nothing
+        #: and must not open a second event over the same window.
+        self._manual_open: Dict[str, ManualRecording] = {}
+        #: The clip action a manual recording runs, built once in `_build_actions`. A
+        #: manual recording is not in any rule's scope, so the profile's own `record_clip`
+        #: rows never apply to it — and a profile is allowed to have none at all, which
+        #: must not mean the Record button silently writes nothing.
+        self._manual_clip: Optional[Tuple[Any, Any]] = None
+        #: source_uuid → the last value read from the bridge's recording switch, so a
+        #: change can be told from a standing value. See `_apply_bridge_recording`.
+        self._bridge_recording_seen: Dict[str, bool] = {}
         self._pin_ids: Dict[str, Optional[str]] = {}
         self._dry_run: bool = False
         self._analysis_fps_cap: Optional[float] = None
@@ -691,6 +741,24 @@ class StreamWatcherTask(Task):
         # the failure was silent — every event compiled from zero frames.
         self._frame_actions = [entry for entry in self._actions if FRAME_ANALYSED in entry[1].triggers(entry[0])]
 
+        # Built unconditionally, and not from the profile's rows: the Record button is
+        # offered on every source the watcher holds, so a profile with no `record_clip`
+        # action — or one scoped to other cameras — must still be able to record by hand.
+        # Its max_length is left at the action default and the cap is enforced by
+        # `_service_manual_recordings` instead, so one number bounds the recording rather
+        # than two that can disagree.
+        manual_row = _ManualClipRow()
+        try:
+            self._manual_clip = (
+                manual_row,
+                create_action(CLIP_ACTION_KIND, backend_for=self._clip_backend_for),
+            )
+        except Exception as e:
+            # Same reasoning as the loop above: a watcher that cannot build this one
+            # action still has every other reason to start.
+            logger.exception("Could not build the manual recording clip action")
+            self.log(f"Manual recording unavailable: {e}")
+
         if self._actions:
             self.log(f"Loaded {len(self._actions)} action(s)")
         if self._frame_actions:
@@ -874,7 +942,167 @@ class StreamWatcherTask(Task):
             for row, action in self._actions
             if row.kind == CLIP_ACTION_KIND and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
         ]
+        # A manual recording's cap, not the clip action's max_length: the cap is what
+        # actually bounds it (see `_service_manual_recordings`), and it can legitimately
+        # exceed every rule's clip length. Without this the overlay and the spool reach
+        # back only as far as the rules need and a long manual recording loses its head.
+        open_recordings: Dict[str, ManualRecording] = getattr(self, "_manual_open", None) or {}
+        recording = open_recordings.get(source_uuid or "")
+        if recording is not None:
+            lengths.append(recording.max_duration_s)
         return max(lengths) if lengths else 0.0
+
+    def _default_manual_recording_s(self) -> float:
+        """The profile's manual-recording cap, or the module default.
+
+        getattr rather than attribute access: `handle_command` is reachable during the
+        PENDING window, before `_init` has resolved a profile at all.
+        """
+        profile = getattr(self, "_profile", None)
+        return float(getattr(profile, "default_manual_recording_s", None) or DEFAULT_MAX_DURATION_S)
+
+    async def _service_manual_recordings(self, pipeline: WatchPipeline) -> None:
+        """Open, cap and close the manual recordings on this source.
+
+        Runs on the loop pass rather than inside `step()` so the cap still fires on a
+        source that has stopped delivering frames — a camera that fails mid-recording
+        must stop recording, and `step` is only reached while frames arrive.
+
+        The signals are the engine's own type under a sentinel rule, so everything
+        downstream — the row, the drain hold, the clip cut, the overlay, the bridge
+        publish — runs the single path it runs for a rule-driven event. See
+        `apps.helpers.watch.manualRecording`.
+        """
+        source_uuid = pipeline.source_uuid or ""
+        if not source_uuid:
+            return
+        now = time.monotonic()
+        self._apply_bridge_recording(source_uuid)
+
+        cap = self._manual_requests.pop(source_uuid, None)
+        if cap is not None and source_uuid not in self._manual_open:
+            recording = ManualRecording(
+                source_uuid=source_uuid,
+                instance_id=f"{MANUAL_RULE_UUID}:{uuid.uuid4()}",
+                started_at=now,
+                max_duration_s=cap,
+            )
+            self._manual_open[source_uuid] = recording
+            self.log(f"Manual recording started on {pipeline.source_name} (max {cap:.0f}s)")
+            await self._dispatch(self._manual_signal(recording, EventPhase.START, now), pipeline)
+
+        recording = self._manual_open.get(source_uuid)
+        if recording is None:
+            return
+        # The cap is the only ending the user did not choose, so it is the only one
+        # reported as CAP — a hand stop is an ordinary close, not a truncation, and
+        # labelling it otherwise puts "[capped by max duration]" on every clip.
+        if recording.stop_requested:
+            await self._close_manual_recording(pipeline, EventCloseReason.PREDICATE)
+        elif recording.expired(now):
+            await self._close_manual_recording(pipeline, EventCloseReason.CAP)
+
+    def _apply_bridge_recording(self, source_uuid: str) -> None:
+        """Mirror Home Assistant's recording switch onto this source, and report back.
+
+        Polled off the bridge rather than pushed, for the reasons `_apply_rule_arming`
+        gives. The echo in the other direction matters as much as the read: a recording
+        the user started in the app, or one the cap just ended, has to move the switch,
+        or HA sits on a stale `ON` and the next flip to `OFF` looks like a no-op to it.
+        """
+        try:
+            bridge = self._manager.get_mqtt_bridge()
+        except Exception:
+            return
+        if bridge is None or not getattr(bridge, "connected", False):
+            return
+        wanted = bridge.wants_recording(source_uuid)
+        active = source_uuid in self._manual_open or source_uuid in self._manual_requests
+        seen = self._bridge_recording_seen.get(source_uuid, False)
+        if wanted != seen:
+            # An edge from Home Assistant. Edge-triggered, not level-triggered, and that
+            # distinction is the whole method: `wants_recording` defaults to False, so a
+            # level test would read "HA has never mentioned this camera" as "HA wants it
+            # stopped" and cancel every recording started from the app on the next pass.
+            self._bridge_recording_seen[source_uuid] = wanted
+            if wanted and not active:
+                self._manual_requests[source_uuid] = clamp_max_duration(None, self._default_manual_recording_s())
+                self._live_requests.add(source_uuid)
+                self._release_requests.discard(source_uuid)
+            elif not wanted and source_uuid in self._manual_open:
+                self._manual_open[source_uuid].stop_requested = True
+            return
+        if active != wanted:
+            # The app or the cap changed it, not HA. Echo so the switch catches up —
+            # otherwise HA keeps showing ON and its next flip to OFF reads as no change.
+            #
+            # `_bridge_recording_seen` is deliberately left alone: it records what was
+            # last *read* from the bridge, and writing our own echo into it would make
+            # the echo itself look like an incoming change on the next pass — which read
+            # as "Home Assistant turned it off" and stopped the recording immediately.
+            bridge.set_source_recording(source_uuid, active)
+
+    def _manual_recording_status(self, source_uuid: Optional[str]) -> Dict[str, Any]:
+        """What the Record button renders: whether this source is recording, and for how
+        much longer.
+
+        `available` is separate from `active` because the button has three states, not
+        two: a watcher whose clip action could not be built can never record, and a
+        button that silently does nothing is worse than one that is visibly disabled.
+
+        getattr throughout: this is reached through the live preview endpoint during the
+        PENDING window, before `_init` has run, and tests build this class with `__new__`.
+        """
+        open_recordings: Dict[str, ManualRecording] = getattr(self, "_manual_open", None) or {}
+        recording = open_recordings.get(source_uuid or "")
+        status: Dict[str, Any] = {
+            "available": getattr(self, "_manual_clip", None) is not None,
+            "active": recording is not None,
+            "defaultMaxDurationS": self._default_manual_recording_s(),
+        }
+        if recording is not None:
+            now = time.monotonic()
+            status["maxDurationS"] = recording.max_duration_s
+            status["elapsedS"] = round(recording.elapsed_s(now), 1)
+            status["remainingS"] = round(recording.remaining_s(now), 1)
+        return status
+
+    async def _close_manual_recording(self, pipeline: WatchPipeline, reason: EventCloseReason) -> None:
+        """End the manual recording on this source, if there is one. Idempotent."""
+        source_uuid = pipeline.source_uuid or ""
+        recording = self._manual_open.pop(source_uuid, None)
+        if recording is None:
+            return
+        now = time.monotonic()
+        # Released whatever the ending: a manual recording is the only thing that asked
+        # this source to stay awake, and leaving the request set would hold a Ring camera
+        # live until `live_hold_s` lapsed on its own.
+        self._live_requests.discard(source_uuid)
+        self._release_requests.add(source_uuid)
+        ended = {
+            EventCloseReason.CAP: "capped",
+            EventCloseReason.FORCED: "cut short by the watcher stopping",
+        }.get(reason, "stopped")
+        self.log(f"Manual recording {ended} on {pipeline.source_name} after {recording.elapsed_s(now):.0f}s")
+        await self._dispatch(self._manual_signal(recording, EventPhase.END, now, reason), pipeline)
+
+    def _manual_signal(
+        self,
+        recording: ManualRecording,
+        phase: EventPhase,
+        now: float,
+        close_reason: EventCloseReason = EventCloseReason.PREDICATE,
+    ) -> WatchEventSignal:
+        return WatchEventSignal(
+            rule_uuid=MANUAL_RULE_UUID,
+            rule_name=MANUAL_RULE_NAME,
+            phase=phase,
+            at=now,
+            started_at=recording.started_at,
+            source_uuid=recording.source_uuid,
+            close_reason=close_reason,
+            instance_id=recording.instance_id,
+        )
 
     def _service_ring_hold(self, pipeline: WatchPipeline) -> None:
         """Hold the frame ring open across every event currently recording this source.
@@ -1464,6 +1692,11 @@ class StreamWatcherTask(Task):
                 # for is a camera that has stopped producing frames, so the per-frame
                 # presence publish is precisely the thing that will not run.
                 self._expire_stale_presence(now)
+                # Fourth, and the same argument once more: a manual recording's cap is
+                # the user's only protection against recording until the disk fills, so
+                # a camera that fails mid-recording must still stop recording.
+                for pipeline in self._pipelines:
+                    await self._service_manual_recordings(pipeline)
                 # A source already being read is not due again, however long it has
                 # been: `due()` only knows about pacing, and a source blocked on a
                 # slow frame has not been rescheduled yet.
@@ -1508,6 +1741,11 @@ class StreamWatcherTask(Task):
                     self._resolve_slot_names(signal, pipeline)
                     self._note_event(signal)
                     await self._dispatch(signal, pipeline)
+                # Manual recordings are not the engine's, so `close_open_events` does not
+                # know about them — but the reason above applies unchanged: a recording
+                # the user started must come back as a clip rather than disappear because
+                # they saved the watcher's config while it ran.
+                await self._close_manual_recording(pipeline, EventCloseReason.FORCED)
             # Now that every clip has been cut, the chunks are dead weight — full-rate
             # video that nothing will ever read again.
             for drain in self._clip_drains.values():
@@ -2124,7 +2362,17 @@ class StreamWatcherTask(Task):
         Both scope lists are empty-means-all, so an action nobody has narrowed still
         fires everywhere. See `apps.helpers.watch.scoping` for why the scope hangs off
         the action rather than off the rule.
+
+        A manual recording is the exception, and has to be: it belongs to no rule, so
+        every scoped row would either miss it or — for the empty-means-all rows — catch
+        it and run an MQTT publish or a training collector the user did not ask for by
+        pressing Record. It runs exactly one action, its own clip.
         """
+        if signal.rule_uuid == MANUAL_RULE_UUID:
+            if self._manual_clip is None:
+                return []
+            row, action = self._manual_clip
+            return [(row, action)] if trigger in action.triggers(row) else []
         return [
             (row, action)
             for row, action in self._actions
@@ -2158,7 +2406,13 @@ class StreamWatcherTask(Task):
         source, which is the behaviour this replaces.
 
         Costs one pass over the action list per event edge — not per frame.
+
+        A manual recording always files a row. The user asking for it is the reason the
+        event exists, so there is no configuration that could decline to log it, and a
+        recording that left no card behind would be unreachable.
         """
+        if signal.rule_uuid == MANUAL_RULE_UUID:
+            return self._manual_clip is not None
         return any(
             action.logs_event()
             and getattr(row, "enabled", True)
@@ -2263,8 +2517,16 @@ class StreamWatcherTask(Task):
         would be a support trap.
 
         Swallows everything. A broker problem must not stop a watcher recording.
+
+        A manual recording is skipped outright. `publish_rule_transition` does its
+        open-event and count bookkeeping before it checks whether the rule has any topics
+        — deliberately, so a camera with `publish_to_ha` off still contributes to the
+        Rules device — which means passing the sentinel through would add a non-rule to
+        the cross-camera totals and leave it in `_open_rules` under a uuid no reconcile
+        can ever clear. The recording switch and its remaining-time sensor are how a
+        manual recording reports itself.
         """
-        if not signal.source_uuid:
+        if not signal.source_uuid or signal.rule_uuid == MANUAL_RULE_UUID:
             return
         try:
             self._manager.get_mqtt_bridge().publish_rule_transition(
@@ -2439,6 +2701,12 @@ class StreamWatcherTask(Task):
                     "analysisFps": row["analysisFps"],
                     "framesAnalysed": row["framesAnalysed"],
                     "trackedCount": row["tracks"],
+                    # 0 when nothing is recording, never absent: the sensor is numeric
+                    # and HA renders a missing value as "unknown", which breaks any
+                    # template comparing it.
+                    "recordingRemainingS": round(
+                        self._manual_recording_status(pipeline.source_uuid).get("remainingS", 0.0)
+                    ),
                     # The status panel's label is prose ("reconnecting — no frames for
                     # 4m"); HA wants the yes/no behind it. `ok` is the only healthy
                     # value the label takes, so this cannot drift into reporting a
@@ -2935,7 +3203,7 @@ class StreamWatcherTask(Task):
         }
 
     async def handle_command(self, command: str, params: dict[str, Any]) -> None:
-        """Arm or disarm a rule from the status panel, or wake a source onto live video.
+        """Arm or disarm a rule, wake a source onto live video, or record it by hand.
 
         Honours the base contract's "no I/O here": `request_live` only adds a uuid to a
         set, and `set_rule_armed` only records the new value on the
@@ -2956,6 +3224,32 @@ class StreamWatcherTask(Task):
             else:
                 self._release_requests.add(source_uuid)
                 self._live_requests.discard(source_uuid)
+            return
+        if command in ("start_recording", "stop_recording"):
+            source_uuid = str(params.get("sourceUuid") or "")
+            if not source_uuid:
+                raise ValueError(f"{command} requires a sourceUuid")
+            if self._pipeline_for(source_uuid) is None:
+                raise ValueError(f"No source {source_uuid!r} in this watcher")
+            if command == "start_recording":
+                # Already recording: keep the original cap. Re-pressing Record must not
+                # silently extend a recording the user cannot see the start of, and the
+                # MQTT switch republishes `on` on every HA restart.
+                if source_uuid in self._manual_open:
+                    return
+                self._manual_requests[source_uuid] = clamp_max_duration(
+                    params.get("maxDurationS"), self._default_manual_recording_s()
+                )
+                # Recording a source that is asleep records nothing. Escalation is the
+                # same request the live view makes, so a manual recording on a Ring
+                # camera wakes it exactly as opening the live view does.
+                self._live_requests.add(source_uuid)
+                self._release_requests.discard(source_uuid)
+            else:
+                self._manual_requests.pop(source_uuid, None)
+                recording = self._manual_open.get(source_uuid)
+                if recording is not None:
+                    recording.stop_requested = True
             return
         if command != "set_rule_armed":
             raise ValueError(f"Unknown command {command!r}")
@@ -3110,6 +3404,11 @@ class StreamWatcherTask(Task):
             "sourceUuid": pipeline.source_uuid if pipeline else None,
             "sourceName": pipeline.source_name if pipeline else None,
             "frame": None,
+            # Carried on every poll, including the metadata-only ones a `sinceSeq` caller
+            # gets, so the Record button's countdown keeps ticking on a camera that is not
+            # producing new frames — which is exactly when a user most wants to see that
+            # their recording is still running.
+            "recording": self._manual_recording_status(pipeline.source_uuid if pipeline else None),
         }
         if pipeline is None:
             return payload

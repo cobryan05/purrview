@@ -247,6 +247,73 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   goLiveBtn.hidden = true;
   bar.appendChild(goLiveBtn);
 
+  /**
+   * Record on demand — a clip with no rule behind it.
+   *
+   * The countdown comes from the poll rather than from a local timer: the cap is
+   * enforced by the watcher, and a recording can also be stopped from Home Assistant
+   * or by the watcher restarting. A button counting its own clock would keep ticking
+   * after the recording it describes had already ended.
+   */
+  function _syncRecordLabel() {
+    const rec = state.recording || {};
+    recordBtn.disabled = !rec.available;
+    recordBtn.classList.toggle('watch-live-recording', Boolean(rec.active));
+    if (!rec.available) {
+      recordBtn.textContent = 'Record';
+      recordBtn.title = 'This watcher has no clip action available, so it cannot record.';
+      return;
+    }
+    if (rec.active) {
+      const left = Math.max(0, Math.round(rec.remainingS ?? 0));
+      recordBtn.textContent = `Stop recording (${left}s)`;
+      recordBtn.title = 'Stop recording and cut the clip now.';
+      return;
+    }
+    const cap = Math.round(rec.defaultMaxDurationS ?? 0);
+    recordBtn.textContent = 'Record';
+    recordBtn.title = `Record this camera now, up to ${cap}s. Saved as a manual recording.`;
+  }
+
+  const recordBtn = button('Record', async () => {
+    if (!state.sourceUuid) return;
+    const active = Boolean(state.recording && state.recording.active);
+    recordBtn.disabled = true;
+    try {
+      await sendTaskCommand({
+        taskUuid,
+        command: active ? 'stop_recording' : 'start_recording',
+        params: { sourceUuid: state.sourceUuid },
+      });
+      // Optimistic only as far as the flag: the duration numbers come from the next
+      // poll, because the watcher owns the cap and may have clamped what we asked for.
+      state.recording = { ...(state.recording || {}), active: !active };
+      _syncRecordLabel();
+      if (active) {
+        toast('Recording stopped — the clip is being cut.', 4000);
+      } else {
+        // Said once, on the press that causes it, rather than as standing text: the
+        // cost is real but it is not a reason to avoid the button.
+        toast(
+          state.supportsGoLive
+            ? 'Recording. While this camera streams, other Ring clients (the Ring app, '
+              + 'Home Assistant, Frigate) will not see motion from it — PurrView keeps '
+              + 'analysing and still raises its own events.'
+            : 'Recording.',
+          state.supportsGoLive ? 9000 : 3000,
+        );
+      }
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not change the recording', 5000, 'error');
+    } finally {
+      recordBtn.disabled = false;
+      _syncRecordLabel();
+    }
+  }, { testid: 'watch-live-record' });
+  _syncRecordLabel();
+  bar.appendChild(recordBtn);
+
   const browseEventsBtn = button('Browse events', () => {
     if (!state.sourceUuid) return;
     // Closed first: left open, it sits on top of the Events tab we are about to
@@ -612,6 +679,12 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   function renderSide(preview) {
     const age = preview.frameAgeS;
     goLiveBtn.hidden = !preview.supportsGoLive;
+    // Held on state, not read from `preview` at press time: the button's handler runs
+    // between polls, and `supportsGoLive` is also what says this is a camera whose
+    // other clients go motion-blind while we stream it.
+    state.supportsGoLive = Boolean(preview.supportsGoLive);
+    state.recording = preview.recording || null;
+    _syncRecordLabel();
     // A slow source is not a broken one. The old rule derived "late" from
     // `analysisFps`, which is how often the *watcher asks* — so an idle Ring camera,
     // 30 s into a snapshot cadence its own provider puts at 90 s, was reported as

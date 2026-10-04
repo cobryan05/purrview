@@ -2257,6 +2257,11 @@ class WatchProfile(TimestampModel, table=True):
     # full-resolution stream regardless of what we analyse.
     default_analysis_fps: float = Field(default=5.0)
     default_analysis_width: int = Field(default=640)
+    # Cap on a recording the user starts by hand, which has no predicate to end it.
+    # Per profile rather than global because it trades against the rewind buffer the
+    # drain reads from, and a doorbell watched at 2 fps and an RTSP camera at 20 do
+    # not cost the same per recorded second.
+    default_manual_recording_s: float = Field(default=300.0)
     # Whether this watcher's clips get analysed for tracking blips when they land. Per
     # watcher rather than global because watchers differ in what they are for: a doorbell
     # profile watching for any motion has nothing to learn from identity flips, while a
@@ -2933,6 +2938,7 @@ class WatchProfileRead(OrmModel):
     default_model_name: Optional[str] = None
     default_analysis_fps: float = 5.0
     default_analysis_width: int = 640
+    default_manual_recording_s: float = 300.0
     blip_analysis_enabled: bool = True
     blip_thresholds_json: Dict[str, Any] = Field(default_factory=dict)
     sources: List[WatchProfileSourceRead] = Field(default_factory=list)
@@ -2965,6 +2971,7 @@ class WatchProfileCreate(ApiModel):
     default_model_name: Optional[str] = None
     default_analysis_fps: float = 5.0
     default_analysis_width: int = 640
+    default_manual_recording_s: float = 300.0
     blip_analysis_enabled: bool = True
     blip_thresholds_json: Dict[str, Any] = Field(default_factory=dict)
     sources: List[WatchProfileSourceWrite] = Field(default_factory=list)
@@ -2989,6 +2996,7 @@ class WatchProfileUpdate(ApiModel):
     default_model_name: Optional[str] = None
     default_analysis_fps: Optional[float] = None
     default_analysis_width: Optional[int] = None
+    default_manual_recording_s: Optional[float] = None
     blip_analysis_enabled: Optional[bool] = None
     blip_thresholds_json: Optional[Dict[str, Any]] = None
     # None = no change; [] = remove all.

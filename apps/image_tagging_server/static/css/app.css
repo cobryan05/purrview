@@ -9338,6 +9338,20 @@ progress.progress-indeterminate:indeterminate {
 
 .watch-live-status--error { color: var(--color-danger, #f87171); }
 
+/* A recording in progress. The pulse is the only thing on the bar that moves, because
+   the one state a user must not misread is "still recording". */
+.watch-live-recording {
+  color: var(--color-danger, #f87171);
+  border-color: var(--color-danger, #f87171);
+  animation: watch-live-rec-pulse 2s ease-in-out infinite;
+}
+@keyframes watch-live-rec-pulse {
+  50% { opacity: 0.55; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .watch-live-recording { animation: none; }
+}
+
 .watch-live-stat {
   display: flex;
   justify-content: space-between;

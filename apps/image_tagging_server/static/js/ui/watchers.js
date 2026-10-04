@@ -2832,6 +2832,24 @@ export async function renderWatchProfileManager({ target }) {
           + 'where things are published — use {watcher_uuid} where that would matter.',
       }));
 
+      const manualCap = numberInput(profile?.defaultManualRecordingS ?? '', {
+        step: '30',
+        min: 0,
+        placeholder: '300',
+      });
+      manualCap.dataset.testid = 'watch-manual-recording-cap';
+      manualCap.addEventListener('change', onAnyChange);
+      manualCap.title =
+        'How long a recording started by hand — the live view\'s Record button, the camera\'s '
+        + 'recording switch in Home Assistant, or purrview.start_recording — runs before it '
+        + 'stops itself, in seconds. It has no rule to end it, so this cap is what stops a '
+        + 'recording nobody came back to. Blank uses 300s.';
+      // On the identity row rather than the Actions heading: that row's height is set by
+      // its text inputs, so a short field costs nothing, while the Actions heading's
+      // tallest child is a small button and anything added there grows it. The 1/1/1
+      // editor has 6px of slack before it scrolls, and a twisty there cost 10.
+      identity.appendChild(wfield('Manual cap (s)', manualCap, { width: '7rem', help: manualCap.title }));
+
       const enabled = document.createElement('input');
       enabled.type = 'checkbox';
       enabled.checked = profile ? profile.enabled !== false : true;
@@ -3211,6 +3229,7 @@ export async function renderWatchProfileManager({ target }) {
         'None of these actions records the event, so these rules will not appear in Events. '
         + 'They still publish, and still show in the watcher’s log — only the Events list is '
         + 'empty. Add a Save event action to list them there.';
+
       const actionsHead = sectionHeader('Actions', addActionBtn, SECTION_HELP.actions);
       actionsHead.appendChild(eventHint);
       screen.editorBody.appendChild(sectionPanel(actionsHead, actionsBox));
@@ -3286,6 +3305,10 @@ export async function renderWatchProfileManager({ target }) {
           trackerTypename: trackerSel.value,
           trackerParamsJson: trackerParams?.getParams() || {},
           blipAnalysisEnabled: analyseBlips.checked,
+          // Blank means "the default", which the backend's own field default already is —
+          // so send nothing rather than 0, which the watcher would clamp back up and the
+          // field would then redisplay as a number the user never typed.
+          ...(manualCap.value === '' ? {} : { defaultManualRecordingS: num(manualCap, null) }),
           // Preserved rather than collected: the thresholds have no editor yet, and
           // sending `{}` from a form that cannot show them would silently wipe tuning
           // set through the API.
