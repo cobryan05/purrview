@@ -5,7 +5,7 @@ import { fetchLabels, fetchLabelByUuid } from '/app-static/js/shared/api/labels.
 import { fetchTags, fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { fetchImageTagStatuses, setImageTagStatus } from '/app-static/js/shared/api/imageTags.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
-import { isDynamicLabelsVisible, isTagVisible } from '/app-static/js/shared/activeModel.js';
+import { filterVisibleLabels, labelPickerText, isTagVisible } from '/app-static/js/shared/activeModel.js';
 import { setTool } from '/app-static/js/app/image-tagging/canvas/tools.js';
 import { applyVerifiedTag } from '/app-static/js/app/image-tagging/canvas/interaction.js';
 
@@ -313,12 +313,10 @@ export function createTagPanel(container, runtime) {
     noneOpt.textContent = '— none —';
     select.appendChild(noneOpt);
 
-    const showDynamic = isDynamicLabelsVisible();
-    for (const label of _labelsMap.values()) {
-      if (label.labelType === 'dynamic' && !showDynamic) continue;
+    for (const label of filterVisibleLabels(_labelsMap.values(), currentLabelUuid)) {
       const opt = document.createElement('option');
       opt.value = label.uuid;
-      opt.textContent = label.labelType === 'dynamic' ? `${label.name} [dynamic]` : label.name;
+      opt.textContent = labelPickerText(label);
       if (label.uuid === currentLabelUuid) opt.selected = true;
       select.appendChild(opt);
     }

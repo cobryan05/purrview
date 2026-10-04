@@ -18,14 +18,17 @@ import { sessionPrefs } from '/app-static/js/shared/prefs.js';
 const SESSION_DYNAMIC_LABELS_KEY = 'wtch_show_dynamic_labels';
 const SESSION_TAG_VISIBILITY_KEY = 'wtch_tag_kind_visible';
 
-let _showDynamicLabels = false;
+// Dynamic labels are ordinary annotation vocabulary that happens to have been
+// created from the picker rather than the configuration page, so they are visible
+// by default; the toggle exists to declutter a long list, not to gate assignment.
+let _showDynamicLabels = true;
 // Per-kind tag visibility: false = hidden from pickers/filters.
 // system tags are hidden by default; task_generated tags are visible.
 let _tagKindVisible = { system: false, task_generated: true };
 
 /** Initialise from sessionStorage. Call once at app startup before other modules read state. */
 export function init() {
-  _showDynamicLabels = sessionPrefs.read(SESSION_DYNAMIC_LABELS_KEY, false) === true;
+  _showDynamicLabels = sessionPrefs.read(SESSION_DYNAMIC_LABELS_KEY, true) === true;
   const savedVis = sessionPrefs.read(SESSION_TAG_VISIBILITY_KEY, null);
   if (savedVis && typeof savedVis === 'object') _tagKindVisible = { ..._tagKindVisible, ...savedVis };
 }
@@ -42,6 +45,37 @@ export function setDynamicLabelsVisible(visible) {
   // produced, so previously-stored values still read back correctly.
   sessionPrefs.write(SESSION_DYNAMIC_LABELS_KEY, _showDynamicLabels);
   events.publish(EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, _showDynamicLabels);
+}
+
+/**
+ * Filter an iterable of labels down to those that belong in a picker, applying the
+ * "Show dynamic labels" toggle.
+ *
+ * `keepUuid` is the label the caller is currently displaying a value for, and it
+ * survives the filter unconditionally. A hidden option cannot represent a stored
+ * value: a `<select>` with no matching option falls back to showing its first entry,
+ * and `DropDownField.getValue()` returns null for a value it cannot match — so
+ * dropping the current label makes the control misreport the assignment and, on the
+ * form fields that persist whatever getValue() returns, drop it on save.
+ *
+ * @param {Iterable<{uuid: string, labelType?: string}>} labels
+ * @param {string|null} [keepUuid]
+ * @returns {object[]}
+ */
+export function filterVisibleLabels(labels, keepUuid = null) {
+  return [...labels].filter(
+    (label) => label.labelType !== 'dynamic' || _showDynamicLabels || label.uuid === keepUuid,
+  );
+}
+
+/**
+ * Display suffix for a label in a picker — dynamic labels are marked so it is clear
+ * which vocabulary an option comes from.
+ * @param {{name: string, labelType?: string}} label
+ * @returns {string}
+ */
+export function labelPickerText(label) {
+  return label.labelType === 'dynamic' ? `${label.name} [dynamic]` : label.name;
 }
 
 /**

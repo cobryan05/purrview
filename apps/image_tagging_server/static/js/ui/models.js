@@ -1,5 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { isDynamicLabelsVisible } from '/app-static/js/shared/activeModel.js';
+import { filterVisibleLabels, labelPickerText } from '/app-static/js/shared/activeModel.js';
 import {
   associateLabel,
   clearModelsCache,
@@ -166,12 +166,13 @@ export function renderModelLabelAssignments({
     fetchLabels()
   ]).then(([labelMap, allLabels]) => {
     // Convert labels to the format required by DropDownField
-    const showDynamic = isDynamicLabelsVisible();
-    const labelItems = Array.from(allLabels.values())
-      .filter(label => label.labelType !== 'dynamic' || showDynamic)
-      .map(label => ({
+    // Per row, not once: each model class keeps its own assigned label in the options
+    // even while dynamic labels are hidden, so the dropdown shows the real assignment
+    // instead of falling back to its first entry.
+    const labelItemsFor = (assignedUuid) =>
+      filterVisibleLabels(allLabels.values(), assignedUuid).map(label => ({
         key: label.uuid,
-        text: label.name,
+        text: labelPickerText(label),
         color: label.color || '#cccccc',
       }));
 
@@ -193,7 +194,7 @@ export function renderModelLabelAssignments({
       const assignmentRow = createGenericRow({
         field: new EditableField({
           field: new LabelDropDownField({
-            options: labelItems,
+            options: labelItemsFor(assignedUuid),
             labelText: modelClass,
             value: classKey
           }),

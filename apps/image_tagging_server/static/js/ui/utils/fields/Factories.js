@@ -15,7 +15,7 @@ import { MultiSelectField } from './MultiSelectField.js';
 import { DropDownField } from './DropDownField.js';
 import { fetchTags, createNewTag, refreshTagsIfUnknown } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { isDynamicLabelsVisible, filterVisibleTags } from '/app-static/js/shared/activeModel.js';
+import { filterVisibleLabels, labelPickerText, filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { GroupField } from './GroupField.js';
 // Factory map
 export const fieldFactories = {
@@ -83,12 +83,13 @@ export const fieldFactories = {
     const { ...rest } = fieldMeta;
 
     const labelList = await fetchLabels();
-    const showDynamic = isDynamicLabelsVisible();
-    const labelOptions = Array.from(labelList.values())
-      .filter(label => label.labelType !== 'dynamic' || showDynamic)
+    // The stored value's own label stays in the options even when dynamic labels are
+    // hidden — DropDownField.getValue() returns null for a value it cannot match, and
+    // this field's value is persisted straight back into the task config.
+    const labelOptions = filterVisibleLabels(labelList.values(), values[fieldName])
       .map(label => ({
         key: label.uuid,
-        text: label.labelType === 'dynamic' ? `${label.name} [dynamic]` : label.name,
+        text: labelPickerText(label),
         color: label.color || '#cccccc',
       }))
 
