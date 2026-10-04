@@ -2479,6 +2479,32 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   font-size: 0.82em;
 }
 
+/* The promote row carries a caption, a target select, a scope choice and two
+   buttons — more than the move row it shares a class with, so it wraps rather than
+   pushing the buttons off a narrow viewport. */
+.label-promote-row {
+  flex-wrap: wrap;
+}
+
+.label-promote-scope {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.label-promote-scope label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  font-size: inherit;
+  white-space: nowrap;
+}
+
+.label-promote-scope input[type="radio"] {
+  margin: 0;
+}
+
 .label-move-select {
   font-size: inherit;
   max-width: 190px;

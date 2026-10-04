@@ -543,3 +543,93 @@ class TestHomeAssistantNameOverride:
         await http_client.patch(f"/api/labels/{uuid}", json={"mqttName": "   "})
 
         assert (await self._read(http_client, uuid))["mqttName"] is None
+
+
+class TestPromoteDemote:
+    """
+    Moving a label between the dynamic vocabulary and the standard hierarchy, which
+    the Labels configuration page exposes as promote / demote.
+
+    Promote is an ordinary PATCH (type + parent + scope in one call). Demote carries
+    the invariant: a dynamic label is always a root, because every UI that lists
+    dynamic labels renders them flat and `buildHierarchy` in ui/labelList.js only
+    walks down from the root — a dynamic label still holding a parent, and its whole
+    subtree, silently disappears from the standard tree instead of erroring.
+    """
+
+    async def _label(self, http_client, name: str, parent_uuid: str | None = None, **extra) -> str:
+        payload = {"name": name, "color": "#123456", **extra}
+        if parent_uuid is not None:
+            payload["parentUuid"] = parent_uuid
+        r = await http_client.post("/api/labels", json=payload)
+        assert r.status_code == 200, r.text
+        return r.json()["label"]["uuid"]
+
+    async def _get(self, http_client, uuid: str) -> dict:
+        r = await http_client.get("/api/labels")
+        return next(l for l in r.json()["labels"] if l["uuid"] == uuid)
+
+    async def test_promote_sets_type_and_parent_in_one_call(self, http_client):
+        parent = await self._label(http_client, "Animal")
+        dyn = await self._label(http_client, "squirrel", labelType="dynamic")
+
+        r = await http_client.patch(
+            f"/api/labels/{dyn}", json={"labelType": "standard", "parentUuid": parent, "scope": "object"}
+        )
+        assert r.json()["status"] == "success", r.text
+
+        promoted = await self._get(http_client, dyn)
+        assert promoted["labelType"] == "standard"
+        assert promoted["parentUuid"] == parent
+
+    async def test_demoting_a_leaf_detaches_it_from_its_parent(self, http_client):
+        parent = await self._label(http_client, "Animal")
+        child = await self._label(http_client, "squirrel", parent_uuid=parent)
+
+        r = await http_client.patch(f"/api/labels/{child}", json={"labelType": "dynamic"})
+        assert r.json()["status"] == "success", r.text
+
+        demoted = await self._get(http_client, child)
+        assert demoted["labelType"] == "dynamic"
+        assert demoted["parentUuid"] is None
+
+    async def test_a_parent_requested_alongside_the_demotion_is_overridden(self, http_client):
+        """The root rule is the invariant, not a default the caller can opt out of."""
+        parent = await self._label(http_client, "Animal")
+        dyn = await self._label(http_client, "squirrel", labelType="dynamic")
+
+        await http_client.patch(f"/api/labels/{dyn}", json={"labelType": "dynamic", "parentUuid": parent})
+
+        assert (await self._get(http_client, dyn))["parentUuid"] is None
+
+    async def test_demoting_a_label_with_children_is_refused(self, http_client):
+        parent = await self._label(http_client, "Animal")
+        await self._label(http_client, "Cat", parent_uuid=parent)
+
+        r = await http_client.patch(f"/api/labels/{parent}", json={"labelType": "dynamic"})
+        assert r.json()["status"] == "failure", r.text
+        assert "Cat" in r.json()["message"]
+
+    async def test_a_refused_demotion_changes_nothing(self, http_client):
+        """The guard runs before the write, so the rejected label keeps its type —
+        a half-applied demotion would leave the child unreachable anyway."""
+        parent = await self._label(http_client, "Animal")
+        child = await self._label(http_client, "Cat", parent_uuid=parent)
+
+        await http_client.patch(f"/api/labels/{parent}", json={"labelType": "dynamic", "name": "Critter"})
+
+        unchanged = await self._get(http_client, parent)
+        assert unchanged["labelType"] == "standard"
+        assert unchanged["name"] == "Animal"
+        assert (await self._get(http_client, child))["parentUuid"] == parent
+
+    async def test_moving_the_child_away_then_demoting_succeeds(self, http_client):
+        """The refusal is about the children that are there now, not a permanent
+        property of the label."""
+        parent = await self._label(http_client, "Animal")
+        child = await self._label(http_client, "Cat", parent_uuid=parent)
+        await http_client.patch(f"/api/labels/{child}", json={"parentUuid": None})
+
+        r = await http_client.patch(f"/api/labels/{parent}", json={"labelType": "dynamic"})
+        assert r.json()["status"] == "success", r.text
+        assert (await self._get(http_client, parent))["labelType"] == "dynamic"

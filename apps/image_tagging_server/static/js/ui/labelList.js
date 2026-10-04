@@ -237,6 +237,93 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
 }
 
 /**
+ * Toggle an inline "Promote" row beneath `anchorRow`: which parent the dynamic label
+ * joins, and which of the two trees it joins.
+ *
+ * Scope is asked rather than assumed because the parent choices differ per scope —
+ * the configuration page keeps object and image labels in separate trees and the Move
+ * picker never offers a cross-scope target — so switching it rebuilds the select.
+ * There is no exclude set: a dynamic label is always a root with no children (the
+ * db_server manager enforces that on demotion), so no target can form a cycle.
+ *
+ * @param {HTMLElement} anchorRow
+ * @param {{label: object, standardMap: Map<string,object>,
+ *          onPromote: (opts: {parentUuid: string|null, scope: string}) => Promise<void>}} opts
+ */
+function togglePromotePicker(anchorRow, { label, standardMap, onPromote }) {
+  const existing = anchorRow.nextElementSibling;
+  if (existing?.dataset?.promoteRowFor === label.uuid) {
+    existing.remove();
+    return;
+  }
+  anchorRow.parentElement?.querySelectorAll('[data-promote-row-for]').forEach((el) => el.remove());
+
+  const promoteRow = document.createElement('div');
+  promoteRow.className = 'label-move-row label-promote-row';
+  promoteRow.dataset.promoteRowFor = label.uuid;
+
+  const caption = document.createElement('span');
+  caption.textContent = 'Promote under';
+  promoteRow.appendChild(caption);
+
+  const selectSlot = document.createElement('span');
+  let select = null;
+  const rebuildTargets = (scope) => {
+    const scoped = new Map([...standardMap].filter(([, l]) => (l.scope ?? 'object') === scope));
+    select = buildMoveTargetSelect(scoped, new Set(), null);
+    selectSlot.replaceChildren(select);
+  };
+  promoteRow.appendChild(selectSlot);
+
+  let scopeValue = 'object';
+  const scopeWrap = document.createElement('span');
+  scopeWrap.className = 'label-promote-scope';
+  for (const [value, text] of [['object', 'Object'], ['image', 'Image']]) {
+    const wrap = document.createElement('label');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = `promote-scope-${label.uuid}`;
+    radio.value = value;
+    radio.checked = value === scopeValue;
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      scopeValue = value;
+      rebuildTargets(scopeValue);
+    });
+    wrap.append(radio, document.createTextNode(text));
+    scopeWrap.appendChild(wrap);
+  }
+  promoteRow.appendChild(scopeWrap);
+
+  rebuildTargets(scopeValue);
+
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'label-move-apply';
+  applyBtn.textContent = 'Promote';
+  applyBtn.dataset.testid = 'label-promote-apply';
+  applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    try {
+      await onPromote({ parentUuid: select.value || null, scope: scopeValue });
+    } catch (err) {
+      toast(err.message, 5000, 'error');
+      applyBtn.disabled = false;
+    }
+  };
+  promoteRow.appendChild(applyBtn);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'label-move-cancel';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => promoteRow.remove();
+  promoteRow.appendChild(cancelBtn);
+
+  anchorRow.after(promoteRow);
+}
+
+/**
  * The label's Home Assistant publishing settings, as an inline panel under its row.
  *
  * A panel rather than two checkboxes in the row itself: the tree is dense and most of
@@ -853,6 +940,27 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
     nameEl.title = 'Click to rename';
     nameEl.addEventListener('click', startRename);
 
+    // Disabled rather than hidden on a parent: the reason it can't be demoted is
+    // actionable (move or delete the children), so the row should still say so.
+    // db_server's Manager.update_label is the enforcement point.
+    const hasKids = (byParent.get(uuid) ?? []).length > 0;
+    const demoteBtn = iconAction('demote', hasKids
+      ? 'Cannot demote — move or delete its child labels first'
+      : 'Demote to dynamic', {
+      onClick: async () => {
+        if (!window.confirm(
+          `Demote "${name}" to a dynamic label?\n\n`
+          + 'It leaves the hierarchy and moves to the Dynamic Labels list. '
+          + 'Its annotations are kept.',
+        )) return;
+        await updateLabel(uuid, name, color, { labelType: 'dynamic' });
+        onRerender();
+        notifyHierarchyMoveImpact(name);
+      },
+    });
+    demoteBtn.disabled = hasKids;
+    demoteBtn.dataset.testid = 'label-demote';
+
     const acts = document.createElement('div');
     acts.className = 'lt-acts';
     acts.append(
@@ -885,6 +993,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
           },
         }),
       }),
+      demoteBtn,
       iconAction('home', 'Home Assistant', {
         tour: tourRow ? 'config.labels.ha' : '',
         active: label.publishToHa === true,
@@ -942,9 +1051,9 @@ async function mountEditMode(container, { filter, onRerender }) {
   container.appendChild(inner);
 
   const allLabels = await fetchLabels();
-  const hideDynamic = (label) => label.labelType !== 'dynamic';
-  const composedFilter = filter ? (label) => hideDynamic(label) && filter(label) : hideDynamic;
-  const labelsMap = new Map([...allLabels].filter(([, l]) => composedFilter(l)));
+  const visibleMap = filter ? new Map([...allLabels].filter(([, l]) => filter(l))) : new Map(allLabels);
+  const labelsMap = new Map([...visibleMap].filter(([, l]) => l.labelType !== 'dynamic'));
+  const dynamicMap = new Map([...visibleMap].filter(([, l]) => l.labelType === 'dynamic'));
 
   function addCreateRow(scopeValue) {
     const placeholder = scopeValue === 'object' ? 'New Object Label' : 'New Image Label';
@@ -1018,6 +1127,110 @@ async function mountEditMode(container, { filter, onRerender }) {
     extraControls: [refreshBtn], tourAnchors: true,
   });
   addSection({ scope: 'image', title: 'Image Labels', collapseKey: 'edit-image' });
+  addDynamicSection();
+
+  /**
+   * The dynamic vocabulary: labels created from the annotation picker rather than here.
+   *
+   * Flat, and last. There is no create row — a dynamic label exists because someone
+   * typed a name while annotating, and offering to make one here would just be a worse
+   * way to create a standard label. Rename and recolour are offered because tidying a
+   * name up ("laundrymachine") is usually the step before promoting it.
+   */
+  function addDynamicSection() {
+    const emptyByParent = new Map();
+    inner.appendChild(makeSectionHeader('Dynamic Labels', dynamicMap.size));
+
+    if (dynamicMap.size === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'lt-empty';
+      empty.textContent = 'No dynamic labels yet';
+      inner.appendChild(empty);
+      return;
+    }
+
+    for (const label of [...dynamicMap.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      const { name, color, uuid } = label;
+      const { row, swatch, nameEl } = buildLabelRow(label, {
+        byParent: emptyByParent,
+        labelsMap: dynamicMap,
+        flat: true,
+      });
+      row.dataset.testid = 'label-list-row-dynamic';
+
+      const well = makeColorWell(color ?? DEFAULT_COLOR, async (newColor) => {
+        try {
+          await updateLabel(uuid, name, newColor);
+          onRerender();
+        } catch (err) {
+          toast(err.message, 5000, 'error');
+        }
+      });
+      swatch.replaceWith(well);
+
+      const startRename = () => openRowEditor(row, {
+        name,
+        color: color ?? DEFAULT_COLOR,
+        uuid,
+        placeholder: 'Label name',
+        onSave: async ({ name: newName, color: newColor }) => {
+          if (!newName) { toast('Error: Name required', 5000, 'error'); return; }
+          try {
+            await updateLabel(uuid, newName, newColor);
+            onRerender();
+          } catch (err) {
+            toast(err.message, 5000, 'error');
+          }
+        },
+        onCancel: () => onRerender(),
+      });
+
+      nameEl.classList.add('lt-name--action');
+      nameEl.title = 'Click to rename';
+      nameEl.addEventListener('click', startRename);
+
+      const acts = document.createElement('div');
+      acts.className = 'lt-acts';
+      const promoteBtn = iconAction('promote', 'Promote into the label hierarchy', {
+        onClick: () => togglePromotePicker(row, {
+          label,
+          standardMap: labelsMap,
+          onPromote: async ({ parentUuid, scope }) => {
+            await updateLabel(uuid, name, color, {
+              labelType: 'standard',
+              scope,
+              parentUuid,
+              // Matches what creating the label under that parent would have given it:
+              // a group root by default only when it has no parent to defer to.
+              ...(parentUuid ? { exclusiveVariants: false } : {}),
+            });
+            onRerender();
+            notifyHierarchyMoveImpact(name);
+          },
+        }),
+      });
+      promoteBtn.dataset.testid = 'label-promote';
+
+      acts.append(
+        promoteBtn,
+        iconAction('edit', 'Edit', { onClick: startRename }),
+        iconAction('trash', 'Delete', {
+          className: 'lt-act--danger',
+          onClick: async () => {
+            if (!window.confirm(`Delete label "${name}"?`)) return;
+            try {
+              await deleteLabel(uuid);
+              onRerender();
+            } catch (err) {
+              toast(err.message, 5000, 'error');
+            }
+          },
+        }),
+      );
+      row.appendChild(acts);
+      inner.appendChild(row);
+    }
+  }
 
   return { destroy() {} };
 }

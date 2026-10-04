@@ -622,8 +622,12 @@ class Manager:
         sentinel `_NOT_SET` rather than `None` because `None` is itself a meaningful value
         here, distinct from "don't touch the parent".
 
+        Setting `label_type` to DYNAMIC also forces `parent_uuid` to None, and is
+        rejected while the label still has children — dynamic labels are a flat
+        vocabulary (see the comment at the call site below).
+
         Raises ValueError if `parent_uuid` would make the label its own parent or
-        descendant (a cycle).
+        descendant (a cycle), or if a demotion to DYNAMIC would orphan children.
         """
         # `None` means "not supplied" for every key here, which is why the two booleans
         # can live in the same filtered dict: `False` is not `None`, so turning a flag
@@ -651,8 +655,35 @@ class Manager:
                 await self._assert_no_reparent_cycle(label_uuid, parent_uuid)
             updates["parent_uuid"] = parent_uuid
 
+        # Demoting to dynamic forces the label to a root, overriding any parent the
+        # caller also asked for. Dynamic labels are a flat vocabulary: every UI that
+        # lists them renders them as a flat section, and `buildHierarchy` in
+        # ui/labelList.js groups by parent uuid and only walks down from the root, so a
+        # dynamic label holding a parent is unreachable in the standard tree and would
+        # take its own subtree with it.
+        if label_type is LabelType.DYNAMIC:
+            await self._assert_no_children(label_uuid)
+            updates["parent_uuid"] = None
+
         await self._db_client.update_label(label_uuid=label_uuid, **updates)
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
+
+    async def _assert_no_children(self, label_uuid: str) -> None:
+        """
+        Reject a demotion that would orphan a subtree.
+
+        Raises ValueError if any label still names `label_uuid` as its parent. The
+        children would keep a parent that no longer appears in the standard tree, which
+        drops them from it silently rather than with an error.
+        """
+        labels = await self._db_client.list_labels()
+        children = [lbl.name for lbl in labels if lbl.parent_uuid == label_uuid]
+        if children:
+            raise ValueError(
+                f"Cannot make label '{label_uuid}' dynamic: it still has "
+                f"{len(children)} child label(s) ({', '.join(sorted(children))}). "
+                "Move or delete them first."
+            )
 
     async def _assert_no_reparent_cycle(self, label_uuid: str, new_parent_uuid: str) -> None:
         """

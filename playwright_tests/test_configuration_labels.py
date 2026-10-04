@@ -1308,3 +1308,209 @@ class TestLabelHomeAssistantName:
 
         wait_until(page, lambda: "mqttName" in patched)
         assert patched["mqttName"] is None, patched
+
+
+# ---------------------------------------------------------------------------
+# Promote / demote between the dynamic vocabulary and the hierarchy
+# ---------------------------------------------------------------------------
+
+_PD_OBJ_ROOT = {
+    "uuid": "dddddddd-0000-0000-0000-000000000001",
+    "name": "Animal",
+    "color": "#ff0000",
+    "parentUuid": None,
+    "scope": "object",
+    "labelType": "standard",
+}
+
+_PD_OBJ_CHILD = {
+    "uuid": "dddddddd-0000-0000-0000-000000000002",
+    "name": "Cat",
+    "color": "#00ff00",
+    "parentUuid": "dddddddd-0000-0000-0000-000000000001",
+    "scope": "object",
+    "labelType": "standard",
+}
+
+_PD_IMG_ROOT = {
+    "uuid": "dddddddd-0000-0000-0000-000000000003",
+    "name": "Weather",
+    "color": "#0000ff",
+    "parentUuid": None,
+    "scope": "image",
+    "labelType": "standard",
+}
+
+_PD_DYNAMIC = {
+    "uuid": "dddddddd-0000-0000-0000-000000000004",
+    "name": "squirrel",
+    "color": "#888888",
+    "parentUuid": None,
+    "scope": "object",
+    "labelType": "dynamic",
+}
+
+_PD_ALL = [_PD_OBJ_ROOT, _PD_OBJ_CHILD, _PD_IMG_ROOT, _PD_DYNAMIC]
+
+
+def _mock_labels_with_patch(page: Page, labels: list, calls: list):
+    """Serve `labels` for GET /api/labels and record every PATCH body in `calls`."""
+    _mock_labels(page, labels)
+
+    def handle(route: Route):
+        if route.request.method == "PATCH":
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+        else:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labels": labels}),
+            )
+
+    page.route(lambda url: "/api/labels/" in url, handle)
+
+
+class TestDynamicLabelSection:
+    def test_a_dynamic_label_is_listed_but_not_in_the_hierarchy(self, page: Page, base_url: str):
+        """It renders as a dynamic row, not an edit row — the two sections are what
+        promote and demote move a label between, so the row type is the state."""
+        _mock_labels(page, _PD_ALL)
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{_PD_DYNAMIC['uuid']}']")
+        expect(row).to_be_visible()
+        expect(row).to_have_attribute("data-testid", "label-list-row-dynamic")
+
+    def test_a_standard_label_is_not_listed_as_dynamic(self, page: Page, base_url: str):
+        """The mirror of the test above, so neither passes on a section that renders
+        every label."""
+        _mock_labels(page, _PD_ALL)
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{_PD_OBJ_ROOT['uuid']}']")
+        expect(row).to_be_visible()
+        expect(row).to_have_attribute("data-testid", "label-list-row-edit")
+
+    def test_the_dynamic_section_offers_no_create_control(self, page: Page, base_url: str):
+        """A dynamic label exists because someone typed a name while annotating;
+        only the two scoped sections get an add row."""
+        _mock_labels(page, _PD_ALL)
+        _navigate_to_labels(page, base_url)
+        page.wait_for_selector("#labels-list button[title='Add label']")
+        expect(page.locator("#labels-list button[title='Add label']")).to_have_count(2)
+
+
+class TestPromoteLabel:
+    def _open_picker(self, page: Page, base_url: str, calls: list):
+        _mock_labels_with_patch(page, _PD_ALL, calls)
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{_PD_DYNAMIC['uuid']}']")
+        expect(row).to_be_visible()
+        row.locator("[data-testid='label-promote']").click()
+        return page.locator(".label-promote-row")
+
+    def test_promoting_under_a_parent_sends_type_parent_and_scope(self, page: Page, base_url: str):
+        calls: list[dict] = []
+        picker = self._open_picker(page, base_url, calls)
+        picker.locator(".label-move-select").select_option(_PD_OBJ_ROOT["uuid"])
+        picker.locator("[data-testid='label-promote-apply']").click()
+        wait_until(page, lambda: calls, "Expected a PATCH to /api/labels/{uuid}")
+        assert calls[0]["labelType"] == "standard"
+        assert calls[0]["parentUuid"] == _PD_OBJ_ROOT["uuid"]
+        assert calls[0]["scope"] == "object"
+
+    def test_promoting_under_a_parent_defers_its_variant_grouping(self, page: Page, base_url: str):
+        """Same default a label created under that parent would get — the parent owns
+        the group, so the child must not start a competing one."""
+        calls: list[dict] = []
+        picker = self._open_picker(page, base_url, calls)
+        picker.locator(".label-move-select").select_option(_PD_OBJ_ROOT["uuid"])
+        picker.locator("[data-testid='label-promote-apply']").click()
+        wait_until(page, lambda: calls, "Expected a PATCH to /api/labels/{uuid}")
+        assert calls[0]["exclusiveVariants"] is False
+
+    def test_promoting_to_root_leaves_variant_grouping_alone(self, page: Page, base_url: str):
+        """The conditional half of the test above: a root has no parent to defer to,
+        so its existing flag must not be overwritten."""
+        calls: list[dict] = []
+        picker = self._open_picker(page, base_url, calls)
+        picker.locator(".label-move-select").select_option("")  # "(root)"
+        picker.locator("[data-testid='label-promote-apply']").click()
+        wait_until(page, lambda: calls, "Expected a PATCH to /api/labels/{uuid}")
+        assert calls[0]["parentUuid"] is None
+        assert "exclusiveVariants" not in calls[0]
+
+    def test_the_scope_choice_rebuilds_the_target_list(self, page: Page, base_url: str):
+        """Object and image labels live in separate trees, so a promote target must
+        come from the tree being joined — picking Image must not offer Animal."""
+        calls: list[dict] = []
+        picker = self._open_picker(page, base_url, calls)
+        expect(picker.locator(".label-move-select")).to_contain_text(_PD_OBJ_ROOT["name"])
+
+        picker.locator("input[type='radio'][value='image']").check()
+
+        select = picker.locator(".label-move-select")
+        expect(select).to_contain_text(_PD_IMG_ROOT["name"])
+        expect(select).not_to_contain_text(_PD_OBJ_ROOT["name"])
+
+    def test_promoting_into_the_image_tree_sends_that_scope(self, page: Page, base_url: str):
+        calls: list[dict] = []
+        picker = self._open_picker(page, base_url, calls)
+        picker.locator("input[type='radio'][value='image']").check()
+        picker.locator(".label-move-select").select_option(_PD_IMG_ROOT["uuid"])
+        picker.locator("[data-testid='label-promote-apply']").click()
+        wait_until(page, lambda: calls, "Expected a PATCH to /api/labels/{uuid}")
+        assert calls[0]["scope"] == "image"
+        assert calls[0]["parentUuid"] == _PD_IMG_ROOT["uuid"]
+
+
+class TestDemoteLabel:
+    def test_demoting_a_leaf_sends_the_dynamic_type(self, page: Page, base_url: str):
+        calls: list[dict] = []
+        _mock_labels_with_patch(page, _PD_ALL, calls)
+        page.on("dialog", lambda d: d.accept())
+        _navigate_to_labels(page, base_url)
+
+        row = page.locator(f"#labels-list [data-uuid='{_PD_OBJ_CHILD['uuid']}']")
+        expect(row).to_be_visible()
+        row.locator("[data-testid='label-demote']").click()
+        wait_until(page, lambda: calls, "Expected a PATCH to /api/labels/{uuid}")
+        assert calls[0]["labelType"] == "dynamic"
+
+    def test_dismissing_the_confirm_sends_nothing(self, page: Page, base_url: str):
+        calls: list[dict] = []
+        _mock_labels_with_patch(page, _PD_ALL, calls)
+        page.on("dialog", lambda d: d.dismiss())
+        _navigate_to_labels(page, base_url)
+
+        row = page.locator(f"#labels-list [data-uuid='{_PD_OBJ_CHILD['uuid']}']")
+        expect(row).to_be_visible()
+        row.locator("[data-testid='label-demote']").click()
+        page.wait_for_timeout(300)
+        assert calls == []
+
+    def test_demote_is_unavailable_on_a_label_with_children(self, page: Page, base_url: str):
+        """Demoting a parent would strand its children outside the hierarchy, so the
+        control is disabled rather than left to fail server-side."""
+        _mock_labels(page, _PD_ALL)
+        _navigate_to_labels(page, base_url)
+        parent_row = page.locator(f"#labels-list [data-uuid='{_PD_OBJ_ROOT['uuid']}']")
+        expect(parent_row).to_be_visible()
+        expect(parent_row.locator("[data-testid='label-demote']")).to_be_disabled()
+
+    def test_demote_is_available_on_its_child(self, page: Page, base_url: str):
+        """The conditional half: same control, same tree, enabled where demoting
+        strands nothing."""
+        _mock_labels(page, _PD_ALL)
+        _navigate_to_labels(page, base_url)
+        child_row = page.locator(f"#labels-list [data-uuid='{_PD_OBJ_CHILD['uuid']}']")
+        expect(child_row).to_be_visible()
+        expect(child_row.locator("[data-testid='label-demote']")).to_be_enabled()
+
+    def test_a_dynamic_row_offers_no_demote(self, page: Page, base_url: str):
+        """It is already dynamic; promote is the only direction available."""
+        _mock_labels(page, _PD_ALL)
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{_PD_DYNAMIC['uuid']}']")
+        expect(row).to_be_visible()
+        expect(row.locator("[data-testid='label-promote']")).to_have_count(1)
+        expect(row.locator("[data-testid='label-demote']")).to_have_count(0)
