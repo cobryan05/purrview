@@ -43,7 +43,14 @@ def _capture_body(page: Page, fn: str, opts: dict) -> dict:
             let captured = null;
             const realFetch = globalThis.fetch;
             globalThis.fetch = async (url, init) => {
-                captured = JSON.parse(init.body);
+                // Only the wrapper's own request counts. This runs on `shared_page`, a
+                // live app shared by the whole module, and its background settings PUTs
+                // (tour progress, `fabHintSeen`) land on this same patched fetch — so
+                // keeping whichever arrived last captured those instead, and the
+                // assertion read a settings body. Every review wrapper posts under
+                // /api/images/; nothing else the app does on this page is.
+                const href = typeof url === 'string' ? url : (url && url.url) || '';
+                if (href.includes('/api/images/')) captured = JSON.parse(init.body);
                 return new Response(
                     JSON.stringify({
                         status: 'success',
