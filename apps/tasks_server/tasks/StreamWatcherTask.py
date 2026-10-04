@@ -823,13 +823,18 @@ class StreamWatcherTask(Task):
             return None
         drain = self._clip_drains.get(pipeline.source_uuid)
         if drain is None:
-            relay_path = getattr(pipeline.provider, "_relayed_name", None)
-            if not relay_path:
+            if not getattr(pipeline.provider, "relay_path", ""):
                 return None
             relay = self._manager.get_relay_api_client()
 
             async def extract(start, duration_s, dest):
-                return await relay.extract_clip(path=relay_path, start=start, duration_s=duration_s, dest=dest)
+                # Resolved per call, not captured: a Ring camera takes a fresh lease on
+                # every escalation, so a path read when the drain was built names a
+                # MediaMTX path that no longer exists by the next event.
+                path = getattr(pipeline.provider, "relay_path", "")
+                if not path:
+                    raise RuntimeError("Source is no longer relayed, so there is no buffer to drain")
+                return await relay.extract_clip(path=path, start=start, duration_s=duration_s, dest=dest)
 
             drain = ClipDrain(
                 source_uuid=pipeline.source_uuid,
@@ -911,6 +916,28 @@ class StreamWatcherTask(Task):
             until = max(starts) + self._wallclock_offset - preroll + max_length + SPOOL_DEADLINE_SLACK_S
         ring.hold_from(min(starts) + self._wallclock_offset - preroll, until)
 
+    def _service_live_hold(self, pipeline: WatchPipeline) -> None:
+        """Keep an on-demand source awake while one of its events is still open.
+
+        A Ring camera de-escalates `live_hold_s` after ring-mqtt says motion stopped,
+        and releasing the relay lease deletes the MediaMTX path config. The playback
+        server then answers `path '<name>' is not configured` for a path whose segments
+        are still sitting in /buffer, so the event loses footage it had already
+        recorded. Motion clearing is not an event ending — hysteresis, a dwell, a
+        `min_duration` — so the provider cannot know when it is safe to sleep.
+
+        Re-derived from live state every pass rather than taken and released on the
+        event edges, for the same reason `_service_ring_hold` is: one camera routinely
+        has several events open at once, and a missed END would otherwise pin the camera
+        awake forever — which costs far more here than a held ring, because an awake
+        Ring camera raises no motion events at all. A rule's `max_duration_s` cap is
+        what bounds a stuck event, and the hold expires with it.
+        """
+        hold = getattr(pipeline.provider, "hold_live", None)
+        if hold is None or not pipeline.engine.open_events():
+            return
+        hold()
+
     def _ring_preroll_for(self, pipeline: WatchPipeline) -> float:
         """The pre-roll floor a source's ring is held to — shared with `_historical_frame_from_ring`
         so the held frames and the historical-still lookup are anchored to the same instant."""
@@ -987,12 +1014,20 @@ class StreamWatcherTask(Task):
         return track
 
     def _ring_for(self, pipeline: WatchPipeline) -> Optional[FrameRing]:
-        """The frame ring for an unbuffered source, created on first use.
+        """The frame ring for a source without a continuous rewind buffer.
 
         Lazily, and only for sources that need one: a profile of RTSP cameras must not
         allocate tens of megabytes of ring it will never read from.
+
+        A `ring` tier source keeps its ring even while it reports `buffered`. Its buffer
+        only exists for the length of an escalation, and the pre-roll in front of one is
+        never in it — MediaMTX writes nothing until the camera wakes, ~8.5 s in. The
+        sticky stills are the only record of that stretch, and they stop being collected
+        the moment this returns None.
         """
-        if pipeline.buffered or pipeline.buffer_mode == "off":
+        if pipeline.buffer_mode == "off":
+            return None
+        if pipeline.buffered and pipeline.ingest_tier != "ring":
             return None
         ring = self._frame_rings.get(pipeline.source_uuid)
         if ring is None:
@@ -1840,6 +1875,12 @@ class StreamWatcherTask(Task):
             self._record_source_failure(pipeline, now, "source returned no frame")
             return
 
+        # Per frame, not once at startup: a Ring camera has no relay lease until it
+        # escalates, so a watcher that adopted these at boot describes it as unbuffered
+        # for the whole run and cuts every clip out of the frame ring at analysis fps,
+        # while MediaMTX records the real stream and deletes it unread. Three getattrs.
+        pipeline.adopt_buffer_capabilities(pipeline.provider)
+
         analysed = pipeline.prepare_frame(provided.image)
         # The prefetched encoding is of the FULL-size frame, so it may only be reused
         # when no downscale happened. Detections come back in the coordinate space of
@@ -1923,6 +1964,7 @@ class StreamWatcherTask(Task):
             # drain on this same pass rather than one frame late. The frame ring's hold is
             # serviced here for both halves of that reason.
             self._service_ring_hold(pipeline)
+            self._service_live_hold(pipeline)
             await self._service_drain(pipeline)
 
             # After `step`, not before: the pipeline's `detections` are the mask-filtered
@@ -2519,7 +2561,7 @@ class StreamWatcherTask(Task):
             source_uuid=signal.source_uuid,
             source_name=pipeline.source_name if pipeline else None,
             source_mqtt_name=pipeline.mqtt_name if pipeline else None,
-            relay_path=getattr(pipeline.provider, "_relayed_name", None) if pipeline else None,
+            relay_path=(getattr(pipeline.provider, "relay_path", "") or None) if pipeline else None,
             buffered=bool(pipeline and pipeline.buffered),
             retention_s=pipeline.retention_s if pipeline else 0.0,
             frame=pipeline.last_frame if pipeline else None,
@@ -2627,7 +2669,7 @@ class StreamWatcherTask(Task):
         cleanup here can never be mistaken for an orphaned event clip by the retention
         sweep.
         """
-        relay_path = getattr(pipeline.provider, "_relayed_name", None)
+        relay_path = getattr(pipeline.provider, "relay_path", "")
         if not relay_path:
             return None
         relay = self._manager.get_relay_api_client()

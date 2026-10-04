@@ -178,6 +178,18 @@ class TestSuccessfulStartIsUnaffected:
         # 45 s buffer, and `plan_window`'s pre-roll clamp is guarded on `> 0` so it
         # never runs. Both failures are silent.
         assert provider.retention_s == 45.0
+        assert provider.relay_path == "relay_master_deadbeef"
+
+    async def test_there_is_no_relay_path_before_the_lease(self, relay_state):
+        """`__init__` fills `_relayed_name` with a `provider-<uuid>` placeholder that
+        `ensure_stream` replaces. Handing that out gets `path '<name>' is not configured`
+        from the playback server, which reads as a camera with no footage rather than as
+        a clip cut before its path existed.
+        """
+        provider, _state = relay_state
+
+        assert provider._relayed_name.startswith("provider-")
+        assert provider.relay_path == ""
 
     async def test_a_relay_that_reports_no_retention_leaves_it_at_zero(self, relay_state, monkeypatch):
         """An older relay omits the field; zero is the honest answer, not a made-up 45."""

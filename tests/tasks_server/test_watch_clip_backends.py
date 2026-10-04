@@ -480,7 +480,7 @@ def _drain_task(pipelines, tmp_path, relay=None, actions=()):
 def _open_event_pipeline(source_uuid="src-1", started_at=100.0, **kwargs):
     """A pipeline whose engine reports one open event, without driving a real rule."""
     pipeline = _pipeline(source_uuid, **kwargs)
-    pipeline.provider = SimpleNamespace(_relayed_name="relay_master_abc")
+    pipeline.provider = SimpleNamespace(relay_path="relay_master_abc")
     pipeline.engine.open_events = lambda: [{"ruleUuid": "r1", "startedAt": started_at, "sourceUuid": source_uuid}]
     return pipeline
 
@@ -706,7 +706,7 @@ class TestCardArtContextForOnExit:
         come from a short cut of the relay's own recorded segments instead."""
         pipeline = _engine_pipeline("on_exit")
         pipeline.buffered = True
-        pipeline.provider = SimpleNamespace(_relayed_name="cam/relay")
+        pipeline.provider = SimpleNamespace(relay_path="cam/relay")
 
         calls = []
 
@@ -734,7 +734,7 @@ class TestCardArtContextForOnExit:
     async def test_a_relay_extraction_failure_falls_back_to_the_live_frame(self):
         pipeline = _engine_pipeline("on_exit")
         pipeline.buffered = True
-        pipeline.provider = SimpleNamespace(_relayed_name="cam/relay")
+        pipeline.provider = SimpleNamespace(relay_path="cam/relay")
 
         class _FailingRelay:
             async def extract_clip(self, **kwargs):
@@ -1333,3 +1333,201 @@ class TestTheSpoolStopsAtTheLongestOpenClip:
 
         assert ring._spool.dropped_count == 0, "the previous event's deadline must not bind the next one"
         assert ring._spool.frame_count == 1
+
+
+class TestARingCameraFollowsItsTier:
+    """A Ring camera's rewind buffer exists only while it is escalated.
+
+    Both halves have to track the tier. Its `buffered` flag was read once at startup —
+    when the camera is idle and has no relay lease — so every clip came out of the frame
+    ring at analysis fps and resolution while MediaMTX recorded the real stream and
+    deleted it unread.
+    """
+
+    @staticmethod
+    def _ring_pipeline(*, live: bool):
+        """A ring-tier pipeline whose provider reports the tier it is currently in."""
+        pipeline = _pipeline("ring-1")
+        pipeline.provider = SimpleNamespace(
+            buffered=live,
+            retention_s=45.0 if live else 0.0,
+            relay_path="relay_master_abc" if live else "",
+            ingest_tier_name="ring",
+        )
+        pipeline.adopt_buffer_capabilities(pipeline.provider)
+        return pipeline
+
+    def test_an_escalated_ring_camera_is_cut_from_the_relay(self):
+        pipeline = self._ring_pipeline(live=True)
+        task = _task([pipeline])
+        task._push_to_ring(pipeline, _packet(), now=100.0)
+
+        assert isinstance(task._clip_backend_for(_context("ring-1")), PlaybackClipBackend)
+
+    def test_an_idle_ring_camera_still_falls_back_to_its_ring(self):
+        pipeline = self._ring_pipeline(live=False)
+        task = _task([pipeline])
+        task._push_to_ring(pipeline, _packet(), now=100.0)
+
+        assert isinstance(task._clip_backend_for(_context("ring-1")), RingClipBackend)
+
+    def test_an_escalated_ring_camera_keeps_collecting_its_sticky_stills(self):
+        """The trap in making `buffered` honest: `_ring_for` returns None for a buffered
+        source, so a Ring camera would stop feeding its ring the moment it escalated —
+        and the stills are the only record of the ~8.5 s wake gap, which MediaMTX never
+        records because the camera is not yet sending anything.
+        """
+        pipeline = self._ring_pipeline(live=True)
+        task = _task([pipeline])
+
+        task._push_to_ring(pipeline, _packet(), now=100.0)
+
+        assert task._frame_rings.get("ring-1") is not None
+
+    def test_a_natively_buffered_source_still_allocates_no_ring(self):
+        """The exemption is for the `ring` tier only, not for every buffered source."""
+        pipeline = _pipeline("rtsp-1")
+        pipeline.provider = SimpleNamespace(
+            buffered=True, retention_s=45.0, relay_path="relay_master_xyz", ingest_tier_name="native"
+        )
+        pipeline.adopt_buffer_capabilities(pipeline.provider)
+        task = _task([pipeline])
+
+        task._push_to_ring(pipeline, _packet(), now=100.0)
+
+        assert task._frame_rings.get("rtsp-1") is None
+
+
+class TestAnOnDemandCameraIsHeldAwakeWhileAnEventIsOpen:
+    """Motion clearing is not an event ending.
+
+    Releasing the relay lease deletes the MediaMTX path config, and the playback server
+    then refuses the path even though its segments are still in /buffer — so a camera
+    that sleeps on schedule loses footage its own open event had already recorded.
+    """
+
+    @staticmethod
+    def _pipeline_with(open_events):
+        pipeline = _pipeline("ring-1")
+        holds = []
+        pipeline.provider = SimpleNamespace(hold_live=lambda: holds.append(True))
+        pipeline.engine.open_events = lambda: open_events
+        return pipeline, holds
+
+    def test_an_open_event_holds_the_camera_awake(self):
+        pipeline, holds = self._pipeline_with([{"ruleUuid": "r1", "startedAt": 100.0}])
+
+        _task([pipeline])._service_live_hold(pipeline)
+
+        assert holds == [True]
+
+    def test_no_open_event_lets_the_camera_sleep(self):
+        """The whole point of de-escalating: an awake Ring camera raises no motion at all,
+        so a hold that outlives its event is worse than no clip.
+        """
+        pipeline, holds = self._pipeline_with([])
+
+        _task([pipeline])._service_live_hold(pipeline)
+
+        assert holds == []
+
+    def test_a_source_that_cannot_be_held_is_skipped(self):
+        """An always-on RTSP camera has no `hold_live`; asking must not raise."""
+        pipeline = _pipeline("rtsp-1")
+        pipeline.engine.open_events = lambda: [{"ruleUuid": "r1", "startedAt": 100.0}]
+
+        _task([pipeline])._service_live_hold(pipeline)
+
+
+class TestBufferFactsAreReReadEveryFrame:
+    """An on-demand camera's buffer appears and disappears under a running watcher.
+
+    Sampled once at startup — when a Ring camera is idle and holds no relay lease — the
+    source is described as unbuffered for the life of the task, so every clip is cut
+    from the frame ring at analysis fps and resolution while MediaMTX records the real
+    stream into /buffer and deletes it unread.
+    """
+
+    class _TieredProvider:
+        """A provider whose buffer facts answer for the tier it is in right now."""
+
+        def __init__(self):
+            self.live = False
+            self.frames = 0
+
+        @property
+        def buffered(self):
+            return self.live
+
+        @property
+        def retention_s(self):
+            return 45.0 if self.live else 0.0
+
+        @property
+        def relay_path(self):
+            return "relay_master_abc" if self.live else ""
+
+        ingest_tier_name = "ring"
+
+        def is_ready(self):
+            return True
+
+        def is_connecting(self):
+            return False
+
+        async def getNextImage(self):
+            self.frames += 1
+            return SimpleNamespace(image=np.zeros((4, 4, 3), dtype=np.uint8), encoded_b64=None)
+
+    def _task_for(self, pipeline):
+        task = _task([pipeline])
+        task._failed_sources = set()
+        task._frames_analysed = 0
+        task._FETCH_TIMEOUT_S = 10.0
+        task._detection_track_for = lambda p: SimpleNamespace(push=lambda *a, **k: None)
+        task._record_inference_time = lambda ms: None
+
+        async def _inference(*args, **kwargs):
+            return []
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        task._run_inference = _inference
+        task._dispatch = _noop
+        task._service_drain = _noop
+        task._dispatch_frame = _noop
+        task._promote_open_events = _noop
+        task._publish_bridge_telemetry = lambda p, now: None
+        return task
+
+    async def test_a_camera_that_escalates_mid_run_is_described_as_buffered(self):
+        pipeline = _pipeline("ring-1")
+        pipeline.provider = self._TieredProvider()
+        pipeline.adopt_buffer_capabilities(pipeline.provider)
+        task = self._task_for(pipeline)
+        assert pipeline.buffered is False, "an idle camera has no buffer to start from"
+
+        pipeline.provider.live = True
+        await task._service_source(pipeline, inference_api=None)
+
+        assert pipeline.buffered is True
+        assert pipeline.retention_s == 45.0
+        assert isinstance(task._clip_backend_for(_context("ring-1")), PlaybackClipBackend)
+
+    async def test_a_camera_that_sleeps_mid_run_stops_claiming_a_buffer(self):
+        """The other direction matters just as much: cutting from a path whose lease has
+        been released gets `path '<name>' is not configured` from the playback server.
+        """
+        pipeline = _pipeline("ring-1")
+        pipeline.provider = self._TieredProvider()
+        pipeline.provider.live = True
+        pipeline.adopt_buffer_capabilities(pipeline.provider)
+        task = self._task_for(pipeline)
+        assert pipeline.buffered is True
+
+        pipeline.provider.live = False
+        await task._service_source(pipeline, inference_api=None)
+
+        assert pipeline.buffered is False
+        assert pipeline.retention_s == 0.0

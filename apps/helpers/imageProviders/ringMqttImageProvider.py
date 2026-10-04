@@ -230,6 +230,45 @@ class RingMqttImageProvider(ImageProvider):
         return self._live_provider is not None
 
     @property
+    def buffered(self) -> bool:
+        """Whether there is a rewind buffer to cut a clip out of *right now*.
+
+        A property rather than an attribute because the answer changes with the tier:
+        the live reader arms a recording MediaMTX path, the idle tier has none. Readers
+        must therefore re-read this per frame rather than adopt it once at startup, or
+        a camera that was idle when the watcher booted is described as unbuffered for
+        the whole run.
+        """
+        return bool(self._live_provider is not None and self._live_provider.buffered)
+
+    @property
+    def retention_s(self) -> float:
+        """Seconds of rewind the relay armed for the live tier; 0 while idle."""
+        return float(self._live_provider.retention_s) if self._live_provider is not None else 0.0
+
+    @property
+    def relay_path(self) -> str:
+        """The live tier's MediaMTX path, or "" while idle.
+
+        Releasing the lease deletes the path config, and the playback server then
+        refuses the name even though the segments are still on disk. So this going
+        empty is the deadline for cutting anything out of the buffer, not merely a
+        change of tier.
+        """
+        return self._live_provider.relay_path if self._live_provider is not None else ""
+
+    @property
+    def ingest_tier_name(self) -> str:
+        """Always `"ring"`, including while live.
+
+        The UI badge keys the "snapshots, low fps" wording off this, and the tier a
+        Ring camera spends almost all its time in is the idle one. Reporting `ffmpeg`
+        for the duration of an escalation would make the badge flicker between two
+        descriptions of one camera.
+        """
+        return "ring"
+
+    @property
     def live_url(self) -> str:
         return f"rtsp://{self._rtsp_host}:{self._rtsp_port}/{self._camera_id}{LIVE_SUFFIX}"
 
@@ -445,6 +484,23 @@ class RingMqttImageProvider(ImageProvider):
         """
         self._escalate_requested = True
         self._live_until = self._now() + self._live_hold_s
+
+    def hold_live(self) -> None:
+        """Extend the live window, for a consumer that knows something this provider
+        cannot: an event is still open.
+
+        Motion clearing does not end an event — hysteresis, a dwell and `min_duration`
+        all outlast it — and de-escalation deletes the MediaMTX path config, after which
+        the playback server refuses the path and the event's own footage is unreachable
+        even though its segments are still in /buffer.
+
+        Deliberately not `request_live`, which publishes `stream/command`. A caller
+        holding a window open re-states it every frame, and `_on_stream_command` is the
+        one topic that distinguishes a deliberate request for video from the RTSP
+        server's own on-demand churn — republishing at frame rate would drown exactly
+        the signal every other consumer of this camera escalates on.
+        """
+        self._request_escalation()
 
     def _note_snapshot_arrival(self) -> None:
         """Learn the bridge's snapshot cadence from consecutive arrivals.

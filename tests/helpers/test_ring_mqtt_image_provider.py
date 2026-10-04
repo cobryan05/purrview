@@ -495,3 +495,61 @@ class TestReconnectSubscriptionRace:
         client.mqtt_connected_callback(client._mqtt, None, {}, 0)
 
         assert len(resubscribed) == 3, "connack handler must resubscribe every known topic"
+
+
+class TestBufferFactsFollowTheTier:
+    """What the watcher reads to decide where a clip is cut from.
+
+    These have to be live reads, not values sampled once: a camera is idle when the
+    watcher starts, so a single sample describes it as unbuffered for the whole run and
+    every clip is cut from the frame ring at analysis fps while MediaMTX records the
+    real stream and deletes it unread.
+    """
+
+    async def test_an_idle_camera_reports_no_buffer(self, fakes):
+        provider, _client = await _started_provider()
+
+        assert provider.buffered is False
+        assert provider.retention_s == 0.0
+        assert provider.relay_path == ""
+
+    async def test_an_escalated_camera_reports_the_relays_answer(self, fakes):
+        provider, _client = await _started_provider(live_hold_s=10.0)
+        await provider.request_live()
+        await provider.getNextImage()
+        live = FakeLiveProvider.instances[0]
+        live.buffered, live.retention_s, live.relay_path = True, 45.0, "relay_master_abc"
+
+        assert provider.buffered is True
+        assert provider.retention_s == 45.0
+        assert provider.relay_path == "relay_master_abc"
+
+    async def test_the_tier_name_stays_ring_across_an_escalation(self, fakes):
+        """The buffer badge keys its "snapshots, low fps" wording off this, and the tier
+        a Ring camera spends almost all its time in is the idle one.
+        """
+        provider, _client = await _started_provider(live_hold_s=10.0)
+        assert provider.ingest_tier_name == "ring"
+
+        await provider.request_live()
+        await provider.getNextImage()
+
+        assert provider.ingest_tier_name == "ring"
+
+    async def test_holding_the_window_open_publishes_no_command(self, fakes):
+        """`hold_live` is re-stated every frame. `stream/command` is the one topic that
+        separates a deliberate request for video from the RTSP server's own churn, so
+        the hold must not touch it.
+        """
+        provider, client = await _started_provider(live_hold_s=10.0)
+        now = [1000.0]
+        provider._now = lambda: now[0]
+        await provider.request_live()
+        await provider.getNextImage()
+        published_before = len(client.published)
+
+        now[0] += 5.0
+        provider.hold_live()
+
+        assert len(client.published) == published_before
+        assert provider._live_until == 1015.0

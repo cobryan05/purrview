@@ -722,6 +722,11 @@ class WatchPipeline:
                 return "◐ frame ring (snapshots, low fps)"
             return "⚠ no buffer"
         seconds = int(self.retention_s)
+        if self.ingest_tier == "ring":
+            # A Ring camera's buffer lasts only as long as the escalation that armed it,
+            # so the depth is real but temporary — "live" is what separates it from a
+            # camera that is always rewindable.
+            return f"● {seconds}s rewind (live)"
         if self.ingest_tier == "ffmpeg":
             return f"● {seconds}s rewind (ffmpeg ingest)"
         return f"● {seconds}s rewind (native)"

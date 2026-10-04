@@ -158,6 +158,17 @@ class FfmpegImageProvider(ImageProvider):
     def __repr__(self):
         return f"FfmpegImageProvider [{self._stream}]"
 
+    @property
+    def relay_path(self) -> str:
+        """The MediaMTX path a clip can be cut from, or "" when there is nothing to cut.
+
+        Gated on the lease rather than on the name: `__init__` fills `_relayed_name`
+        with a `provider-<uuid>` placeholder that `ensure_stream` replaces with the
+        shared master path, and the playback server answers
+        `path '<name>' is not configured` for the placeholder.
+        """
+        return self._relayed_name if self._lease_id else ""
+
     async def start(self) -> None:
         if self._rtsp_relay_api:
             api: stream_client.StreamsApi = stream_client.StreamsApi(self._rtsp_relay_api)

@@ -112,6 +112,10 @@ def _harness():
         tracks=[],
     )
     pipeline.schedule_next = lambda now: None
+    # Re-read per frame by the loop, because a source's buffer comes and goes with its
+    # tier. Stubbed rather than omitted: the real pipeline always has it, so a fake
+    # without one fails on wiring instead of on time bases.
+    pipeline.adopt_buffer_capabilities = lambda provider: None
     pipeline.prepare_frame = lambda image: image
     pipeline.step = lambda detections, now: []
     # Sources are serviced concurrently, so `_service_source` holds the real
