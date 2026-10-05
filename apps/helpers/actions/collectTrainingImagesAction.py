@@ -209,6 +209,7 @@ class CollectTrainingImagesAction(Action):
             },
             "min_interval_s": {
                 "type": "float",
+                "advanced": True,
                 "required": False,
                 "default": 10.0,
                 "help": (

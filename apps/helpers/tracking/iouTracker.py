@@ -106,6 +106,7 @@ class IouTracker(Tracker):
             },
             "iou_threshold": {
                 "type": "float",
+                "advanced": True,
                 "required": False,
                 "default": 0.3,
                 "help": (
@@ -118,6 +119,7 @@ class IouTracker(Tracker):
             },
             "recovery_margin": {
                 "type": "float",
+                "advanced": True,
                 "required": False,
                 "default": 0.0,
                 "help": (

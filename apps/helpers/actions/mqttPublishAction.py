@@ -76,6 +76,7 @@ class MqttPublishAction(Action):
         return {
             "retain": {
                 "type": "bool",
+                "advanced": True,
                 "required": False,
                 "default": False,
                 "help": (

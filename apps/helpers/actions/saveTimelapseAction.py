@@ -134,12 +134,14 @@ class SaveTimelapseAction(Action):
             },
             "quality": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": 90,
                 "help": "JPEG quality, 1-100. Around 90 looks the same as the original to the eye; 70 roughly halves the file at a visible cost on fine detail. Lower it only if disk or bandwidth is the problem.",
             },
             "full_resolution": {
                 "type": "bool",
+                "advanced": True,
                 "required": False,
                 "default": True,
                 "help": (
@@ -150,6 +152,7 @@ class SaveTimelapseAction(Action):
             },
             "max_width": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": 0,
                 "help": "Shrink to at most this width before encoding. 0 keeps the frame's own size.",

@@ -339,6 +339,7 @@ class RecordEventTimelapseAction(Action):
             },
             "min_frames": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": DEFAULT_MIN_FRAMES,
                 "help": (
@@ -349,6 +350,7 @@ class RecordEventTimelapseAction(Action):
             },
             "max_frames": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": DEFAULT_MAX_FRAMES,
                 "help": (
@@ -358,12 +360,14 @@ class RecordEventTimelapseAction(Action):
             },
             "max_width": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": DEFAULT_MAX_WIDTH,
                 "help": "Shrink frames to at most this width before encoding. 0 keeps their own size.",
             },
             "quality": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": 85,
                 "help": (
@@ -374,6 +378,7 @@ class RecordEventTimelapseAction(Action):
             },
             "full_resolution": {
                 "type": "bool",
+                "advanced": True,
                 "required": False,
                 "default": False,
                 "help": (

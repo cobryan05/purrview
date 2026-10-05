@@ -74,6 +74,7 @@ class SaveSnapshotAction(Action):
             },
             "quality": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": 90,
                 "help": "JPEG quality, 1-100. Around 90 looks the same as the original to the eye; 70 roughly halves the file at a visible cost on fine detail. Lower it only if disk or bandwidth is the problem.",

@@ -80,6 +80,34 @@ export function buildSchemaParams(schema, stored, onAnyChange, opts = {}) {
   const keys = Object.keys(schema || {}).filter(k => !hidden.has(k));
   const ordered = [...(decorator.order || []).filter(k => keys.includes(k)), ...keys.filter(k => !(decorator.order || []).includes(k))];
 
+  // Niche parameters go behind a disclosure instead of onto the row. The row is one
+  // line by design and there is a density test on it, so every always-visible control
+  // costs editor scroll — which is why `qos` was simply not offered at all. A schema
+  // flag rather than a per-caller list, so a new parameter files itself.
+  const flagged = key => schema[key]?.advanced === true || (decorator.advanced || []).includes(key);
+  // A disclosure is itself a control on the row, so it has to hide more than it costs.
+  // Below this it is cheaper to leave the fields where they are: moving the one advanced
+  // parameter off a two-field row replaced a narrow control with a wider one and wrapped
+  // the row, which is a net loss of ~20px rather than a saving.
+  const minToPanel = decorator.minAdvanced ?? 3;
+  const flaggedKeys = ordered.filter(flagged);
+  const panelled = flaggedKeys.length >= minToPanel;
+  const isAdvanced = key => panelled && flagged(key);
+  const advancedKeys = panelled ? flaggedKeys : [];
+  let advancedBox = null;
+  let advancedPanel = null;
+  if (advancedKeys.length) {
+    const details = el('details', 'schema-advanced');
+    advancedPanel = el('div', 'schema-advanced__panel');
+    const summary = document.createElement('summary');
+    summary.textContent = decorator.advancedLabel || 'Advanced';
+    summary.dataset.testid = `${testidPrefix}-advanced-toggle`;
+    details.appendChild(summary);
+    details.appendChild(advancedPanel);
+    details.dataset.testid = `${testidPrefix}-advanced`;
+    advancedBox = details;
+  }
+
   for (const key of ordered) {
     const field = schema[key] || {};
     const type = KNOWN_TYPES.has(field.type) ? field.type : 'str';
@@ -165,6 +193,10 @@ export function buildSchemaParams(schema, stored, onAnyChange, opts = {}) {
     const after = decorator.after?.[key];
     const extras = after ? [after(controls, box)].flat().filter(Boolean) : [];
 
+    // Appended to the disclosure rather than the row. Read back identically either
+    // way: `readers` already holds this key, so a collapsed panel still saves.
+    const target = isAdvanced(key) ? advancedPanel : box;
+
     if (extras.length) {
       // Field and hints in one group, so the row wraps *between* groups and never
       // between a number and the sentence explaining what it means. As separate flex
@@ -176,11 +208,14 @@ export function buildSchemaParams(schema, stored, onAnyChange, opts = {}) {
       const group = el('div', 'schema-field-group');
       group.appendChild(wrapped);
       for (const node of extras) group.appendChild(node);
-      box.appendChild(group);
+      target.appendChild(group);
     } else {
-      box.appendChild(wrapped);
+      target.appendChild(wrapped);
     }
   }
+
+  // Last, so the row reads as its everyday controls followed by the way in to the rest.
+  if (advancedBox) box.appendChild(advancedBox);
 
   if (!box.children.length) box.appendChild(el('span', 'watch-hint', emptyText));
 

@@ -110,6 +110,7 @@ class MqttPublishImageAction(Action):
             },
             "full_resolution": {
                 "type": "bool",
+                "advanced": True,
                 "required": False,
                 "default": True,
                 "help": (
@@ -121,12 +122,14 @@ class MqttPublishImageAction(Action):
             },
             "quality": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": 80,
                 "help": "JPEG quality, 1-100. Around 90 looks the same as the original to the eye; 70 roughly halves the file at a visible cost on fine detail. Lower it only if disk or bandwidth is the problem.",
             },
             "max_width": {
                 "type": "int",
+                "advanced": True,
                 "required": False,
                 "default": 0,
                 "help": (
@@ -145,6 +148,7 @@ class MqttPublishImageAction(Action):
             },
             "retain": {
                 "type": "bool",
+                "advanced": True,
                 "required": False,
                 "default": True,
                 "help": (

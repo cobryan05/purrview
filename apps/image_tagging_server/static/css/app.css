@@ -9124,6 +9124,52 @@ progress.progress-indeterminate:indeterminate {
   max-width: 100%;
 }
 
+/* Niche parameters, moved off the row they would otherwise wrap. Pico styles `details`
+   as an accordion with its own border, padding and margin, which makes a collapsed
+   disclosure taller than the fields beside it — enough to push the action row past the
+   height its density test allows. The panel is positioned out of flow so the row is the
+   same height open or closed, which is the only reason moving fields here is a saving.
+   `buildSchemaParams` renders into this only when a kind declares enough of them to pay
+   for the trigger's own width. */
+.schema-advanced {
+  position: relative;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  align-self: flex-end;
+}
+
+.schema-advanced > summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  padding: 0.25rem 0.5rem;
+  margin: 0;
+  border: 0;
+  list-style: none;
+}
+
+.schema-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.schema-advanced__panel {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  top: 100%;
+  min-width: max-content;
+  max-width: min(42rem, 90vw);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  background: var(--pico-card-background-color, var(--pico-background-color));
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+}
+
 .watch-hint--truncate {
   max-width: 11rem;
   overflow: hidden;
