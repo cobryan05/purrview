@@ -1422,6 +1422,12 @@ class WatchEventSession(ApiModel):
     ended_at: Optional[str] = None
     #: At least one event in this visit has not closed yet.
     is_open: bool = False
+    #: Whether any event in the visit left a clip, and whether any left a timelapse. Both
+    #: can be true: a watcher recording both produces one of each for the same event.
+    #: Reported per visit rather than per event so the card can mark itself without
+    #: fetching the events it folded.
+    has_clip: bool = False
+    has_timelapse: bool = False
     representative_uuid: Optional[str] = None
 
 

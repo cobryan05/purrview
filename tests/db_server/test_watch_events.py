@@ -1336,6 +1336,74 @@ class TestWatchEventSessions:
         assert body["sessions"][0]["count"] == 2
         assert body["sessions"][0]["isOpen"] is True
 
+    async def test_a_visit_reports_which_media_it_holds(self, http_client):
+        """The card marks a visit as clip or timelapse without fetching the events it
+        folded, so the fold has to carry the answer.
+
+        "Any event in the visit", not "all of them": a visit is opened to watch it, and
+        one playable event in three is the difference between a card worth clicking and
+        one that is not.
+        """
+        base = datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        events = []
+        for i in range(3):
+            start = base + timedelta(seconds=i * 30)
+            events.append(
+                await _make_event(
+                    http_client,
+                    profile_uuid,
+                    ruleUuid="rule-a",
+                    subjectRef="cat",
+                    startedAt=start.isoformat(),
+                    endedAt=(start + timedelta(seconds=10)).isoformat(),
+                )
+            )
+        # Only the middle event of the visit recorded anything, and only a timelapse.
+        await http_client.post(
+            "/api/recordings",
+            json={
+                "profileUuid": profile_uuid,
+                "eventUuid": events[1]["uuid"],
+                "kind": "timelapse",
+                "filePath": "/tmp/t.mp4",
+            },
+        )
+
+        body = await _sessions(http_client, gap_s=120)
+        assert body["total"] == 1
+        visit = body["sessions"][0]
+        # The count is the regression that matters: the flags are gathered with an
+        # EXISTS, and a join against the one-to-many would make this visit of three
+        # events report four.
+        assert visit["count"] == 3, visit
+        assert visit["hasTimelapse"] is True, visit
+        assert visit["hasClip"] is False, visit
+
+        # A clip on another event of the same visit sets the other flag, without
+        # disturbing the first or the count.
+        await http_client.post(
+            "/api/recordings",
+            json={
+                "profileUuid": profile_uuid,
+                "eventUuid": events[2]["uuid"],
+                "kind": "clip",
+                "filePath": "/tmp/c.mp4",
+            },
+        )
+        visit = (await _sessions(http_client, gap_s=120))["sessions"][0]
+        assert (visit["hasClip"], visit["hasTimelapse"], visit["count"]) == (True, True, 3), visit
+
+    async def test_a_visit_with_no_recording_says_so(self, http_client):
+        """The flags must be false, not absent — a card that cannot tell "no media" from
+        "not reported" would badge every visit or none."""
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(http_client, profile_uuid, ruleUuid="rule-a", subjectRef="cat")
+
+        visit = (await _sessions(http_client, gap_s=120))["sessions"][0]
+        assert visit["hasClip"] is False, visit
+        assert visit["hasTimelapse"] is False, visit
+
     async def test_sessions_honour_the_same_filters_as_the_grid(self, http_client):
         profile_uuid = await _make_profile(http_client)
         cam_a, cam_b = await _make_source(http_client), await _make_source(http_client)

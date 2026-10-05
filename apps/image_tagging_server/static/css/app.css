@@ -1504,6 +1504,13 @@ body.chrome-hidden .event-search__sticky-top {
 
 /* A folded visit is still an event card; the count is what distinguishes it, so it sits
    where the media badges do rather than restyling the whole card. */
+/* A visit's media marks share the top-right corner the flat card's badge stack uses,
+   but there are at most two and each is a single glyph — a row keeps them off the
+   picture, where a column of two would reach a third of the way down it. */
+.event-card__badges--media {
+  flex-direction: row;
+}
+
 .event-card__badge--repeat {
   position: absolute;
   bottom: var(--space-1);

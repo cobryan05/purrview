@@ -96,6 +96,27 @@ export function buildSessionCard(
     badge.dataset.testid = 'event-session-repeat-badge';
     media.appendChild(badge);
   }
+  // Which media the visit holds, in the same glyphs the flat card uses — ▶ for a clip,
+  // ⏩ for a timelapse — abbreviated to the glyph alone because a folded card already
+  // carries a count badge and a live badge in the same corner. A visit can show both:
+  // a watcher recording both kinds produces one of each.
+  if (session.hasClip || session.hasTimelapse) {
+    const mediaKinds = el('div', 'event-card__badges event-card__badges--media');
+    if (session.hasClip) {
+      const badge = el('span', 'event-card__badge event-card__badge--video', '▶');
+      badge.title = 'At least one event in this visit has a clip — real time, at the camera’s frame rate.';
+      badge.dataset.testid = 'event-session-video-badge';
+      mediaKinds.appendChild(badge);
+    }
+    if (session.hasTimelapse) {
+      const badge = el('span', 'event-card__badge event-card__badge--timelapse', '⏩');
+      badge.title = 'At least one event in this visit has a timelapse — sampled while it was open, '
+        + 'so minutes or hours are compressed into seconds.';
+      badge.dataset.testid = 'event-session-timelapse-badge';
+      mediaKinds.appendChild(badge);
+    }
+    media.appendChild(mediaKinds);
+  }
   // The same badge the flat grid's card carries, for the same reason: an open event's
   // clip does not exist yet and its duration is still growing. Folding repeats into
   // visits must not be the thing that hides that.

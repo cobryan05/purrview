@@ -116,6 +116,7 @@ from .types import (
     PreviewRun,
     PreviewRunTTL,
     Recording,
+    RecordingKind,
     RecordingRead,
     RegionRole,
     RuleSubjectKind,
@@ -8333,6 +8334,24 @@ class DbClient:
                 ((func.julianday(WatchEvent.started_at) - func.julianday(prev_end)) * 86400.0 > gap_s, 1),
                 else_=0,
             )
+
+            # Which kinds of media the visit has, so its card can say so without the
+            # client fetching every event behind it. EXISTS rather than a join: an event
+            # owns at most one recording per kind, but joining would still multiply the
+            # row by its recordings and inflate the session's own `count`.
+            def _has_recording(kind: str):
+                return case(
+                    (
+                        exists(
+                            select(1)
+                            .select_from(Recording)
+                            .where(Recording.event_uuid == WatchEvent.uuid, Recording.kind == kind)
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+
             marked = self._apply_watch_event_filters(
                 select(
                     WatchEvent.uuid,
@@ -8344,6 +8363,8 @@ class DbClient:
                     WatchEvent.ended_at,
                     WatchEvent.snapshot_path,
                     WatchEvent.crop_path,
+                    _has_recording(RecordingKind.CLIP.value).label("has_clip"),
+                    _has_recording(RecordingKind.TIMELAPSE.value).label("has_timelapse"),
                     starts_session.label("starts_session"),
                 ),
                 **filters,
@@ -8417,6 +8438,11 @@ class DbClient:
                     # open-ended window rather than a zero-width one, so the openness is
                     # reported separately instead of inferred from the two timestamps.
                     func.max(case((sessioned.c.ended_at == None, 1), else_=0)).label("is_open"),  # noqa: E711
+                    # "Any event in this visit has one", not "all of them do": a visit is
+                    # opened to watch it, and one playable event in seven is the
+                    # difference between a card worth clicking and one that is not.
+                    func.max(sessioned.c.has_clip).label("has_clip"),
+                    func.max(sessioned.c.has_timelapse).label("has_timelapse"),
                     # `rn` is 1 on exactly one row per session, so a max() over this
                     # picks that row's uuid without a second pass over the table.
                     func.max(case((sessioned.c.rn == 1, sessioned.c.uuid))).label("representative_uuid"),
@@ -8442,6 +8468,8 @@ class DbClient:
                     agg.c.started_at,
                     agg.c.ended_at,
                     agg.c.is_open,
+                    agg.c.has_clip,
+                    agg.c.has_timelapse,
                     agg.c.representative_uuid,
                 )
                 .order_by(agg.c.started_at.desc())
@@ -8464,6 +8492,8 @@ class DbClient:
                 started_at,
                 ended_at,
                 is_open,
+                has_clip,
+                has_timelapse,
                 representative_uuid,
             ) in rows:
                 sessions.append(
@@ -8480,6 +8510,8 @@ class DbClient:
                         "started_at": started_at.isoformat() if hasattr(started_at, "isoformat") else started_at,
                         "ended_at": ended_at.isoformat() if hasattr(ended_at, "isoformat") else ended_at,
                         "is_open": bool(is_open),
+                        "has_clip": bool(has_clip),
+                        "has_timelapse": bool(has_timelapse),
                         "representative_uuid": representative_uuid,
                     }
                 )
