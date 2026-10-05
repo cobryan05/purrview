@@ -9153,7 +9153,15 @@ progress.progress-indeterminate:indeterminate {
   display: none;
 }
 
+/* Hidden unless the disclosure is open, stated explicitly: an out-of-flow child with
+   its own `display` overrides the UA rule that hides a closed `details`' content, and
+   the panel then sits over the page as an invisible z-indexed sheet that swallows
+   clicks and hides whatever is beneath it. */
 .schema-advanced__panel {
+  display: none;
+}
+
+.schema-advanced[open] > .schema-advanced__panel {
   position: absolute;
   z-index: 20;
   right: 0;

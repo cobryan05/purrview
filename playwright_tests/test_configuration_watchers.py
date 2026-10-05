@@ -3436,3 +3436,69 @@ class TestRuleSummary:
         # The cap belongs to a span, and repeating it would describe a field the row no
         # longer shows.
         expect(summary).not_to_contain_text("at most")
+
+
+class TestTheAdvancedDisclosure:
+    """Niche settings live behind a disclosure so they do not cost row height. Both
+    halves of that need asserting: out of the way when shut, reachable when opened. A
+    panel that is merely hidden is a setting nobody can change, and one that is never
+    hidden is an absolutely-positioned sheet lying over the rest of the page — which is
+    what it did until `[open]` gated its `display`, and it showed up as unrelated rows
+    on another tab reporting themselves invisible.
+
+    Driven through the event timelapse, which declares enough advanced parameters to
+    earn a panel. The trackers are not used here: their options already sit behind a
+    `Tuning` disclosure of their own, so they never had the row-density problem this
+    solves.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        page.locator("[data-testid='watch-action-kind']").first.select_option("record_event_timelapse")
+
+    def test_an_advanced_field_is_hidden_until_the_disclosure_is_opened(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        field = page.locator("[data-testid='watch-action-param-quality']").first
+
+        expect(field).not_to_be_visible()
+
+        page.locator("[data-testid='watch-action-param-advanced-toggle']").first.click()
+
+        expect(field).to_be_visible()
+
+    def test_the_closed_panel_covers_nothing(self, page: Page, base_url: str):
+        """The failure this exists to catch is silent: the panel is out of flow, so left
+        visible it is a transparent sheet over whatever is beneath it rather than
+        anything a reader would notice as wrong."""
+        self._open(page, base_url)
+        panel = page.locator("[data-testid='watch-action-param-advanced'] .schema-advanced__panel").first
+
+        assert panel.bounding_box() is None, "the collapsed panel still occupies the page"
+
+    def test_an_everyday_field_stays_on_the_row(self, page: Page, base_url: str):
+        """The counterweight: moving everything behind the disclosure would empty the
+        card of the settings people actually came to change."""
+        self._open(page, base_url)
+
+        expect(page.locator("[data-testid='watch-action-event-timelapse-interval']").first).to_be_visible()
+
+    def test_a_panelled_value_still_saves(self, page: Page, base_url: str):
+        """A field read back through a collapsed panel is the whole risk of moving it:
+        the control is in the DOM either way, so a form that skipped it would lose the
+        setting silently."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        page.locator("[data-testid='watch-action-kind']").first.select_option("record_event_timelapse")
+
+        page.locator("[data-testid='watch-action-param-advanced-toggle']").first.click()
+        page.locator("[data-testid='watch-action-param-quality']").first.fill("55")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["paramsJson"]["quality"] == 55
