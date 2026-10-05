@@ -38,7 +38,12 @@ import {
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
-import { frameIsTrustworthy, nextPresentedFrame, whenPageVisible } from '/app-static/js/ui/utils/videoFrames.js';
+import {
+  frameHasPicture,
+  frameIsTrustworthy,
+  nextPresentedFrame,
+  whenPageVisible,
+} from '/app-static/js/ui/utils/videoFrames.js';
 import { attachClipOverlay, fetchClipOverlay, sampleAt, seekTargetFor } from './clipOverlay.js';
 import { fetchEventBlips } from '/app-static/js/shared/api/eventBlips.js';
 import {
@@ -203,8 +208,31 @@ export async function captureVideoFrame(video) {
   canvas.width = width;
   canvas.height = height;
   canvas.getContext('2d').drawImage(video, 0, 0, width, height);
+  // A frame can be presented, on time, and still hold no picture — a seek on a lossy
+  // clip composites an uninitialised decode buffer, which reaches the canvas as a flat
+  // green. Refused here rather than at either call site: both of them write the frame
+  // into the dataset with boxes beside it, and a blank one is the exact training image
+  // `videoFrames` exists to keep out.
+  if (!frameHasPicture(sampleCanvasPixels(canvas))) return null;
   const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
   return blob ? { blob, width, height } : null;
+}
+
+/**
+ * The frame's pixels, downsampled — enough to tell a picture from a flat buffer.
+ *
+ * Reading 1920x1080 back for a variance is wasted work when the question is whether
+ * anything varies at all; the browser's own scaler answers it on a thumbnail.
+ */
+function sampleCanvasPixels(canvas, size = 32) {
+  const width = Math.max(1, Math.min(size, canvas.width));
+  const height = Math.max(1, Math.min(size, canvas.height));
+  const small = document.createElement('canvas');
+  small.width = width;
+  small.height = height;
+  const context = small.getContext('2d', { willReadFrequently: true });
+  context.drawImage(canvas, 0, 0, width, height);
+  return context.getImageData(0, 0, width, height);
 }
 
 /**
@@ -1239,8 +1267,19 @@ export function openEventDetailModal(
         onProgress?.(attempted, times.length);
         continue;
       }
-      const frame = await captureVideoFrame(video);
+      let frame = await captureVideoFrame(video);
+      if (!frame) {
+        // Blank means the decoder handed over an uninitialised buffer, which the next
+        // composite usually replaces — so the moment gets one more wait before it is
+        // given up, rather than being dropped on the strength of one bad buffer.
+        await nextPresentedFrame(video, { timeoutMs: 600 });
+        frame = await captureVideoFrame(video);
+      }
       if (frame) frames.push({ at: playerT, sidecarAt: t, frame });
+      // Counted as a skip, not silently dropped: these used to vanish from the harvest
+      // with the progress line still reaching its total, so eight picks yielding six
+      // images looked like a success.
+      else skipped += 1;
       // Counted as attempted, not as kept: a skip still consumed a seek, and a progress
       // line that stalls short of its own total reads as a hang.
       attempted += 1;
@@ -1447,7 +1486,7 @@ export function openEventDetailModal(
     // worse than useless.
     const frame = await captureVideoFrame(video);
     if (!frame) {
-      toast('The video has not loaded a frame yet', 3000, 'error');
+      toast('The video has not painted a usable frame yet — let it play a moment and try again', 4000, 'error');
       return;
     }
     saveBtn.disabled = true;

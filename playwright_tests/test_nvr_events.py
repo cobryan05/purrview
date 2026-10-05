@@ -72,9 +72,15 @@ PIXEL_JPEG = base64.b64decode(FRAME_B64)
 
 #: A one-second 64x48 WebM, for the tests that need a clip the browser will really
 #: decode (see `_mock(playable=True)`). Committed rather than generated at run time: it
-#: is 700 bytes, and building it needs ffmpeg with libvpx, which the test box is not
+#: is 3 KB, and building it needs ffmpeg with libvpx, which the test box is not
 #: required to have. Regenerate with:
-#:   ffmpeg -f lavfi -i "color=c=red:s=64x48:d=1:r=5" -c:v libvpx -b:v 50k tiny_clip.webm
+#:   ffmpeg -f lavfi -i "testsrc=s=64x48:d=1:r=5" -c:v libvpx -b:v 50k tiny_clip.webm
+#:
+#: ⚠️ `testsrc`, not the flat `color=c=red` this used to be. `captureVideoFrame` refuses
+#: a frame with no luma variation, because that is what an uninitialised decode buffer
+#: looks like and nine of them reached the dataset wearing real boxes. A single-colour
+#: fixture is indistinguishable from that buffer, so it stopped being capturable — and a
+#: clip no real camera could produce was the wrong thing to be testing the save path on.
 TINY_WEBM = (Path(__file__).parent / "fixtures" / "tiny_clip.webm").read_bytes()
 
 #: Does a serialised timestamp state its zone? Mirrors `HAS_OFFSET` in `shared/time.js`.
@@ -3599,6 +3605,61 @@ class TestCorrectingAWrongLabel:
         # seek is accepted — but an adrift one is still refused.
         assert result["keepWithoutRvfc"] is True
         assert result["skipWithoutRvfcWhenAdrift"] is False
+
+    def test_a_blank_frame_is_never_captured(self, page: Page, base_url: str):
+        """The third way a capture goes wrong, after "never presented" and "seek never
+        landed": presented, on time, and holding no picture.
+
+        A seek on a lossy clip can composite the decoder's uninitialised buffer.
+        `requestVideoFrameCallback` fires for it exactly as for a real frame, so every
+        guard upstream says yes — and nine images reached the dataset that way, each a
+        flat green rectangle carrying the corrected boxes of a moment it did not show.
+
+        The buffer is uniform in YUV, which converts to a green with a wide *channel*
+        spread, so the test that catches it has to be luma: comparing colours reads that
+        green as content.
+        """
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        result = page.evaluate("""async () => {
+                const { frameHasPicture, lumaSpread } =
+                  await import('/app-static/js/ui/utils/videoFrames.js');
+                const make = (fill) => {
+                  const data = new Uint8ClampedArray(32 * 32 * 4);
+                  for (let i = 0; i < data.length; i += 4) {
+                    const [r, g, b] = fill(i / 4);
+                    data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+                  }
+                  return { data };
+                };
+                // What actually reached the dataset: BGR(0,77,0) off the decoder.
+                const green = make(() => [0, 77, 0]);
+                const black = make(() => [0, 0, 0]);
+                // A dark night frame: low light, but sensor noise all through it.
+                const noisy = make(i => { const n = 8 + ((i * 37) % 11); return [n, n, n]; });
+                const picture = make(i => [(i * 7) % 256, (i * 13) % 256, (i * 29) % 256]);
+                return {
+                  greenSpread: lumaSpread(green),
+                  keepsGreen: frameHasPicture(green),
+                  keepsBlack: frameHasPicture(black),
+                  keepsNoisy: frameHasPicture(noisy),
+                  keepsPicture: frameHasPicture(picture),
+                  emptySpread: lumaSpread({ data: new Uint8ClampedArray(0) }),
+                };
+            }""")
+
+        # The flat buffer is exactly uniform — that is what makes it recognisable at all.
+        assert result["greenSpread"] == 0, result
+        # The verdict. A blank frame is refused whatever colour it is flat in; anything
+        # with real variation is kept, including a dark, noisy night frame — refusing
+        # those would quietly gut the harvest on every IR camera.
+        assert result["keepsGreen"] is False, "a flat green decode buffer must never be captured"
+        assert result["keepsBlack"] is False
+        assert result["keepsNoisy"] is True, "a dark but real frame must still be captured"
+        assert result["keepsPicture"] is True
+        # No pixels is not a picture, and must not divide by zero on the way to saying so.
+        assert result["emptySpread"] == 0
 
     def test_the_harvest_is_a_spread_not_the_first_few_frames(self, page: Page, base_url: str):
         """The sampling policy, which is the whole difference between "some subset" and

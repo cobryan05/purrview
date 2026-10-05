@@ -99,3 +99,60 @@ export function whenPageVisible(timeoutMs = 60000) {
     document.addEventListener('visibilitychange', onChange);
   });
 }
+
+/**
+ * Greatest luma spread a frame may have and still count as blank, over 0–255.
+ *
+ * A decoder's uninitialised buffer is *exactly* uniform — every pixel identical, spread
+ * 0.00 — while the darkest usable night frame still carries sensor noise well above 1.
+ */
+export const BLANK_FRAME_MAX_SPREAD = 1;
+
+/**
+ * Standard deviation of a frame's luma.
+ *
+ * The one property every real picture has and an uninitialised decode buffer never
+ * does: variation. Luma rather than RGB because the buffer that reaches the canvas is
+ * uniform in *YUV* — all-zero chroma and luma renders as a flat green through the
+ * conversion, which has a wide channel spread and would read as content to anything
+ * comparing colours.
+ *
+ * @param {{data: Uint8ClampedArray}} imageData - from `getImageData`
+ * @returns {number} 0 for a perfectly uniform frame
+ */
+export function lumaSpread(imageData) {
+  const data = imageData?.data;
+  if (!data?.length) return 0;
+  let sum = 0;
+  let sumSquares = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    sum += luma;
+    sumSquares += luma * luma;
+    count += 1;
+  }
+  if (!count) return 0;
+  const mean = sum / count;
+  // Clamped at 0: the identity is exact in reals, and in floats a uniform frame can
+  // land a hair below zero and turn into NaN under the root.
+  return Math.sqrt(Math.max(0, sumSquares / count - mean * mean));
+}
+
+/**
+ * Whether a captured frame holds a picture at all.
+ *
+ * The third way a capture can be wrong, after "never presented" and "seek never
+ * landed": presented, on time, and blank. A video seeked on a lossy clip can composite
+ * an uninitialised buffer — `requestVideoFrameCallback` fires for it like any other
+ * frame, so `frameIsTrustworthy` says yes and nothing downstream can tell. Nine images
+ * reached the dataset that way, each carrying the corrected boxes of a moment it did
+ * not show.
+ *
+ * @param {{data: Uint8ClampedArray}} imageData
+ * @param {number} [maxSpread]
+ * @returns {boolean}
+ */
+export function frameHasPicture(imageData, maxSpread = BLANK_FRAME_MAX_SPREAD) {
+  return lumaSpread(imageData) > maxSpread;
+}
