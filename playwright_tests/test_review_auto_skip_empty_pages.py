@@ -157,7 +157,10 @@ class TestAutoSkipOnlySkipsBlankPages:
         _setup(page, base_url, requests)
 
         page.locator("#review-root [data-testid='review-page-next']").click()
-        page.wait_for_timeout(500)
+        # The cards themselves, not a sleep: paging refetches, and 500 ms is not a
+        # promise that the re-render has happened. Under a loaded suite it is not even
+        # usually true, and the assertion then reads an empty grid.
+        expect(page.locator("#review-root [data-testid='review-card'][data-kind='image']")).to_have_count(len(PAGE_2))
 
         assert _shown_image_uuids(page) == [i["uuid"] for i in PAGE_2]
 
