@@ -34,6 +34,7 @@ from PIL import Image
 
 from apps import RECORDINGS_CLIP_DIR
 
+from ..timeUtils import parse_iso_utc
 from ..watch.events import EventPhase, WatchEventSignal
 from .action import Action, ActionContext, ActionResult
 from .Registry import register_action
@@ -256,6 +257,22 @@ LAST_FRAME_HOLD_S = 0.5
 #: Short enough to read as a lead-in rather than as a stalled player, long enough that
 #: each of the two or three stills is legible.
 LEAD_IN_MONTAGE_S = 1.2
+
+#: How far an assembled clip's measured length may fall short of its parts' before the
+#: shortfall counts as missing video rather than keyframe alignment and muxer rounding.
+_ASSEMBLY_TOLERANCE_S = 0.5
+
+
+def _windows_map(covered_ranges: Any, measured_s: float) -> Optional[List[Dict[str, Any]]]:
+    """A segment map from a backend's `coveredRanges`, or None when it cannot be trusted."""
+    from ..recordings.clipDrain import map_from_windows
+
+    windows = [
+        (parse_iso_utc(w.get("startedAt")), float(w.get("durationS") or 0.0))
+        for w in (covered_ranges or [])
+        if parse_iso_utc(w.get("startedAt")) is not None
+    ]
+    return map_from_windows(windows, measured_s) if windows else None
 
 
 def _canvas_for(frames: Sequence[Tuple[float, Path]]) -> Optional[Tuple[int, int]]:
@@ -885,6 +902,8 @@ class RecordClipAction(Action):
 
         tail: Optional[Path] = None
         tail_played = 0.0
+        tail_actual_start: Optional[datetime] = None
+        tail_covered: tuple = ()
         if tail_duration > 0:
             backend = self._resolve_backend(context)
             candidate = dest.with_suffix(".tail.mp4")
@@ -895,13 +914,30 @@ class RecordClipAction(Action):
                 # hold less than the request, and this figure is what the clip's playing
                 # time is built from below.
                 tail_played = float(cut.get("durationS") or 0.0)
+                # The instant the tail really starts at. A tail clamped forward of
+                # `tail_start` leaves a hole between it and the last chunk, and this is
+                # the only report of it.
+                tail_actual_start = parse_iso_utc(cut.get("startedAt")) or tail_start
+                tail_covered = tuple(
+                    (parse_iso_utc(w.get("startedAt")), float(w.get("durationS") or 0.0))
+                    for w in (cut.get("coveredRanges") or [])
+                    if parse_iso_utc(w.get("startedAt")) is not None
+                )
             except Exception as e:
                 # The chunks are the bulk of the clip and are already on disk; losing the
                 # last few seconds is far better than losing the whole event.
                 logger.warning("Tail extraction failed for %s, writing chunks only: %s", signal.rule_name, e)
 
         try:
-            result = await assemble(chunks, tail, dest, max_length_s=self.max_length_s)
+            result = await assemble(
+                chunks,
+                tail,
+                dest,
+                max_length_s=self.max_length_s,
+                tail_start=tail_start,
+                tail_actual_start=tail_actual_start,
+                tail_covered=tail_covered,
+            )
         finally:
             if tail is not None:
                 tail.unlink(missing_ok=True)
@@ -911,15 +947,32 @@ class RecordClipAction(Action):
         # it was asked to (`headClamped`). The two are separate because only the former
         # invalidates the overlay; both mean the pre-roll is short.
         result["partialPreroll"] = bool(result.get("hasGap")) or bool(result.get("headClamped"))
-        # Playing time, summed from the parts rather than measured off the file. It is
-        # the sum of the drained spans plus whatever the tail cut actually held, capped
-        # the same way `concat_parts` caps the muxer. Reporting nothing here is not a
-        # neutral omission: the recording row stores 0, `ended_at` lands empty, and the
-        # overlay writer — which needs a window to slice the detection ring over —
-        # silently declines every assembled clip.
+        # The sum of what the parts hold, capped the same way `concat_parts` caps the
+        # muxer. Reporting nothing here is not a neutral omission: the recording row
+        # stores 0, `ended_at` lands empty, and the overlay writer — which needs a
+        # window to slice the detection ring over — silently declines every assembled
+        # clip.
         played = sum(c.duration_s for c in chunks) + tail_played
         if self.max_length_s and self.max_length_s > 0:
             played = min(played, self.max_length_s)
+        # The file wins wherever the two disagree. `durationS` is what a player seeks
+        # within and what the overlay's box offsets are bounded by, so a figure longer
+        # than the video sends both past its end.
+        measured = result.pop("measuredDurationS", None)
+        if measured is not None and measured > 0:
+            if played - measured > _ASSEMBLY_TOLERANCE_S:
+                # Short by more than segment rounding: video the parts claimed is not in
+                # the file. A validated segment map still places every box correctly;
+                # without one, wallclock does not map onto this file at all.
+                result["hasGap"] = True
+                logger.warning(
+                    "Assembled clip %s holds %.2fs against %.2fs of parts; overlay %s",
+                    dest.name,
+                    measured,
+                    played,
+                    "mapped per segment" if result.get("segments") else "withheld",
+                )
+            played = measured
         result["durationS"] = max(0.0, played)
         return result
 
@@ -945,12 +998,34 @@ class RecordClipAction(Action):
                 # only place that is known, so it is the gate: a gapped clip goes without
                 # rather than drawing boxes that slide further off the picture the longer
                 # the event ran, which reads as a detector fault.
-                result["overlay"] = self.save_overlay and not result.get("hasGap")
+                # A gap only costs the overlay when nothing can place the boxes. The
+                # segment map carries each surviving stretch's own video offset, so a
+                # mapped clip is annotated across the hole; `segment_map` returns None
+                # unless its own arithmetic matches the file, which is what keeps a bad
+                # map from drawing boxes in the wrong place.
+                result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
                 return ActionResult(
                     ok=True, detail=f"wrote {dest.name} from {result['partCount']} part(s)", data=result
                 )
             result = await backend.extract(context, start, duration, dest)
-            result["overlay"] = self.save_overlay
+            # A single cut can come back short too — `/list` advertises the segment
+            # MediaMTX is still writing, and ranges that leave holes. The window is one
+            # file here, so a hole inside it breaks the overlay's wallclock subtraction
+            # exactly as an inter-chunk gap does; the coverage report is what makes the
+            # boxes placeable anyway.
+            measured = float(result.get("durationS") or 0.0)
+            charged = float(result.get("clampedDurationS") or measured)
+            if charged - measured > _ASSEMBLY_TOLERANCE_S:
+                result["hasGap"] = True
+                result["segments"] = _windows_map(result.get("coveredRanges"), measured)
+                logger.warning(
+                    "Cut %s holds %.2fs against %.2fs charged; overlay %s",
+                    dest.name,
+                    measured,
+                    charged,
+                    "mapped per segment" if result.get("segments") else "withheld",
+                )
+            result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data=result)
         except Exception as e:
             # Past the buffer window this is permanent, not transient — the caller marks

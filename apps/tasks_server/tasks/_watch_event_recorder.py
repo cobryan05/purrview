@@ -663,6 +663,9 @@ class WatchEventRecorder:
                 duration_s,
                 lag_s=lag_s,
                 part_count=int(clip.get("partCount") or 1),
+                # Present only for a clip whose video has holes; the mapping is then
+                # piecewise rather than one subtraction from `startedAt`.
+                segments=clip.get("segments"),
                 event=event_window(
                     started_at,
                     duration_s,

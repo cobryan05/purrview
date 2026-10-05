@@ -16,7 +16,9 @@ out of the buffer is gone permanently, so callers must treat a failed extraction
 terminal past the retention window rather than retrying forever.
 """
 
+import asyncio
 import logging
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -58,6 +60,52 @@ class BufferedRange:
             "durationS": self.duration_s,
             "end": self.end.isoformat(),
         }
+
+
+def covered_windows(ranges: "list[BufferedRange]", start: datetime, end: datetime) -> "list[tuple[datetime, datetime]]":
+    """The sub-windows of ``[start, end)`` the buffer actually holds, merged, in order.
+
+    Overlapping ranges are merged rather than counted twice — MediaMTX reports them for
+    a stream it recorded discontinuously, and their durations can sum past their own
+    envelope. Holes between ranges are preserved: they are the whole point, being the
+    stretches a caller must not assume it received.
+    """
+    spans: list[list[datetime]] = []
+    for r in sorted(ranges, key=lambda r: r.start):
+        lo, hi = max(r.start, start), min(r.end, end)
+        if (hi - lo).total_seconds() <= 0:
+            continue
+        if spans and (lo - spans[-1][1]).total_seconds() <= 0:
+            if hi > spans[-1][1]:
+                spans[-1][1] = hi
+        else:
+            spans.append([lo, hi])
+    return [(lo, hi) for lo, hi in spans]
+
+
+async def probe_duration_s(path: Path) -> Optional[float]:
+    """Playing length of ``path`` per ffprobe, or None if it cannot be read.
+
+    None and 0.0 mean different things to every caller here — "no measurement" against
+    "a file holding nothing" — so an unreadable file must not come back as a number.
+    """
+
+    def _run() -> Optional[float]:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True,
+            timeout=30,
+        )
+        try:
+            return float(proc.stdout.decode().strip())
+        except ValueError:
+            return None
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception:
+        logger.debug("Could not probe %s", path, exc_info=True)
+        return None
 
 
 def _parse_rfc3339(value: str) -> datetime:

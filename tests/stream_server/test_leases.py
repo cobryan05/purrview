@@ -262,3 +262,147 @@ class TestLeaseAccounting:
     def test_non_recording_lease_commits_nothing(self):
         lease = Lease(lease_id="l", source_url="rtsp://c", holder="h", retention_s=60, record=False)
         assert lease.committed_bytes() == 0
+
+
+class TestPurgingADestroyedPathsBuffer:
+    """Segments outlive the path that wrote them, and that is not only a disk leak.
+
+    MediaMTX applies `recordDeleteAfter` only to configured paths, and path names are
+    stable across re-arms, so a re-armed source inherits its predecessor's segments.
+    `/list` then advertises ranges that overlap each other and leave holes between
+    them, and a cut spanning those comes back shorter than it was charged for.
+    """
+
+    async def test_segments_of_a_destroyed_path_are_removed(self, lease_manager, tmp_path):
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        doomed = lease_manager._buffer_dir / "relay_master_dead"
+        doomed.mkdir(parents=True)
+        (doomed / "2026-10-04_14-05-07-160403.mp4").write_bytes(b"segment")
+
+        await lease_manager._purge_buffer("relay_master_dead")
+
+        assert not doomed.exists()
+
+    async def test_other_paths_are_untouched(self, lease_manager, tmp_path):
+        """One camera going to sleep must not take another's rewind with it."""
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        keep = lease_manager._buffer_dir / "relay_master_live"
+        keep.mkdir(parents=True)
+        (keep / "seg.mp4").write_bytes(b"segment")
+        (lease_manager._buffer_dir / "relay_master_dead").mkdir()
+
+        await lease_manager._purge_buffer("relay_master_dead")
+
+        assert (keep / "seg.mp4").is_file()
+
+    async def test_a_traversing_name_cannot_escape_the_buffer(self, lease_manager, tmp_path):
+        """Path names are hashed, so this is defence rather than a live hazard — but
+        the argument reaches `rmtree`, so the guard is asserted rather than assumed."""
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        lease_manager._buffer_dir.mkdir(parents=True)
+        outside = tmp_path / "secrets"
+        outside.mkdir()
+        (outside / "keep.txt").write_bytes(b"data")
+
+        await lease_manager._purge_buffer("../secrets")
+
+        assert (outside / "keep.txt").is_file()
+
+    async def test_a_missing_directory_is_not_an_error(self, lease_manager, tmp_path):
+        """A path destroyed before it ever recorded has no directory, and teardown must
+        not fail on it."""
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        lease_manager._buffer_dir.mkdir(parents=True)
+
+        await lease_manager._purge_buffer("relay_master_never_recorded")
+
+
+class TestSweepingOrphanBuffers:
+    """Teardown-time purging misses anything that never had an orderly teardown — a
+    crashed relay, a failed `config_paths_delete`, or segments predating the purge.
+    Nothing else collects them: MediaMTX applies retention only to configured paths.
+    """
+
+    @staticmethod
+    def _seg(manager, path_name, age_s):
+        import os
+        import time as _time
+
+        d = manager._buffer_dir / path_name
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / "2026-10-04_14-05-07-160403.mp4"
+        f.write_bytes(b"segment")
+        stamp = _time.time() - age_s
+        os.utime(f, (stamp, stamp))
+        return d
+
+    async def test_an_unconfigured_paths_old_segments_are_swept(self, lease_manager, tmp_path):
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        orphan = self._seg(lease_manager, "relay_master_orphan", age_s=3600)
+        lease_manager._streams = {}
+
+        assert await lease_manager.sweep_orphan_buffers() == 1
+        assert not orphan.exists()
+
+    async def test_a_configured_paths_segments_survive(self, lease_manager, tmp_path):
+        """The live case, and the one that matters: sweeping a recording path would
+        delete the rewind its own events are about to be cut from."""
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        live = self._seg(lease_manager, "relay_master_live", age_s=3600)
+        lease_manager._streams = {"relay_master_live": object()}
+
+        assert await lease_manager.sweep_orphan_buffers() == 0
+        assert live.is_dir()
+
+    async def test_a_recently_written_path_is_left_alone(self, lease_manager, tmp_path):
+        """A path can be writing segments before `refresh_streams` has listed it, so
+        recency is what keeps a mid-creation path out of range."""
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        fresh = self._seg(lease_manager, "relay_master_new", age_s=0)
+        lease_manager._streams = {}
+
+        assert await lease_manager.sweep_orphan_buffers() == 0
+        assert fresh.is_dir()
+
+    async def test_a_missing_buffer_root_is_not_an_error(self, lease_manager, tmp_path):
+        lease_manager._buffer_dir = tmp_path / "nonexistent"
+        assert await lease_manager.sweep_orphan_buffers() == 0
+
+
+class TestReleasingTheLastLeasePurgesTheBuffer:
+    """`release_lease` tears the path down itself rather than calling `destroy_stream`,
+    and it is the teardown every on-demand camera takes on each sleep cycle. Leaving
+    its segments lets the next arming of the same path — the name is stable — inherit
+    them, which is what makes `/list` report overlapping and gapped ranges.
+    """
+
+    async def test_the_last_holder_leaving_takes_the_segments(self, lease_manager, tmp_path):
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        url = "rtsp://cam/stream"
+        name = master_path_name(url)
+        segments = lease_manager._buffer_dir / name
+        segments.mkdir(parents=True)
+        (segments / "seg.mp4").write_bytes(b"video")
+        lease_manager._leases = {"L1": Lease(lease_id="L1", source_url=url, holder="h", retention_s=45.0, record=True)}
+
+        await lease_manager.release_lease("L1")
+
+        assert not segments.exists()
+
+    async def test_a_remaining_holder_keeps_the_segments(self, lease_manager, tmp_path):
+        """Two watchers on one camera share a path; one leaving must not cut the other's
+        rewind out from under it."""
+        lease_manager._buffer_dir = tmp_path / "buffer"
+        url = "rtsp://cam/stream"
+        name = master_path_name(url)
+        segments = lease_manager._buffer_dir / name
+        segments.mkdir(parents=True)
+        (segments / "seg.mp4").write_bytes(b"video")
+        lease_manager._leases = {
+            "L1": Lease(lease_id="L1", source_url=url, holder="h1", retention_s=45.0, record=True),
+            "L2": Lease(lease_id="L2", source_url=url, holder="h2", retention_s=45.0, record=True),
+        }
+
+        await lease_manager.release_lease("L1")
+
+        assert (segments / "seg.mp4").is_file()

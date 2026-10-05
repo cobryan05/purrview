@@ -426,3 +426,84 @@ class TestConcatParts:
         finally:
             capture.release()
         assert 0 < frames / fps <= 1.5, f"expected about a second, got {frames / fps:.2f}s"
+
+
+class TestAssembleReportsWhatTheFileHolds:
+    """`assemble`'s two declarations about the finished clip: how long it is, and
+    whether wallclock still maps linearly onto it.
+
+    Both drive the detection overlay. `build_overlay` places a box by subtracting
+    `startedAt` from its wallclock, which is only valid while the video is one unbroken
+    run of time — so a clip that declares more seconds than it holds draws every box
+    after the missing stretch late by its length, and reads as a detector fault.
+    """
+
+    @staticmethod
+    def _chunk(path: Path, start_s: float, span_s: float, gap_before: bool = False) -> DrainedChunk:
+        TestConcatParts._part(path, seconds=max(1, int(round(span_s))))
+        return DrainedChunk(path=path, start=_at(start_s), end=_at(start_s + span_s), gap_before=gap_before)
+
+    async def test_the_measured_length_is_reported(self, tmp_path):
+        from apps.helpers.recordings.clipDrain import assemble
+
+        chunks = [self._chunk(tmp_path / "a.mp4", 0, 2), self._chunk(tmp_path / "b.mp4", 2, 2)]
+
+        result = await assemble(chunks, None, tmp_path / "out.mp4")
+
+        measured = result["measuredDurationS"]
+        assert measured is not None
+        assert abs(measured - 4.0) < 0.5, f"two 2s parts should measure about 4s, got {measured}"
+
+    async def test_a_tail_cut_later_than_asked_is_a_gap(self, tmp_path):
+        """The chunk-to-tail seam. `gap_before` lives on chunks, and the tail is not
+        one, so a tail clamped forward opens a hole nothing else reports."""
+        from apps.helpers.recordings.clipDrain import assemble
+
+        chunks = [self._chunk(tmp_path / "a.mp4", 0, 2)]
+        tail = TestConcatParts._part(tmp_path / "tail.mp4", seconds=1)
+
+        result = await assemble(
+            chunks,
+            tail,
+            tmp_path / "out.mp4",
+            tail_start=_at(2),
+            tail_actual_start=_at(9),
+        )
+
+        assert result["hasGap"] is True
+
+    async def test_a_tail_cut_where_it_was_asked_is_not_a_gap(self, tmp_path):
+        """The negative half — without it the test above passes on a function that
+        hardcodes True, and every assembled clip silently loses its overlay."""
+        from apps.helpers.recordings.clipDrain import assemble
+
+        chunks = [self._chunk(tmp_path / "a.mp4", 0, 2)]
+        tail = TestConcatParts._part(tmp_path / "tail.mp4", seconds=1)
+
+        result = await assemble(
+            chunks,
+            tail,
+            tmp_path / "out.mp4",
+            tail_start=_at(2),
+            tail_actual_start=_at(2),
+        )
+
+        assert result["hasGap"] is False
+
+    async def test_a_sub_second_tail_clamp_is_rounding_not_a_hole(self, tmp_path):
+        """Segments are keyframe-aligned, so a fraction of a second of movement at the
+        seam is ordinary. Flagging it would cost every clip its overlay."""
+        from apps.helpers.recordings.clipDrain import assemble
+
+        chunks = [self._chunk(tmp_path / "a.mp4", 0, 2)]
+        tail = TestConcatParts._part(tmp_path / "tail.mp4", seconds=1)
+
+        result = await assemble(
+            chunks,
+            tail,
+            tmp_path / "out.mp4",
+            tail_start=_at(2),
+            tail_actual_start=_at(2.2),
+        )
+
+        assert result["hasGap"] is False

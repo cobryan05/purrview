@@ -30,6 +30,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -46,7 +47,12 @@ from mediamtx_client.models.path_conf import PathConf
 
 from apps import STREAM_BUFFER_DIR, STREAM_BUFFER_SIZE
 from apps.helpers.logUtils import LOG_LEVEL
-from apps.helpers.recordings.playbackClient import PlaybackClient, PlaybackError
+from apps.helpers.recordings.playbackClient import (
+    PlaybackClient,
+    PlaybackError,
+    covered_windows,
+    probe_duration_s,
+)
 from apps.helpers.serviceStatus import fmt_duration, row, section
 from apps.helpers.streams.bufferBudget import (
     COMMIT_HEADROOM,
@@ -79,6 +85,9 @@ LEASE_FILE = Path(os.environ.get("RELAY_LEASE_FILE", "/data/relay/leases.json"))
 # LEASE_RENEW_INTERVAL_S (see ffmpegImageProvider) so a busy event loop or a brief relay
 # outage can never expire a lease whose holder is alive and trying.
 LEASE_TTL_S = float(os.environ.get("RELAY_LEASE_TTL_S", "300"))
+# How far a cut may fall short of the window it was charged for before it is worth
+# reporting. Below this is keyframe alignment and muxer rounding, which every cut has.
+_CUT_SHORTFALL_TOLERANCE_S = 0.5
 
 
 def master_path_name(source_url: str) -> str:
@@ -506,6 +515,11 @@ class Manager:
             logger.warning(f"Failed to delete master path {name}: {exc}")
         self._source_relays.pop(lease.source_url, None)
         self._streams.pop(name, None)
+        # The dominant teardown in production — every on-demand camera's sleep cycle
+        # ends here rather than in `destroy_stream`. `sweep_orphan_buffers` would
+        # collect these eventually, but only after the recency guard elapses, leaving a
+        # window in which a re-armed path inherits its own predecessor's segments.
+        await self._purge_buffer(name)
         await self.refresh_streams()
         return True
 
@@ -567,17 +581,115 @@ class Manager:
 
         size = await client.write_clip(path, actual_start, actual_duration, dest)
         truncated = actual_start > requested_start
+        covered = covered_windows(ranges, actual_start, end)
+
+        # Measured off the file, never taken from the requested window: `/list` describes
+        # more than `/get` serves. It advertises the segment MediaMTX is still writing,
+        # and a re-armed path can report ranges that overlap each other and leave holes,
+        # so a window inside the advertised envelope still comes back short. Callers
+        # place detection boxes by subtracting this from a wallclock, so an overstated
+        # duration puts every box after the missing video late by its length.
+        #
+        # `None` means ffprobe could not read the file; the requested span is then the
+        # only figure available.
+        measured = await probe_duration_s(dest)
+        played = actual_duration if measured is None else measured
+
+        # A cut that came back short says something about the buffer that nothing else
+        # observes: the ranges are only visible here, and /buffer is a tmpfs whose
+        # evidence is gone within the retention window. Logged with the whole range list
+        # because the shape is the diagnosis — a short cut inside one range is the
+        # segment MediaMTX has not finalised, while ranges that overlap or leave holes
+        # are a re-armed path reading its predecessor's segments.
+        if actual_duration - played > _CUT_SHORTFALL_TOLERANCE_S:
+            spans = " | ".join(f"{r.start.isoformat()}+{r.duration_s:.2f}s" for r in ranges)
+            logger.warning(
+                f"Short cut on {path}: charged {actual_duration:.2f}s, file holds {played:.2f}s "
+                f"(requested {requested_start.isoformat()}+{duration_s:.2f}s); "
+                f"{len(ranges)} range(s): {spans}"
+            )
         return {
             "path": str(dest),
             "sizeBytes": size,
             "startedAt": actual_start.isoformat(),
-            "durationS": actual_duration,
+            "durationS": played,
             "requestedStart": requested_start.isoformat(),
             "requestedDurationS": duration_s,
+            # What the window would have been had the buffer held all of it. A caller
+            # advancing a cursor needs the span it asked for; one placing boxes needs
+            # `durationS`. They differ exactly when video is missing.
+            "clampedDurationS": actual_duration,
+            # The sub-windows the buffer actually held, so a caller placing boxes can
+            # map wallclock piecewise instead of assuming the cut is one unbroken run.
+            # Advisory: `/list` is not a promise, so a consumer must check these against
+            # the measured duration before trusting them.
+            "coveredRanges": [
+                {"startedAt": lo.isoformat(), "durationS": (hi - lo).total_seconds()} for lo, hi in covered
+            ],
             # The caller writes this onto the recording row: a clip whose pre-roll was
             # cut short by buffer eviction is a different artifact from a complete one.
             "partialPreroll": truncated,
         }
+
+    async def _purge_buffer(self, path_name: str) -> None:
+        """Delete a destroyed path's recorded segments.
+
+        MediaMTX applies `recordDeleteAfter` only to paths it still has configured, so
+        segments left behind by a deleted path are never collected. They are also
+        unreachable while the path is gone — the playback server refuses a path it has
+        no config for — but `recordPath` templates on `%path` and path names are stable
+        across re-arms, so the next arming of the same source inherits them: `/list`
+        then reports ranges that overlap and leave holes, and a cut spanning them comes
+        back short.
+
+        Never raises. A failed purge costs RAM on a tmpfs; failing the teardown it is
+        part of would strand the path itself.
+        """
+        target = self._buffer_dir / path_name
+        try:
+            # Resolved and re-checked, so a path name that ever contained a traversal
+            # cannot aim this at the rest of the filesystem.
+            resolved = target.resolve()
+            if resolved.parent != self._buffer_dir.resolve() or not resolved.is_dir():
+                return
+            removed = sum(1 for _ in resolved.glob("*.mp4"))
+            await asyncio.to_thread(shutil.rmtree, resolved, True)
+            if removed:
+                logger.info(f"Purged {removed} buffered segment(s) for destroyed path {path_name}")
+        except Exception as e:
+            logger.warning(f"Could not purge the buffer for {path_name}: {e}")
+
+    async def sweep_orphan_buffers(self) -> int:
+        """Purge segments belonging to paths MediaMTX no longer has configured.
+
+        `_purge_buffer` covers an orderly teardown; this covers the rest — a crashed
+        relay, a `config_paths_delete` that failed, or segments predating the fix. An
+        unconfigured path is not being recorded to and has no retention applied, so its
+        segments are dead weight that nothing else will ever collect.
+
+        A directory is only swept once its newest segment is older than the retention
+        window, which keeps a path that is mid-creation — configured a moment from now,
+        or recording before `refresh_streams` has seen it — out of range.
+        """
+        root = self._buffer_dir
+        if not root.is_dir():
+            return 0
+        configured = {name for name in self._streams}
+        cutoff = time.time() - max(DEFAULT_RETENTION_S, self._max_retention_s()) - Manager.POLLING_INTERVAL
+        swept = 0
+        for child in root.iterdir():
+            if not child.is_dir() or child.name in configured:
+                continue
+            segments = list(child.glob("*.mp4"))
+            if segments and max(s.stat().st_mtime for s in segments) > cutoff:
+                continue
+            await self._purge_buffer(child.name)
+            swept += 1
+        return swept
+
+    def _max_retention_s(self) -> float:
+        """The deepest buffer any live lease has asked for."""
+        return max((lease.retention_s for lease in self._leases.values()), default=0.0)
 
     async def destroy_stream(self, stream_name: str) -> None:
         """Destroy a stream with the given name, and possibly its master relay."""
@@ -602,6 +714,7 @@ class Manager:
                         await asyncio.to_thread(api.config_paths_delete, name=stream_name)
                     except Exception as e:
                         logger.warning(f"Failed to destroy master stream {stream_name}: {e}")
+                    await self._purge_buffer(stream_name)
                     del self._source_relays[source_url]
                     self._streams.pop(stream_name, None)
                     await self.refresh_streams()
@@ -616,6 +729,7 @@ class Manager:
                             await asyncio.to_thread(api.config_paths_delete, name=master_name)
                         except Exception as e:
                             logger.warning(f"Failed to destroy master stream {master_name}: {e}")
+                        await self._purge_buffer(master_name)
                         del self._source_relays[source_url]
                         self._streams.pop(master_name, None)
 
@@ -787,6 +901,10 @@ class Manager:
                     # A failed reap must not kill the poll loop that also feeds the
                     # status panel; the next tick will try again.
                     logger.error(f"Lease expiry sweep failed: {exc}")
+                try:
+                    await self.sweep_orphan_buffers()
+                except Exception as exc:
+                    logger.error(f"Orphan buffer sweep failed: {exc}")
         except asyncio.CancelledError:
             logger.debug("Periodic worker cancelled.")
         finally:

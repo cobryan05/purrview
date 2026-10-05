@@ -38,6 +38,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..timeUtils import parse_iso_utc
+
 logger = logging.getLogger(__name__)
 
 #: Bumped when the shape changes incompatibly. The player refuses a version it does not
@@ -238,6 +240,32 @@ def overlay_path_for(clip_path: Path) -> Path:
     return clip_path.with_name(clip_path.name + OVERLAY_SUFFIX)
 
 
+def _spans_from(segments: Optional[Sequence[Dict[str, Any]]]):
+    """`(wall_start_epoch, wall_end_epoch, video_offset)` per held stretch, or None."""
+    if not segments:
+        return None
+    spans = []
+    for seg in segments:
+        try:
+            start = parse_iso_utc(seg["wallStart"]).timestamp()
+            duration = float(seg["durationS"])
+            offset = float(seg["videoOffsetS"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+        if duration <= 0:
+            continue
+        spans.append((start, start + duration, offset))
+    return spans or None
+
+
+def _offset_in_spans(at: float, spans) -> Optional[float]:
+    """Seconds into the video for a wallclock instant, or None if it is in a hole."""
+    for start, end, offset in spans:
+        if start <= at <= end:
+            return offset + (at - start)
+    return None
+
+
 def build_overlay(
     samples: Sequence[TrackSample],
     clip_start: datetime,
@@ -247,6 +275,7 @@ def build_overlay(
     max_staleness_s: float = DEFAULT_MAX_STALENESS_S,
     lag_s: float = 0.0,
     part_count: int = 1,
+    segments: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Slice samples into a clip-relative overlay document.
 
@@ -281,9 +310,19 @@ def build_overlay(
     to judge false positives.
     """
     origin = clip_start.timestamp()
+    spans = _spans_from(segments)
     frames: List[Dict[str, Any]] = []
     for sample in samples:
-        offset = (sample.at - lag_s) - origin
+        at = sample.at - lag_s
+        if spans is None:
+            offset = at - origin
+        else:
+            offset = _offset_in_spans(at, spans)
+            if offset is None:
+                # The sample falls in a hole: the detector saw it, the video does not
+                # hold it. Dropping it is the only honest placement — anywhere else is a
+                # box over a moment the clip does not show.
+                continue
         if offset < 0 or offset > duration_s:
             continue
         frames.append({"t": _round(offset), "boxes": sample.boxes, "tracks": sample.tracks})
@@ -307,6 +346,10 @@ def build_overlay(
         # it would over-shift by N-1 heads. The player declines the correction unless
         # this is 1.
         "partCount": max(1, int(part_count)),
+        # Present only for a clip whose timeline has holes. `t` means the same thing
+        # either way — seconds into the video — so a player needs no change; this is
+        # here so a reader can tell a gapped clip's overlay from a contiguous one's.
+        **({"segments": list(segments)} if segments else {}),
         "frames": frames,
     }
     if event:

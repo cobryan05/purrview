@@ -57,6 +57,11 @@ MIN_DRAIN_INTERVAL_S = 5.0
 #: counts as lost video rather than segment boundaries and rounding.
 _CLAMP_TOLERANCE_S = 0.5
 
+#: How far a segment map's own total may sit from the measured file before the map is
+#: refused. Tight, because its purpose is placing boxes: a map that is a second out
+#: draws every box after the discrepancy a second late.
+_MAP_TOLERANCE_S = 0.75
+
 
 class ExtractFn(Protocol):
     """Cut ``[start, start+duration_s)`` from the buffer into ``dest``."""
@@ -75,6 +80,11 @@ class DrainedChunk:
     #: on the chunk rather than the drain so it survives into assembly, where the
     #: finished recording needs to declare it.
     gap_before: bool = False
+    #: The wallclock sub-windows this chunk's file actually holds, in order. A chunk cut
+    #: from a discontinuously recorded stream spans holes, so its own `[start, end)` is
+    #: not a promise that every instant inside it is present. Empty means unreported,
+    #: which callers must treat as "unknown", never as "contiguous".
+    covered: tuple = ()
 
     @property
     def duration_s(self) -> float:
@@ -225,10 +235,16 @@ class ClipDrain:
                 f"{(actual_start - start).total_seconds():.0f}s of the requested window"
             )
 
+        covered = tuple(
+            (parse_iso_utc(w.get("startedAt")), float(w.get("durationS") or 0.0))
+            for w in (result.get("coveredRanges") or [])
+            if parse_iso_utc(w.get("startedAt")) is not None
+        )
         chunk = DrainedChunk(
             path=dest,
             start=actual_start,
             end=actual_end,
+            covered=covered,
             # A head clamp is eviction by another route — material that existed when the
             # window was chosen and was gone by the time it was read — so it is the same
             # discontinuity `_pending_gap` reports, and the finished clip must declare it.
@@ -357,11 +373,29 @@ async def assemble(
     tail: Optional[Path],
     dest: Path,
     max_length_s: Optional[float] = None,
+    tail_start: Optional[datetime] = None,
+    tail_actual_start: Optional[datetime] = None,
+    tail_covered: Optional[Sequence] = None,
 ) -> dict:
-    """Concatenate drained chunks plus the still-buffered tail into one clip."""
+    """Concatenate drained chunks plus the still-buffered tail into one clip.
+
+    `tail_start` and `tail_actual_start` are the window the tail was asked for and the
+    one it was cut from. They are the only place the chunk-to-tail seam can be checked:
+    every other seam is between two chunks, and a tail clamped forward opens a hole in
+    the finished clip that no chunk's `gap_before` describes.
+    """
+    from .playbackClient import probe_duration_s
+
     parts = [c.path for c in chunks] + ([tail] if tail is not None else [])
     size = await asyncio.to_thread(concat_parts, parts, dest, max_length_s)
     started_at = chunks[0].start if chunks else None
+    # The seam between the last chunk and the tail, which `gap_before` cannot carry —
+    # it lives on chunks, and the tail is not one.
+    tail_gap = False
+    if tail is not None and tail_start is not None and tail_actual_start is not None:
+        tail_gap = (tail_actual_start - tail_start).total_seconds() > _CLAMP_TOLERANCE_S
+    measured = await probe_duration_s(dest)
+    segments = segment_map(chunks, tail, tail_covered or (), measured)
     return {
         "path": str(dest),
         "sizeBytes": size,
@@ -376,9 +410,67 @@ async def assemble(
         # sidecar is exactly right. Counting it cost the whole clip its overlay whenever
         # the buffer held less than the requested pre-roll — a routine occurrence after
         # a relay restart. Only an interior gap slides the boxes off the picture.
-        "hasGap": any(c.gap_before for c in chunks[1:]),
+        "hasGap": any(c.gap_before for c in chunks[1:]) or tail_gap,
         # Reported separately because it is still true and still worth knowing — the
         # clip really did start later than asked — it just does not invalidate the
         # overlay the way an interior gap does.
         "headClamped": bool(chunks[0].gap_before) if chunks else False,
+        # Measured, so a caller never has to trust the parts' arithmetic. The parts
+        # report what they hold and the concat is a stream copy, so this agrees with
+        # their sum; where it does not, this is the figure a player can seek within.
+        "measuredDurationS": measured,
+        # Where each surviving stretch of wallclock landed in the finished video, so
+        # boxes can be placed across a clip whose timeline has holes. `None` when the
+        # parts did not report their coverage or when it disagrees with the file — see
+        # `segment_map`.
+        "segments": segments,
     }
+
+
+def segment_map(
+    chunks: Sequence[DrainedChunk],
+    tail: Optional[Path],
+    tail_covered: Sequence,
+    measured_s: Optional[float],
+) -> Optional[List[dict]]:
+    """Where each held stretch of wallclock sits in the concatenated video.
+
+    Returns `None` unless the map can be checked against the file. A map is only usable
+    if the coverage the parts reported adds up to the video that was actually written:
+    `/list` is advisory, and placing boxes from a map that disagrees with the file would
+    put them in the wrong place — the failure this whole path exists to prevent. Without
+    a map a caller must fall back to suppressing the overlay, which is wrong-but-safe.
+    """
+    windows: List[tuple] = []
+    for chunk in chunks:
+        if not chunk.covered:
+            return None
+        windows.extend(chunk.covered)
+    if tail is not None:
+        if not tail_covered:
+            return None
+        windows.extend(tail_covered)
+    if not windows:
+        return None
+
+    return map_from_windows(windows, measured_s)
+
+
+def map_from_windows(windows: Sequence, measured_s: Optional[float]) -> Optional[List[dict]]:
+    """Lay `(wall_start, duration)` windows end to end in video time, checked against the file.
+
+    Returns `None` when the windows' own total disagrees with what was written, which is
+    the only guard against placing boxes from a coverage report `/get` did not honour.
+    """
+    offset = 0.0
+    out: List[dict] = []
+    for start, duration in windows:
+        if duration <= 0:
+            continue
+        out.append({"videoOffsetS": round(offset, 4), "wallStart": start.isoformat(), "durationS": round(duration, 4)})
+        offset += duration
+    if not out:
+        return None
+    if measured_s is None or abs(offset - measured_s) > _MAP_TOLERANCE_S:
+        return None
+    return out

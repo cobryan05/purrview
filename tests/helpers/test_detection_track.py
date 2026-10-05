@@ -14,6 +14,7 @@ needs a camera.
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -396,3 +397,131 @@ class TestTheRawObservationBesideTheVerdict:
 
         assert box["sawLabelUuid"] == "lbl-person"
         assert "margin" not in box
+
+
+class TestMappingAcrossAClipWithHoles:
+    """A clip assembled from a discontinuously recorded stream is not one unbroken run
+    of wallclock, so subtracting `startedAt` places every box after a hole late by the
+    hole's length. The segment map carries each surviving stretch's own video offset.
+
+    These are the tests that stop the map from recreating the bug it exists to fix: a
+    map whose arithmetic disagrees with the file must be refused, not applied.
+    """
+
+    @staticmethod
+    def _track(count=30):
+        track = DetectionTrack()
+        base = T0.timestamp()
+        for offset in range(count):
+            track.push(base + offset, [_Det((160, 90, 320, 180))], [], (640, 360))
+        return track
+
+    @staticmethod
+    def _segments():
+        """10s of video, then a 5s hole in wallclock, then 10s more."""
+        return [
+            {"videoOffsetS": 0.0, "wallStart": T0.isoformat(), "durationS": 10.0},
+            {"videoOffsetS": 10.0, "wallStart": (T0 + timedelta(seconds=15)).isoformat(), "durationS": 10.0},
+        ]
+
+    def test_a_box_after_the_hole_is_placed_by_video_offset(self):
+        """Wallclock T0+15 is the first instant after the hole; it is 10s into the
+        video, not 15s. Without the map it lands 5s late — the whole defect."""
+        track = self._track()
+        samples = [s for s in track.samples_between(0, 1e12) if abs(s.at - (T0.timestamp() + 15)) < 0.01]
+        assert samples, "fixture must contain a sample at the far edge of the hole"
+
+        doc = build_overlay(samples, T0, 20.0, segments=self._segments())
+
+        assert doc["frames"][0]["t"] == 10.0
+
+    def test_without_the_map_the_same_box_lands_late(self):
+        """The negative control. If this ever matches the mapped value, the map is doing
+        nothing and the test above proves nothing."""
+        track = self._track()
+        samples = [s for s in track.samples_between(0, 1e12) if abs(s.at - (T0.timestamp() + 15)) < 0.01]
+
+        doc = build_overlay(samples, T0, 20.0)
+
+        assert doc["frames"][0]["t"] == 15.0
+
+    def test_a_sample_inside_the_hole_is_dropped(self):
+        """The detector saw it; the video does not hold it. Any placement would draw a
+        box over a moment the clip does not show."""
+        track = self._track()
+        samples = [s for s in track.samples_between(0, 1e12) if abs(s.at - (T0.timestamp() + 12)) < 0.01]
+        assert samples
+
+        doc = build_overlay(samples, T0, 20.0, segments=self._segments())
+
+        assert doc["frames"] == []
+
+    def test_a_box_before_the_hole_is_unmoved(self):
+        track = self._track()
+        samples = [s for s in track.samples_between(0, 1e12) if abs(s.at - (T0.timestamp() + 3)) < 0.01]
+
+        doc = build_overlay(samples, T0, 20.0, segments=self._segments())
+
+        assert doc["frames"][0]["t"] == 3.0
+
+    def test_the_map_travels_with_the_document(self):
+        """A reader has to be able to tell a mapped overlay from a linear one."""
+        doc = build_overlay([], T0, 20.0, segments=self._segments())
+        assert doc["segments"] == self._segments()
+
+    def test_a_contiguous_clip_carries_no_map(self):
+        assert "segments" not in build_overlay([], T0, 20.0)
+
+
+class TestASegmentMapIsRefusedUnlessItMatchesTheFile:
+    """`/list` is advisory — it reports the segment MediaMTX is still writing and, after
+    a re-arm, ranges that overlap each other. A map built from coverage `/get` did not
+    honour would place boxes confidently and wrongly, so the only guard is arithmetic:
+    the map's own total must equal the video that was written.
+    """
+
+    @staticmethod
+    def _windows():
+        return [(T0, 10.0), (T0 + timedelta(seconds=15), 10.0)]
+
+    def test_a_map_matching_the_file_is_accepted(self):
+        from apps.helpers.recordings.clipDrain import map_from_windows
+
+        out = map_from_windows(self._windows(), 20.0)
+
+        assert out is not None
+        assert [s["videoOffsetS"] for s in out] == [0.0, 10.0]
+
+    def test_a_map_longer_than_the_file_is_refused(self):
+        """The exact shape of the original bug: coverage claiming more video than exists."""
+        from apps.helpers.recordings.clipDrain import map_from_windows
+
+        assert map_from_windows(self._windows(), 12.0) is None
+
+    def test_a_map_shorter_than_the_file_is_refused(self):
+        from apps.helpers.recordings.clipDrain import map_from_windows
+
+        assert map_from_windows(self._windows(), 30.0) is None
+
+    def test_sub_second_disagreement_is_tolerated(self):
+        """Keyframe alignment moves a boundary by a fraction of a second on every cut;
+        refusing those would mean never mapping anything."""
+        from apps.helpers.recordings.clipDrain import map_from_windows
+
+        assert map_from_windows(self._windows(), 20.3) is not None
+
+    def test_no_measurement_means_no_map(self):
+        from apps.helpers.recordings.clipDrain import map_from_windows
+
+        assert map_from_windows(self._windows(), None) is None
+
+    def test_a_chunk_without_coverage_refuses_the_whole_map(self):
+        """Partial coverage is not a partial map — an unreported chunk means an unknown
+        stretch of the video, and a map that silently skipped it would shift everything
+        after it."""
+        from apps.helpers.recordings.clipDrain import DrainedChunk, segment_map
+
+        covered = DrainedChunk(path=Path("a.mp4"), start=T0, end=T0 + timedelta(seconds=10), covered=((T0, 10.0),))
+        bare = DrainedChunk(path=Path("b.mp4"), start=T0 + timedelta(seconds=10), end=T0 + timedelta(seconds=20))
+
+        assert segment_map([covered, bare], None, (), 20.0) is None
