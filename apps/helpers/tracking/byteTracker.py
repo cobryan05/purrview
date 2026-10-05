@@ -114,7 +114,6 @@ class ByteTracker(Tracker):
             },
             "low_thresh": {
                 "type": "float",
-                "advanced": True,
                 "required": False,
                 "default": 0.1,
                 "help": (
@@ -127,7 +126,6 @@ class ByteTracker(Tracker):
             },
             "match_thresh": {
                 "type": "float",
-                "advanced": True,
                 "required": False,
                 "default": 0.3,
                 "help": (
@@ -140,7 +138,6 @@ class ByteTracker(Tracker):
             },
             "low_match_thresh": {
                 "type": "float",
-                "advanced": True,
                 "required": False,
                 "default": 0.2,
                 "help": (

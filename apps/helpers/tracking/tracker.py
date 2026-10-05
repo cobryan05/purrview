@@ -101,12 +101,6 @@ SHARED_PARAM_HELP = {
 }
 
 
-#: Shared settings that belong behind the editor's Advanced disclosure. `max_age_s` is
-#: deliberately absent: it is the one shared knob tuned to a camera rather than to the
-#: tracker, and a card whose row shows nothing reads as broken.
-_ADVANCED_SHARED = {"min_hits", "anchor_confidence", "label_vote_half_life_s", "label_vote_margin"}
-
-
 def shared_param(name: str, default: Any) -> Dict[str, Any]:
     """One tracker parameter whose meaning is identical in every tracker."""
     return {
@@ -114,7 +108,6 @@ def shared_param(name: str, default: Any) -> Dict[str, Any]:
         "required": False,
         "default": default,
         "help": SHARED_PARAM_HELP[name],
-        "advanced": name in _ADVANCED_SHARED,
     }
 
 
