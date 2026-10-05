@@ -1180,7 +1180,7 @@ class StreamWatcherTask(Task):
         open_events = pipeline.engine.open_events()
         drain = self._clip_drains.get(pipeline.source_uuid)
 
-        if not open_events:
+        if not open_events or not self._wants_clip_chunks(pipeline.source_uuid):
             if drain is not None:
                 drain.note_idle()
             return
@@ -1199,6 +1199,24 @@ class StreamWatcherTask(Task):
         now_wall = datetime.fromtimestamp(time.monotonic() + self._wallclock_offset, tz=timezone.utc)
         if drain.due(now_wall):
             await drain.drain(now_wall)
+
+    def _wants_clip_chunks(self, source_uuid: Optional[str]) -> bool:
+        """Whether anything on this source would read drained chunks.
+
+        `context.clip_chunks` is consumed by the clip action alone. A timelapse builds
+        from sampled frames and writes its own sidecar, so a source whose only rule is a
+        timelapse spools full-rate video that is written, held for the life of the
+        event, and deleted unread — and timelapse events are the long ones.
+
+        A manual recording counts even though it is not the engine's event, for the same
+        reason it does in `_max_preroll_for`: it cuts a real clip and needs the chunks.
+        """
+        if (getattr(self, "_manual_open", None) or {}).get(source_uuid or ""):
+            return True
+        return any(
+            row.kind == CLIP_ACTION_KIND and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
+            for row, _action in self._actions
+        )
 
     def _wants_overlay(self, source_uuid: Optional[str]) -> bool:
         """Whether any in-scope clip action on this source asked for a detection overlay."""

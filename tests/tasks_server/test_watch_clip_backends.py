@@ -468,10 +468,21 @@ class _RecordingRelay:
         return {"path": str(dest), "sizeBytes": 3}
 
 
-def _drain_task(pipelines, tmp_path, relay=None, actions=()):
+def _clip_row(preroll_s=0, sources=None):
+    """An in-scope clip action row — the thing that makes drained chunks worth keeping."""
+    return (
+        SimpleNamespace(kind="record_clip", source_uuids_json=sources if sources is not None else []),
+        RecordClipAction(preroll_s=preroll_s),
+    )
+
+
+def _drain_task(pipelines, tmp_path, relay=None, actions=None):
     task = _task(pipelines, relay_client=relay or _RecordingRelay())
     task._clip_drains = {}
-    task._actions = list(actions)
+    # Defaults to one unscoped clip action: only a clip action reads drained chunks, so
+    # a task with none would never drain at all and the wiring under test here would be
+    # unreachable. Pass `actions=[]` for the no-consumer case.
+    task._actions = [_clip_row()] if actions is None else list(actions)
     task.CHUNK_DIRNAME = ".drain"
     task._chunk_root = lambda: tmp_path
     return task
@@ -525,25 +536,36 @@ class TestClipDrainIsDriven:
         """Pre-roll sits in front of the event and cannot be re-derived once evicted."""
         pipeline = _open_event_pipeline(buffered=True)
         pipeline.retention_s = 45.0
-        rows = [
-            (SimpleNamespace(kind="record_clip", source_uuids_json=[]), RecordClipAction(preroll_s=10)),
-            (SimpleNamespace(kind="record_clip", source_uuids_json=[]), RecordClipAction(preroll_s=30)),
-        ]
+        rows = [_clip_row(preroll_s=10), _clip_row(preroll_s=30)]
         task = _drain_task([pipeline], tmp_path, actions=rows)
 
         await task._service_drain(pipeline)
 
         assert task._clip_drains["src-1"].lead_s == 30.0
 
-    async def test_a_clip_action_scoped_to_another_source_does_not_set_the_lead(self, tmp_path):
+    async def test_a_clip_action_scoped_to_another_source_drains_nothing(self, tmp_path):
+        """Scope decides which source an action runs on, so an action aimed elsewhere
+        leaves nothing here to read the chunks."""
         pipeline = _open_event_pipeline(buffered=True)
         pipeline.retention_s = 45.0
-        rows = [(SimpleNamespace(kind="record_clip", source_uuids_json=["other"]), RecordClipAction(preroll_s=30))]
+        task = _drain_task([pipeline], tmp_path, actions=[_clip_row(preroll_s=30, sources=["other"])])
+
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains == {}
+
+    async def test_a_source_whose_actions_never_read_chunks_drains_nothing(self, tmp_path):
+        """A timelapse builds from sampled frames and writes its own sidecar. Draining
+        for one spools full-rate video that is held for the life of the event and
+        deleted unread — and timelapse events are the long ones."""
+        pipeline = _open_event_pipeline(buffered=True)
+        pipeline.retention_s = 45.0
+        rows = [(SimpleNamespace(kind="record_event_timelapse", source_uuids_json=[]), SimpleNamespace())]
         task = _drain_task([pipeline], tmp_path, actions=rows)
 
         await task._service_drain(pipeline)
 
-        assert task._clip_drains["src-1"].lead_s == 0.0
+        assert task._clip_drains == {}
 
     async def test_the_event_closing_discards_the_chunks(self, tmp_path):
         """Chunks are full-rate video; a drain that outlived its event is a disk leak."""
