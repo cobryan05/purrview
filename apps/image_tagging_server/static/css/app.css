@@ -1309,6 +1309,21 @@ body.chrome-hidden .event-search__sticky-top {
 
 /* Opposite corner from the media badges, and always visible — a checkbox that appears
    on hover is undiscoverable, and this is the only way in to multi-select. */
+/* The selection box on a card, over a photograph.
+   Pico draws an unchecked checkbox as a 2px dark outline on a transparent fill, which
+   is invisible against a night snapshot — the control was on every card and read as
+   "there is no way to multi-select here". Painted as a light chip through Pico's own
+   vars: its `:checked` rule sets both of these at a higher specificity, so the checked
+   state is still Pico's primary tick. Sized up a little for the same reason the rest of
+   the grid is: this is a touch target as well as a pointer one. */
+.event-card__select,
+.event-group-card__select {
+  --pico-background-color: rgb(255 255 255 / 88%);
+  --pico-border-color: rgb(10 10 10 / 65%);
+  width: 1.4em;
+  height: 1.4em;
+}
+
 .event-card__select {
   position: absolute;
   top: var(--space-1);

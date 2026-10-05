@@ -254,12 +254,20 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     : 600;
   // The groups behind the current render, folded to the grain on screen.
   let pageGroups = [];
+  // The visits behind the current render, when the flat view is grouping by gap. Held
+  // for the same reason as `pageGroups`: a ticked card has to be resolved to its events
+  // later, and the row is the only thing that says which window and identity it covers.
+  let pageSessions = [];
   // The last aggregate response, at the server's finest grain — the *input* to the fold
   // that produced `pageGroups`. Held so the grain, sort and split controls can re-fold
   // locally; null whenever the flat view is what is on screen, so those controls fall
   // back to a real search rather than redrawing stale rows.
   let aggregate = null;
   const selectedGroups = new Set();
+  // Sessions are a third selection unit, keyed on `representativeUuid` — unique per
+  // visit, where an identity key is not: the same cat at the same bowl is one identity
+  // and a dozen separate visits.
+  const selectedSessions = new Set();
   // A time window clicked out of the timeline, held *outside* the filter state on
   // purpose: it has hour precision and `<input type="date">` cannot show one, so
   // writing it into the date filters would display "26 Aug" for a filter that actually
@@ -335,6 +343,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     // of thing; carrying it across would arm a delete against rows in another unit.
     selected.clear();
     selectedGroups.clear();
+    selectedSessions.clear();
     anchorIndex = -1;
     focus.clear();
     offset = 0;
@@ -381,6 +390,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     // The rows are a different shape now, so a selection keyed on the old ones would
     // arm an action against groups that no longer exist.
     selectedGroups.clear();
+    selectedSessions.clear();
     focus.clear();
     refoldAggregate();
   });
@@ -418,6 +428,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   splitBox.addEventListener('change', () => {
     splitByCamera = splitBox.checked;
     selectedGroups.clear();
+    selectedSessions.clear();
     focus.clear();
     refoldAggregate();
   });
@@ -463,8 +474,11 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   selectAllBox.addEventListener('change', () => {
     selected.clear();
     selectedGroups.clear();
+    selectedSessions.clear();
     if (selectAllBox.checked) {
-      if (view === 'all') for (const e of pageEvents) selected.add(e.uuid);
+      const mode = selectionMode();
+      if (mode === 'events') for (const e of pageEvents) selected.add(e.uuid);
+      else if (mode === 'sessions') for (const s of pageSessions) selectedSessions.add(s.representativeUuid);
       else for (const g of pageGroups) selectedGroups.add(g.key);
     }
     anchorIndex = -1;
@@ -525,6 +539,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     localStorage.setItem(VIEW_STORAGE_KEY, view);
     selected.clear();
     selectedGroups.clear();
+    selectedSessions.clear();
     focus.clear();
     syncViewUi();
     void search();
@@ -547,6 +562,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     offset = 0;
     selected.clear();
     selectedGroups.clear();
+    selectedSessions.clear();
     focus.clear();
     void search();
   }
@@ -636,6 +652,21 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     syncSelectionUi();
   }
 
+  /**
+   * Tick a visit.
+   *
+   * Nothing is resolved here: the card already knows how many events it folded, so the
+   * selection bar can be exact without a request, and the uuids are fetched only when an
+   * action asks for them — see `eventsForSelectedSessions`.
+   */
+  function toggleSelectSession(session, { checked }) {
+    const key = session.representativeUuid;
+    if (!key) return;
+    if (checked) selectedSessions.add(key);
+    else selectedSessions.delete(key);
+    syncSelectionUi();
+  }
+
   const selectionActions = el('div', 'event-search__selection');
   selectionActions.dataset.testid = 'event-search-selection';
   const selectionCount = el('span', 'event-search__selection-count');
@@ -674,7 +705,12 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   selectionActions.appendChild(switchesBtn);
   selectionActions.appendChild(deleteBtn);
   selectionActions.appendChild(button('Clear selection', () => {
+    // All three units, not just the flat one. Clearing only `selected` left a group or
+    // visit selection armed behind a bar that still read "Delete 383 events", with the
+    // button that was supposed to disarm it reporting success.
     selected.clear();
+    selectedGroups.clear();
+    selectedSessions.clear();
     anchorIndex = -1;
     syncSelectionUi();
   }, { testid: 'event-search-clear-selection' }));
@@ -691,9 +727,29 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   toolbar.appendChild(refreshBtn);
   toolbar.appendChild(selectionActions);
 
-  /** How many events the current selection covers, in either unit. */
+  /**
+   * Which unit the grid is selecting in.
+   *
+   * The flat view draws events *or* sessions depending on the gap, and they are not
+   * interchangeable: a session is a fold of events the page never fetched, so its rows
+   * are resolved on demand exactly as a group's are.
+   */
+  function selectionMode() {
+    if (view !== 'all') return 'groups';
+    return sessionGapS > 0 ? 'sessions' : 'events';
+  }
+
+  /** How many events the current selection covers, in whichever unit it is made. */
   function selectedEventCount() {
-    if (view === 'all') return selected.size;
+    const mode = selectionMode();
+    if (mode === 'events') return selected.size;
+    // Both folded units carry their own count, so the tally is exact without resolving
+    // anything — which is the whole reason the resolution can be deferred.
+    if (mode === 'sessions') {
+      return pageSessions
+        .filter(session => selectedSessions.has(session.representativeUuid))
+        .reduce((sum, session) => sum + session.count, 0);
+    }
     return pageGroups.filter(g => selectedGroups.has(g.key)).reduce((sum, g) => sum + g.count, 0);
   }
 
@@ -711,17 +767,29 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       const box = card.querySelector('.event-group-card__select');
       if (box) box.checked = isSelected;
     }
-    const units = view === 'all' ? selected.size : selectedGroups.size;
+    for (const card of grid.querySelectorAll('[data-session-key]')) {
+      const isSelected = selectedSessions.has(card.dataset.sessionKey);
+      card.classList.toggle('event-card--selected', isSelected);
+      const box = card.querySelector('.event-card__select');
+      if (box) box.checked = isSelected;
+    }
+    const mode = selectionMode();
+    const units = mode === 'events'
+      ? selected.size
+      : (mode === 'sessions' ? selectedSessions.size : selectedGroups.size);
     const events = selectedEventCount();
     selectionActions.hidden = units === 0;
-    selectionCount.textContent = view === 'all'
+    selectionCount.textContent = mode === 'events'
       ? `${units} selected`
       // A group's checkbox arms a delete against every event behind it, which is the
       // whole point of it and also the one thing that could badly surprise someone. Both
       // numbers, always, so "2 selected" can never quietly mean 665 rows.
-      : `${units} group${units === 1 ? '' : 's'} — ${events} event${events === 1 ? '' : 's'}`;
+      : `${units} ${mode === 'sessions' ? 'visit' : 'group'}${units === 1 ? '' : 's'}`
+        + ` — ${events} event${events === 1 ? '' : 's'}`;
     deleteBtn.textContent = `Delete ${events} event${events === 1 ? '' : 's'}`;
-    const items = view === 'all' ? pageEvents.length : pageGroups.length;
+    const items = mode === 'events'
+      ? pageEvents.length
+      : (mode === 'sessions' ? pageSessions.length : pageGroups.length);
     selectAllLabel.hidden = view === 'timeline' || items === 0;
     selectAllBox.checked = items > 0 && units === items;
     selectAllBox.indeterminate = units > 0 && units < items;
@@ -787,12 +855,13 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
    */
   async function applyReviewState(state) {
     try {
-      const uuids = view === 'all' ? [...selected] : await uuidsForSelectedGroups();
+      const uuids = await uuidsForSelection();
       if (!uuids.length) return;
       const updated = await setWatchEventReviewStates(uuids, state);
       toast(`Updated ${updated} event${updated === 1 ? '' : 's'}`, 3000);
       selected.clear();
       selectedGroups.clear();
+      selectedSessions.clear();
       anchorIndex = -1;
       await search();
     } catch (err) {
@@ -810,12 +879,13 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
    */
   async function applyPinned(pinned) {
     try {
-      const uuids = view === 'all' ? [...selected] : await uuidsForSelectedGroups();
+      const uuids = await uuidsForSelection();
       if (!uuids.length) return;
       const updated = await setWatchEventPinned(uuids, pinned);
       toast(`${pinned ? 'Pinned' : 'Unpinned'} ${updated} event${updated === 1 ? '' : 's'}`, 3000);
       selected.clear();
       selectedGroups.clear();
+      selectedSessions.clear();
       anchorIndex = -1;
       await search();
     } catch (err) {
@@ -825,14 +895,63 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   }
 
   /**
+   * Every event behind the selected visits.
+   *
+   * The same bargain `eventsForSelectedGroups` strikes, for the same reason: the grid
+   * folded these rows precisely so it would not fetch them, and a tick is not a reason
+   * to go and get them — an action on the tick is. Each visit is one request, bounded
+   * by the count its own card is showing, and they are fired together.
+   *
+   * Scoped by identity *and* window: the window alone would sweep in whatever else the
+   * cameras saw during the visit, which for a delete is the difference between "this
+   * cat's nine events" and "everything that happened in those four minutes".
+   */
+  async function eventsForSelectedSessions() {
+    const sessions = pageSessions.filter(session => selectedSessions.has(session.representativeUuid));
+    const pages = await Promise.all(sessions.map(session => {
+      const from = parseApiDate(session.startedAt);
+      const to = sessionWindowEnd(session);
+      const query = {
+        ...queryState(),
+        ...groupDrilldownFilters(session, { splitByCamera }),
+        limit: Math.max(1, session.count),
+        offset: 0,
+      };
+      if (from) query.startFrom = from.toISOString();
+      // An open visit has no end yet, and a bound equal to its start matches nothing —
+      // see `sessionWindowEnd`. Left unset it stays open-ended, which is what it is.
+      if (to) query.startTo = to.toISOString();
+      else delete query.startTo;
+      return fetchWatchEvents(query);
+    }));
+    // Keyed by uuid: two visits of the same identity cannot overlap, but a window
+    // rounded outward at both ends can return a neighbour's event to each of them.
+    const byUuid = new Map();
+    for (const { events: page } of pages) {
+      for (const event of page) byUuid.set(event.uuid, event);
+    }
+    return [...byUuid.values()];
+  }
+
+  /**
    * The events the selection covers, as rows rather than uuids.
    *
    * Both findings actions need the rows: the switch queue date-stamps each item from
    * its event, and a group key cannot say when or where anything happened.
    */
   async function eventsForSelection() {
-    if (view === 'all') return pageEvents.filter(e => selected.has(e.uuid));
+    const mode = selectionMode();
+    if (mode === 'events') return pageEvents.filter(e => selected.has(e.uuid));
+    if (mode === 'sessions') return eventsForSelectedSessions();
     return eventsForSelectedGroups();
+  }
+
+  /** The same selection as uuids, for the actions that need nothing else. */
+  async function uuidsForSelection() {
+    const mode = selectionMode();
+    if (mode === 'events') return [...selected];
+    if (mode === 'sessions') return (await eventsForSelectedSessions()).map(e => e.uuid);
+    return uuidsForSelectedGroups();
   }
 
   /**
@@ -973,13 +1092,13 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
   async function deleteSelected() {
     let candidates;
-    if (view === 'all') {
+    if (selectionMode() === 'events') {
       candidates = pageEvents.filter(e => selected.has(e.uuid));
     } else {
       deleteBtn.disabled = true;
       deleteBtn.textContent = 'Loading events…';
       try {
-        candidates = await eventsForSelectedGroups();
+        candidates = await eventsForSelection();
       } catch (err) {
         Logger.error(err);
         toast(err.message || 'Could not load the events in that group', 5000, 'error');
@@ -1021,6 +1140,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       // that fired again in between) would come back still ticked, with the action bar
       // still armed against rows the user believes they already dealt with.
       selectedGroups.clear();
+      selectedSessions.clear();
       anchorIndex = -1;
       void filters.refreshFacets();
       await search();
@@ -1146,6 +1266,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
     total = groupTotal;
     pageGroups = sortGroups(foldGroups(raw, { dimensions: dimensions(), splitByCamera }), sortBy, dimensions());
+    pageSessions = [];
     // Registrations point at elements that are about to be discarded; a Map still
     // holding them would pin the whole previous render in memory.
     focus.reset();
@@ -1299,9 +1420,11 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     grid.classList.remove('event-search__grid--timeline');
     focus.reset();
     // A session is not an event, so nothing that selects events may survive into it —
-    // the selection and delete paths below both key on event uuids.
+    // those paths key on event uuids, and a visit's are not fetched until an action on
+    // it needs them.
     pageEvents = [];
     pageGroups = [];
+    pageSessions = sessions;
     // The flat views draw from their own responses, so nothing aggregate is in hand any
     // more; the fold toggles must fetch rather than redraw rows for a different query.
     aggregate = null;
@@ -1318,6 +1441,8 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       for (const session of sessions) {
         const card = buildSessionCard(session, {
           sourceNames,
+          onToggleSelect: toggleSelectSession,
+          selected: selectedSessions.has(session.representativeUuid),
           // A visit of several events has no single clip to play, so it drills into its
           // own events and its own minutes rather than guessing which of the seven was
           // meant. A visit of *one* has exactly one, and an intermediate grid holding a
@@ -1386,6 +1511,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       // user is no longer looking at.
       pageEvents = result.events;
       pageGroups = [];
+      pageSessions = [];
       aggregate = null;
       selected.clear();
       anchorIndex = -1;

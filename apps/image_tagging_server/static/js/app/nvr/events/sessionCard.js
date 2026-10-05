@@ -42,12 +42,22 @@ export function formatSessionSpan(start, end) {
  * @param {Object} session - a WatchEventSession
  * @param {Object} ctx
  * @param {(session: Object) => void} ctx.onOpen - the events behind it, or its one event
+ * @param {(session: Object, opts: {shiftKey: boolean, checked: boolean}) => void}
+ *   [ctx.onToggleSelect] - omitted where the grid cannot act on a selection
+ * @param {boolean} [ctx.selected]
  * @param {Map<string, string>} [ctx.sourceNames]
  * @returns {HTMLElement}
  */
-export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = {}) {
+export function buildSessionCard(
+  session,
+  { onOpen, onToggleSelect, selected = false, sourceNames = new Map() } = {},
+) {
   const card = el('article', 'event-card event-card--session');
   card.dataset.testid = 'event-session-card';
+  // Keyed on the representative rather than an identity: the same cat at the same bowl
+  // is one identity and a dozen separate visits, and the grid has to tell them apart.
+  if (session.representativeUuid) card.dataset.sessionKey = session.representativeUuid;
+  card.classList.toggle('event-card--selected', selected);
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
 
@@ -94,6 +104,24 @@ export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = 
     live.dataset.testid = 'event-session-live-badge';
     media.appendChild(live);
   }
+  // Same bargain as the event card's box: the checkbox is the only thing that selects
+  // on a plain click, because a visit is opened far more often than it is bulk-acted on.
+  // Without it this view had no multi-select at all — and it is the view the flat list
+  // actually renders, since the gap preference defaults to grouping.
+  if (onToggleSelect) {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'event-card__select';
+    box.checked = selected;
+    box.dataset.testid = 'event-session-select';
+    box.setAttribute('aria-label', `Select all ${session.count} ${headline} events in this visit`);
+    box.addEventListener('click', e => {
+      // Or the card's own handler opens the visit over the selection just made.
+      e.stopPropagation();
+      onToggleSelect(session, { shiftKey: e.shiftKey, checked: box.checked });
+    });
+    media.appendChild(box);
+  }
   card.appendChild(media);
 
   const body = el('div', 'event-card__body');
@@ -122,7 +150,19 @@ export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = 
   // What "open" means depends on how much this card folded — a visit of seven has no
   // single clip to play — so the decision belongs to the caller, which is the only side
   // that can act on either answer.
-  card.addEventListener('click', () => onOpen?.(session));
+  card.addEventListener('click', (e) => {
+    // Shift/ctrl-click reaches the selection without hunting for the 1.4em box, exactly
+    // as it does on an event or group card.
+    if (onToggleSelect && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      // Read off the card: the grid owns the selection and this closure's `selected` is
+      // only ever the state at build time.
+      const isSelected = card.classList.contains('event-card--selected');
+      onToggleSelect(session, { shiftKey: e.shiftKey, checked: !isSelected });
+      return;
+    }
+    onOpen?.(session);
+  });
   card.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
