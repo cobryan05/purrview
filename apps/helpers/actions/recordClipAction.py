@@ -753,6 +753,7 @@ class RecordClipAction(Action):
         max_length_s: float = 180.0,
         output_dir: str = str(DEFAULT_CLIP_ROOT),
         save_overlay: bool = True,
+        repair_corruption: bool = False,
         backend: Optional[ClipBackend] = None,
         backend_for: Optional[Callable[[ActionContext], Optional[ClipBackend]]] = None,
         **params: Any,
@@ -763,6 +764,7 @@ class RecordClipAction(Action):
         self.max_length_s = float(max_length_s)
         self.output_dir = Path(output_dir)
         self.save_overlay = bool(save_overlay)
+        self.repair_corruption = bool(repair_corruption)
         self._backend = backend
         # Resolved per event rather than per action, because the right backend is a
         # property of the *source*: one profile can watch an RTSP camera (playback out
@@ -838,6 +840,23 @@ class RecordClipAction(Action):
                     "Settings → Recording retention. A folder outside that is not tidied up for "
                     "you, and one that is not on storage mounted into the container is lost "
                     "whenever it restarts."
+                ),
+            },
+            "repair_corruption": {
+                "type": "bool",
+                "required": False,
+                "default": False,
+                "advanced": True,
+                "help": (
+                    "Repair frames this camera's stream lost packets in, instead of leaving the "
+                    "picture to break up. A lossy camera — anything over wifi, and the Ring "
+                    "cameras in particular — drops parts of a frame, and the player renders the "
+                    "damage as a band of noise that lasts until the next keyframe. With this on, "
+                    "the damaged part of the frame is filled in from the frame before it, so the "
+                    "picture holds still rather than turning to garbage. Only clips that are "
+                    "actually damaged are re-encoded, and it does not recover video the camera "
+                    "never sent — a clip that jumps still jumps. Costs a minute or two of "
+                    "background CPU on a long clip, so leave it off for cameras with a clean feed."
                 ),
             },
             "save_overlay": {
@@ -976,6 +995,22 @@ class RecordClipAction(Action):
         result["durationS"] = max(0.0, played)
         return result
 
+    async def _conceal_damage(self, result: Dict[str, Any], dest: Path) -> None:
+        """Repair a lossy camera's damaged frames, in place, when this action asks for it.
+
+        After the overlay decision rather than before it: concealment keeps the frame
+        count and is discarded if the duration moved, so it cannot change where a box
+        belongs. A ring-cut clip is built from whole JPEGs and has no damaged slices to
+        conceal, so it is skipped.
+        """
+        if not self.repair_corruption or result.get("lowFps"):
+            return
+        from ..recordings.repairClip import repair_if_corrupt
+
+        outcome = await repair_if_corrupt(dest, enabled=True)
+        if outcome.get("repaired"):
+            result["concealedDecodeErrors"] = outcome.get("decodeErrors")
+
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
         # Only the closing edge can be cut: the window isn't known until the event ends,
         # which is precisely what a retroactive buffer buys us.
@@ -1004,6 +1039,7 @@ class RecordClipAction(Action):
                 # unless its own arithmetic matches the file, which is what keeps a bad
                 # map from drawing boxes in the wrong place.
                 result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
+                await self._conceal_damage(result, dest)
                 return ActionResult(
                     ok=True, detail=f"wrote {dest.name} from {result['partCount']} part(s)", data=result
                 )
@@ -1026,6 +1062,7 @@ class RecordClipAction(Action):
                     "mapped per segment" if result.get("segments") else "withheld",
                 )
             result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
+            await self._conceal_damage(result, dest)
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data=result)
         except Exception as e:
             # Past the buffer window this is permanent, not transient — the caller marks

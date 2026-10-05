@@ -175,3 +175,67 @@ class TestTheErrorScan:
     def test_an_unrelated_warning_is_not_counted_as_damage(self, tmp_path):
         """Counting ordinary chatter would re-encode every clip."""
         assert not repairClip._ERROR_PATTERN.search("[mp4 @ 0x55] track 0 has no keyframes")
+
+
+class TestTheClipActionAsksForItOnlyWhenConfigured:
+    """Concealment is per camera because it is a property of the camera's stream, and a
+    clean feed must not pay a re-encode for it. The clip action scoped to those cameras
+    is what carries the choice.
+    """
+
+    @staticmethod
+    def _action(**kwargs):
+        from apps.helpers.actions.recordClipAction import RecordClipAction
+
+        return RecordClipAction(**kwargs)
+
+    async def test_it_is_off_by_default(self, tmp_path):
+        calls = []
+        action = self._action()
+        await action._conceal_damage({}, tmp_path / "x.mp4")
+        assert calls == []
+        assert action.repair_corruption is False
+
+    async def test_an_enabled_action_repairs_the_clip_it_wrote(self, tmp_path, monkeypatch):
+        seen = {}
+
+        async def _fake(path, *, enabled=True):
+            seen["path"] = path
+            return {"repaired": True, "decodeErrors": 42}
+
+        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
+        result = {}
+
+        await self._action(repair_corruption=True)._conceal_damage(result, tmp_path / "clip.mp4")
+
+        assert seen["path"] == tmp_path / "clip.mp4"
+        assert result["concealedDecodeErrors"] == 42
+
+    async def test_a_ring_cut_clip_is_skipped(self, tmp_path, monkeypatch):
+        """A ring-cut clip is encoded from whole JPEGs, so it has no damaged slices to
+        conceal — scanning one would be a decode pass for a guaranteed zero."""
+        called = []
+
+        async def _fake(path, *, enabled=True):
+            called.append(path)
+            return {"repaired": False}
+
+        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
+
+        await self._action(repair_corruption=True)._conceal_damage({"lowFps": True}, tmp_path / "c.mp4")
+
+        assert called == []
+
+    async def test_a_repair_that_found_nothing_adds_no_field(self, tmp_path, monkeypatch):
+        """`concealedDecodeErrors` is written onto the recording, so it must mean
+        "damage was repaired" rather than "the camera has this turned on"."""
+
+        async def _fake(path, *, enabled=True):
+            return {"repaired": False, "reason": "clean", "decodeErrors": 0}
+
+        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
+        result = {}
+
+        await self._action(repair_corruption=True)._conceal_damage(result, tmp_path / "c.mp4")
+
+        assert "concealedDecodeErrors" not in result
