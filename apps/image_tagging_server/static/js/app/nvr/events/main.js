@@ -1032,8 +1032,15 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     }
   }
 
-  page.appendChild(filters.element);
-  page.appendChild(toolbar);
+  // ── Sticky top wrapper ──────────────────────────────────────────────────────
+  // Filters + toolbar pin to the top of the page scroll and auto-hide on
+  // scroll-down, the same chrome the Review grid uses: both bars together are a
+  // third of the viewport, and the multi-select facets are what you scroll back
+  // up for. See .event-search__sticky-top in app.css and app/utils/scrollChrome.js.
+  const stickyTop = el('div', 'event-search__sticky-top');
+  stickyTop.appendChild(filters.element);
+  stickyTop.appendChild(toolbar);
+  page.appendChild(stickyTop);
   page.appendChild(grid);
   page.appendChild(pager);
 

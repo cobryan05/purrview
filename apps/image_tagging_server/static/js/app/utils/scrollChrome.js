@@ -1,12 +1,13 @@
 /**
  * Auto-hiding chrome for a scrolling results view.
  *
- * The main tab strip and the Review toolbar block (`.review-sticky-top`:
- * toolbar + filter chips + the action bars) are both `position: sticky` at the
- * top of the page scroll. Pinned permanently they cost a large slice of the
+ * The main tab strip, the Review toolbar block (`.review-sticky-top`: toolbar +
+ * filter chips + the action bars) and the Events filter block
+ * (`.event-search__sticky-top`: facet filters + toolbar) are all `position:
+ * sticky` at the top of the page scroll. Pinned permanently they cost a large slice of the
  * viewport on a results page — the very page where you want to see results.
  *
- * So: scrolling *down* slides both out of the way, scrolling *up* brings them
+ * So: scrolling *down* slides them out of the way, scrolling *up* brings them
  * straight back, which is what you're already doing when you want to reach the
  * tabs or the filters. Near the top of the scroll they're always shown.
  *
@@ -16,13 +17,16 @@
  *
  * Two contexts use this:
  *   - the page (`initScrollChrome`) — scroller is the window, class lands on
- *     <body>, and both the tab header and the review bars move.
+ *     <body>, and the tab header plus the active tab's own bars move.
  *   - a review modal (`attachScrollChrome`) — scroller is the modal's own
  *     `overflow:auto` content div, class lands on that div, and only the review
  *     bars inside it move (the modal header keeps the close button reachable).
  */
 
 const HIDE_CLASS = 'chrome-hidden';
+
+/** The bars this module moves — anything focus-pinned inside one keeps it shown. */
+const CHROME_SELECTOR = '.main-tab-header, .review-sticky-top, .event-search__sticky-top';
 
 /** Ignore jitter/inertial noise smaller than this (px) so the bars don't flicker. */
 const DELTA_THRESHOLD = 6;
@@ -64,8 +68,12 @@ function isTextEntry(el) {
  */
 function chromeIsBusy(root) {
   if (root.querySelector('.review-filter-popover:not([hidden])')) return true;
+  // A multi-select panel is position:fixed, anchored to a trigger inside the
+  // chrome — it does not follow the transform, so hiding would leave it floating
+  // over nothing.
+  if (root.querySelector('.ms-dropdown--open')) return true;
   const active = document.activeElement;
-  if (!isTextEntry(active) || !active.closest?.('.main-tab-header, .review-sticky-top')) return false;
+  if (!isTextEntry(active) || !active.closest?.(CHROME_SELECTOR)) return false;
   // In a modal only focus *inside this scroller* counts — a field focused in
   // another panel behind the modal must not pin this one's bars open.
   return root === document ? true : root.contains(active);

@@ -3948,3 +3948,81 @@ class TestAFacetFailureDoesNotClearTheFilters:
 
         expect(trigger).to_contain_text("cat drinking water")
         expect(trigger).not_to_contain_text("Any event type")
+
+
+class TestTheFilterBarStaysReachableWhileScrolling:
+    """The filters + toolbar block auto-hides on scroll-down and returns on scroll-up.
+
+    Pinned permanently the two bars cost a third of the viewport on the page whose point
+    is the grid below them; scrolled away entirely, reaching a facet from deep in a long
+    result page means scrolling all the way back up. The shared page chrome
+    (`body.chrome-hidden`, app/utils/scrollChrome.js) is what resolves that, and this
+    page joins it through `.event-search__sticky-top`.
+    """
+
+    # A mocked page renders a handful of cards, which is not tall enough to scroll.
+    _SETTLE = """
+        await new Promise(r => requestAnimationFrame(r));
+        await new Promise(r => setTimeout(r, 300));
+    """
+    _SPACER = """
+        const spacer = document.createElement('div');
+        spacer.style.height = '4000px';
+        document.querySelector('[data-testid="event-search"]').appendChild(spacer);
+    """
+
+    def test_the_bar_leaves_on_scroll_down_and_comes_back_on_scroll_up(self, page: Page, base_url: str):
+        _mock(page)
+        _open_events_pane(page, base_url)
+        page.wait_for_selector(".event-search__sticky-top")
+
+        result = page.evaluate("""async () => {
+            const bar = document.querySelector('.event-search__sticky-top');
+            const headerH = document.querySelector('.main-tab-header').offsetHeight;
+            %s
+            const settle = async () => { %s };
+
+            window.scrollTo(0, 2000);
+            await settle();
+            const bottomAfterDown = bar.getBoundingClientRect().bottom;
+
+            // Scrolled *by* a delta from wherever the page actually sits: scrollChrome
+            // keys on the change since its last sample and ignores anything under 6px,
+            // so a fixed target can silently stop being a scroll-up.
+            window.scrollTo(0, window.scrollY - 600);
+            await settle();
+            const topAfterUp = bar.getBoundingClientRect().top;
+
+            return { bottomAfterDown, topAfterUp, headerH };
+        }""" % (self._SPACER, self._SETTLE))
+
+        assert result["bottomAfterDown"] <= 1, f"filter bar still on screen after scrolling down: {result}"
+        # Shown, the bar parks directly under the pinned tab strip rather than at 0.
+        assert abs(result["topAfterUp"] - result["headerH"]) < 4, f"filter bar did not come back on scroll up: {result}"
+
+    def test_an_open_facet_dropdown_keeps_the_bar_put(self, page: Page, base_url: str):
+        """The facet panels are position:fixed, so they cannot follow the bar's transform.
+
+        Hiding while one is open would leave the list of options floating over the grid,
+        detached from the trigger that opened it — on the very control the bar is being
+        kept reachable for.
+        """
+        _mock(page)
+        _open_events_pane(page, base_url)
+        page.wait_for_selector(".event-search__sticky-top")
+        page.locator("[data-testid='event-filter-rule'] .ms-dropdown__trigger").click()
+        expect(page.locator("[data-testid='event-filter-rule'] .ms-dropdown__panel")).to_be_visible()
+
+        result = page.evaluate("""async () => {
+            const bar = document.querySelector('.event-search__sticky-top');
+            %s
+            window.scrollTo(0, 2000);
+            %s
+            return {
+                hidden: document.body.classList.contains('chrome-hidden'),
+                bottom: bar.getBoundingClientRect().bottom,
+            };
+        }""" % (self._SPACER, self._SETTLE))
+
+        assert not result["hidden"], "chrome hid while a facet dropdown was open"
+        assert result["bottom"] > 1, f"filter bar left the viewport with a dropdown open: {result}"

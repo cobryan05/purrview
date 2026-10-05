@@ -1118,6 +1118,37 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   gap: var(--space-3);
 }
 
+/* Filters + toolbar pinned as one block, same chrome as .review-sticky-top: together
+   they cost a third of the viewport on a page whose point is the grid under them, so
+   they slide away on scroll-down and return on scroll-up (body.chrome-hidden, set by
+   app/utils/scrollChrome.js). Offset by the main tab strip, which is itself pinned at
+   top: 0. transform rather than height/display so revealing never reflows the cards
+   being scrolled past. z-index stays below --layer-sticky-header (30) so the tab strip
+   passes over this block, not under it. */
+.event-search__sticky-top {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  position: sticky;
+  top: var(--main-tabs-h, 0px);
+  z-index: 10;
+  background: var(--pico-background-color, var(--bg));
+  /* The grid starts flush against this block, so without a gap below it the first row
+     of cards reads as part of the toolbar while sliding underneath. */
+  padding-bottom: var(--space-2);
+  transition: transform 0.18s ease;
+}
+
+body.chrome-hidden .event-search__sticky-top {
+  transform: translateY(calc(-100% - var(--main-tabs-h, 0px)));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .event-search__sticky-top {
+    transition: none;
+  }
+}
+
 .event-filters__row {
   display: flex;
   flex-wrap: wrap;

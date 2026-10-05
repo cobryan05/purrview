@@ -473,6 +473,10 @@ export function createMultiSelectDropdown({
 
   function _openPanel() {
     _open = true;
+    // The panel is position:fixed, so it cannot ride along with a transformed
+    // ancestor — auto-hiding chrome has to know not to slide out from under an
+    // open panel. scrollChrome.js reads this class.
+    wrapper.classList.add('ms-dropdown--open');
     panelEl.style.display = '';
     _positionPanel();
     if (!inline) {
@@ -509,6 +513,7 @@ export function createMultiSelectDropdown({
 
   function _closePanel() {
     _open = false;
+    wrapper.classList.remove('ms-dropdown--open');
     panelEl.style.display = 'none';
     window.removeEventListener('resize', _positionPanel);
     if (_outsideListener) {
