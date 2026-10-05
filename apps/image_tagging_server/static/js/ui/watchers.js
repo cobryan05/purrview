@@ -1356,9 +1356,12 @@ function buildSourceRow(src, ctx) {
   // when the watcher-level tracker choice changes while it's closed.
   let trackerOverrideEnabled = src.trackerParamsJson != null;
   let trackerOverrideParams = { ...(src.trackerParamsJson || {}) };
-  // Icon-sized like the `(?)` help buttons, not a labelled `.panel-btn` — a third
-  // full-width button in `.watch-row-actions` was enough extra width to wrap the
-  // actions group onto its own second line on every source row.
+  // Icon-sized, and it has to be: the actions group shares a line with the rates group
+  // and has ~35px spare at this pane's width, so the 31px `⚙` fits and a 66px `Track…`
+  // wraps the whole group onto a line of its own on every source row
+  // (`test_source_and_action_rows_are_single_line`). What the icon cannot say, the panel
+  // it opens says in its own heading — a tooltip is invisible until you suspect it and
+  // absent on touch, so it is not where the only explanation can live.
   const trackerBtn = el('button', 'watch-template-help__btn watch-source-tracker-btn', '⚙');
   trackerBtn.type = 'button';
   trackerBtn.dataset.testid = 'watch-source-tracker-btn';
@@ -1375,6 +1378,18 @@ function buildSourceRow(src, ctx) {
     const panel = el('div', 'watch-template-help__panel watch-tracker-override-panel');
     panel.dataset.testid = 'watch-source-tracker-panel';
 
+    // The panel names its own subject. Opened from a row button, a lone
+    // "Override for this camera" tick says what it does to something it never names.
+    panel.appendChild(el('h4', 'watch-template-help__title', 'Tracker sensitivity'));
+    panel.appendChild(el(
+      'p',
+      'watch-template-help__intro',
+      'How readily this camera’s detections are strung into one track. The watcher’s '
+      + 'Tracking section sets these for every camera on it; tick below to give this one '
+      + 'its own numbers — for a camera whose subjects cross the frame in far fewer frames '
+      + 'than the rest. The tracker algorithm itself stays the watcher’s choice.',
+    ));
+
     const overrideBox = document.createElement('input');
     overrideBox.type = 'checkbox';
     overrideBox.checked = trackerOverrideEnabled;
@@ -1383,7 +1398,7 @@ function buildSourceRow(src, ctx) {
       'Use different tracker sensitivity for this camera instead of the watcher’s default. '
       + 'The tracker algorithm itself is chosen once for the whole watcher, up in Tracking — '
       + 'this only overrides its numeric thresholds for this one source.';
-    panel.appendChild(wfield('Override for this camera', overrideBox, { help: overrideBox.title }));
+    panel.appendChild(wfield('Use different numbers for this camera', overrideBox, { help: overrideBox.title }));
 
     const paramsHost = el('div', 'watch-tracker-params-host');
     panel.appendChild(paramsHost);
@@ -1919,10 +1934,11 @@ function buildRuleRow(rule, ctx) {
   let thresholdField = null;
   let thresholdLabel = null;
   for (const [label, input, title] of tuningFields) {
-    // 3.8rem, not the 4.5 these fields used to get: there are five of them plus the
-    // preview button now, and at the old width the button wrapped onto a second line —
-    // which costs the whole row 33px and pushes a 1/1/1 profile into a scrollbar.
-    const field = wfield(label, input, { width: '3.8rem' });
+    // 3.2rem, down from 3.8 (and 4.5 before that): the tuning line has to hold five of
+    // these, the preview button and the row's ✕ within ~672px, and the ✕ is what gets
+    // pushed onto a line of its own first — 24px on every rule row. The widest value any
+    // of them takes is four characters (`0.65`, `300`).
+    const field = wfield(label, input, { width: '3.2rem' });
     field.title = title;
     if (input === margin) {
       field.dataset.testid = 'watch-rule-margin-field';
@@ -1946,7 +1962,14 @@ function buildRuleRow(rule, ctx) {
 
   // The threshold is the one number in this editor with no intuition behind it — a
   // fraction of an area nobody sees. The preview is where it becomes a thing you drag.
-  const previewBtn = el('button', 'panel-btn watch-rule-preview', 'Preview…');
+  //
+  // Named for what it previews and placed first in the tuning row, immediately left of
+  // the two fields it reads and writes back (`match` and `nearby`) and directly under
+  // the relation select it belongs to. Bare "Preview…" at the far end of five number
+  // boxes named neither its subject nor its inputs. "match" rather than "overlap"
+  // because the same button serves every geometric relation, and it is the word the
+  // field and the modal's own heading already use.
+  const previewBtn = el('button', 'panel-btn watch-rule-preview', 'Preview match…');
   previewBtn.type = 'button';
   previewBtn.dataset.testid = 'watch-rule-preview';
   previewBtn.title = 'Try this relation on two boxes you can drag, and see the score it '
@@ -1976,7 +1999,7 @@ function buildRuleRow(rule, ctx) {
       },
     });
   });
-  tuning.appendChild(previewBtn);
+  tuning.insertBefore(previewBtn, tuning.firstChild);
   row.appendChild(tuning);
 
   // What the six numbers above actually *do*, in a sentence, recomputed as they change.

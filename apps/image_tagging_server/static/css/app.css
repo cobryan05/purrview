@@ -8465,6 +8465,15 @@ progress.progress-indeterminate:indeterminate {
 .watch-ha-name__panel { width: 18rem; }
 .watch-ha-name__panel input { margin: 0; }
 
+/* A popup opened from a row button has no surrounding context to say what it is about,
+   so the ones that configure something (rather than only explaining it) name their
+   subject on a heading line of their own. */
+.watch-template-help__title {
+  margin: 0 0 0.2rem;
+  font-size: var(--text-xs, 0.8rem);
+  font-weight: 600;
+}
+
 .watch-template-help__intro {
   margin: 0 0 0.4rem;
   font-size: var(--text-2xs, 0.7rem);
