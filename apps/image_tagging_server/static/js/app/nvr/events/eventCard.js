@@ -89,6 +89,13 @@ export function describeCloseReason(closeReason) {
         + 'closed because nothing could still observe it — not because the subject left.',
     };
   }
+  if (closeReason === 'source_disabled') {
+    return {
+      label: 'camera turned off',
+      title: 'This camera was taken out of the watcher while the event was open, so it '
+        + 'was closed deliberately — the watcher kept running and the camera did not fail.',
+    };
+  }
   return {
     label: 'cut short',
     title: 'This event was cut short rather than ending on its own. '

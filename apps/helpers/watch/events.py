@@ -35,6 +35,11 @@ class EventCloseReason(str, Enum):
     #: only runs on an analysed frame, making it a ceiling only while frames arrive.
     #: Like FORCED it says nothing about the subject, which may still have been there.
     SOURCE_LOST = "source_lost"
+    #: The camera was taken out of the running watcher — from Home Assistant or the
+    #: watcher's own status card — while the event was open. Its own reason rather than
+    #: FORCED or SOURCE_LOST: the watcher kept running and the camera did not fail, so
+    #: reporting either would point a reader at a fault that did not happen.
+    SOURCE_DISABLED = "source_disabled"
 
 
 @dataclass
