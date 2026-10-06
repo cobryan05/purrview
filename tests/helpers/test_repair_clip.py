@@ -9,6 +9,7 @@ is the exact fault the clip pipeline was just fixed to stop doing.
 So the tests that matter here are the refusals, not the happy path.
 """
 
+import asyncio
 import subprocess
 from pathlib import Path
 
@@ -189,27 +190,79 @@ class TestTheClipActionAsksForItOnlyWhenConfigured:
 
         return RecordClipAction(**kwargs)
 
-    async def test_it_is_off_by_default(self, tmp_path):
-        calls = []
+    @staticmethod
+    async def _settle(action):
+        """Close the action and let the worker finish whatever it had started."""
+        await asyncio.sleep(0)
+        await action.close()
+
+    async def test_it_is_off_by_default(self, tmp_path, monkeypatch):
+        called = []
+
+        async def _fake(path, *, enabled=True):
+            called.append(path)
+            return {"repaired": False}
+
+        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
         action = self._action()
-        await action._conceal_damage({}, tmp_path / "x.mp4")
-        assert calls == []
+        action._conceal_damage({}, tmp_path / "x.mp4")
+        await asyncio.sleep(0)
+
+        assert called == []
         assert action.repair_corruption is False
 
-    async def test_an_enabled_action_repairs_the_clip_it_wrote(self, tmp_path, monkeypatch):
+    async def test_the_caller_does_not_wait_for_the_repair(self, tmp_path, monkeypatch):
+        """The watcher awaits its actions inside the frame loop, so the minutes a decode
+        scan and re-encode take must not be spent there. The clip is queued and the
+        repair happens after the action has returned.
+        """
+        started, release = asyncio.Event(), asyncio.Event()
         seen = {}
 
         async def _fake(path, *, enabled=True):
             seen["path"] = path
+            started.set()
+            await release.wait()
             return {"repaired": True, "decodeErrors": 42}
 
         monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
-        result = {}
+        action = self._action(repair_corruption=True)
 
-        await self._action(repair_corruption=True)._conceal_damage(result, tmp_path / "clip.mp4")
+        action._conceal_damage({}, tmp_path / "clip.mp4")
+        await asyncio.wait_for(started.wait(), 1)
 
+        # The repair is in flight and the action has already returned — the assertion
+        # that fails if it is ever awaited inline again.
+        assert not release.is_set()
         assert seen["path"] == tmp_path / "clip.mp4"
-        assert result["concealedDecodeErrors"] == 42
+
+        release.set()
+        await self._settle(action)
+
+    async def test_two_clips_are_repaired_one_at_a_time(self, tmp_path, monkeypatch):
+        """Queued rather than a task per clip: a busy camera closes several events at
+        once, and concurrent 1080p re-encodes are what the niceness exists to prevent.
+        """
+        concurrent, peak, release = 0, 0, asyncio.Event()
+
+        async def _fake(path, *, enabled=True):
+            nonlocal concurrent, peak
+            concurrent += 1
+            peak = max(peak, concurrent)
+            await release.wait()
+            concurrent -= 1
+            return {"repaired": False}
+
+        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
+        action = self._action(repair_corruption=True)
+
+        action._conceal_damage({}, tmp_path / "a.mp4")
+        action._conceal_damage({}, tmp_path / "b.mp4")
+        await asyncio.sleep(0)
+        release.set()
+        await self._settle(action)
+
+        assert peak == 1
 
     async def test_a_ring_cut_clip_is_skipped(self, tmp_path, monkeypatch):
         """A ring-cut clip is encoded from whole JPEGs, so it has no damaged slices to
@@ -221,21 +274,37 @@ class TestTheClipActionAsksForItOnlyWhenConfigured:
             return {"repaired": False}
 
         monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
+        action = self._action(repair_corruption=True)
 
-        await self._action(repair_corruption=True)._conceal_damage({"lowFps": True}, tmp_path / "c.mp4")
+        action._conceal_damage({"lowFps": True}, tmp_path / "c.mp4")
+        await asyncio.sleep(0)
 
         assert called == []
+        await self._settle(action)
 
-    async def test_a_repair_that_found_nothing_adds_no_field(self, tmp_path, monkeypatch):
-        """`concealedDecodeErrors` is written onto the recording, so it must mean
-        "damage was repaired" rather than "the camera has this turned on"."""
+    async def test_a_full_backlog_leaves_the_clip_as_recorded(self, tmp_path, monkeypatch):
+        """A repair that never runs leaves the file exactly as the recorder wrote it,
+        which is what every failure path in this module already settles for — so the
+        backlog is bounded rather than allowed to grow without limit.
+        """
+        monkeypatch.setattr(repairClip, "MAX_PENDING_REPAIRS", 2)
+        release = asyncio.Event()
 
         async def _fake(path, *, enabled=True):
-            return {"repaired": False, "reason": "clean", "decodeErrors": 0}
+            await release.wait()
+            return {"repaired": False}
 
         monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
-        result = {}
+        worker = repairClip._RepairWorker()
+        worker.retain()
 
-        await self._action(repair_corruption=True)._conceal_damage(result, tmp_path / "c.mp4")
+        # The first submission starts the worker; the yield lets it take that clip off
+        # the queue, so the two that follow fill the bound and the fourth is refused.
+        assert worker.submit(tmp_path / "0.mp4") is True
+        await asyncio.sleep(0)
+        accepted = [worker.submit(tmp_path / f"{n}.mp4") for n in (1, 2, 3)]
 
-        assert "concealedDecodeErrors" not in result
+        assert accepted == [True, True, False]
+
+        release.set()
+        await worker.release()

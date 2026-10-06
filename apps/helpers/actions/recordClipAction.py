@@ -765,6 +765,10 @@ class RecordClipAction(Action):
         self.output_dir = Path(output_dir)
         self.save_overlay = bool(save_overlay)
         self.repair_corruption = bool(repair_corruption)
+        if self.repair_corruption:
+            from ..recordings.repairClip import retain_repairs
+
+            retain_repairs()
         self._backend = backend
         # Resolved per event rather than per action, because the right backend is a
         # property of the *source*: one profile can watch an RTSP camera (playback out
@@ -995,21 +999,27 @@ class RecordClipAction(Action):
         result["durationS"] = max(0.0, played)
         return result
 
-    async def _conceal_damage(self, result: Dict[str, Any], dest: Path) -> None:
-        """Repair a lossy camera's damaged frames, in place, when this action asks for it.
+    async def close(self) -> None:
+        """Let go of the shared repair worker, which outlives any one action."""
+        if self.repair_corruption:
+            from ..recordings.repairClip import release_repairs
 
-        After the overlay decision rather than before it: concealment keeps the frame
-        count and is discarded if the duration moved, so it cannot change where a box
-        belongs. A ring-cut clip is built from whole JPEGs and has no damaged slices to
-        conceal, so it is skipped.
+            await release_repairs()
+
+    def _conceal_damage(self, result: Dict[str, Any], dest: Path) -> None:
+        """Queue a lossy camera's clip for in-place repair, when this action asks for it.
+
+        Queued rather than awaited: the watcher awaits its actions inside the frame loop,
+        and a decode scan plus a re-encode is minutes during which the profile analyses
+        none of its cameras. Safe to run after the row is written because concealment
+        keeps the frame count and is discarded if the duration moved, so it cannot move
+        a box; a ring-cut clip is whole JPEGs with no damaged slices, so it is skipped.
         """
         if not self.repair_corruption or result.get("lowFps"):
             return
-        from ..recordings.repairClip import repair_if_corrupt
+        from ..recordings.repairClip import submit_repair
 
-        outcome = await repair_if_corrupt(dest, enabled=True)
-        if outcome.get("repaired"):
-            result["concealedDecodeErrors"] = outcome.get("decodeErrors")
+        submit_repair(dest)
 
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
         # Only the closing edge can be cut: the window isn't known until the event ends,
@@ -1039,7 +1049,7 @@ class RecordClipAction(Action):
                 # unless its own arithmetic matches the file, which is what keeps a bad
                 # map from drawing boxes in the wrong place.
                 result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
-                await self._conceal_damage(result, dest)
+                self._conceal_damage(result, dest)
                 return ActionResult(
                     ok=True, detail=f"wrote {dest.name} from {result['partCount']} part(s)", data=result
                 )
@@ -1062,7 +1072,7 @@ class RecordClipAction(Action):
                     "mapped per segment" if result.get("segments") else "withheld",
                 )
             result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
-            await self._conceal_damage(result, dest)
+            self._conceal_damage(result, dest)
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data=result)
         except Exception as e:
             # Past the buffer window this is permanent, not transient — the caller marks

@@ -26,6 +26,7 @@ Two rules this file exists to keep:
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 import shutil
@@ -163,3 +164,91 @@ async def repair_if_corrupt(path: Path, *, enabled: bool = True) -> dict:
         return {"repaired": False, "reason": "error", "decodeErrors": errors}
     finally:
         partial.unlink(missing_ok=True)
+
+
+#: How deep the backlog may get before new clips are left alone. A repair that never
+#: runs leaves the file exactly as the recorder wrote it, which is what every failure
+#: path above already settles for.
+MAX_PENDING_REPAIRS = 32
+
+
+class _RepairWorker:
+    """Runs queued repairs one at a time, off the submitter's await.
+
+    The recorder awaits its actions inside the watcher's frame loop, so a repair awaited
+    there stops that profile analysing *all* of its cameras for the length of a decode
+    scan plus a re-encode. Serialised rather than a task per clip: a busy camera closes
+    several events at once, and concurrent 1080p re-encodes are what `_NICE` exists to
+    prevent.
+    """
+
+    def __init__(self) -> None:
+        self._queue: Optional[asyncio.Queue] = None
+        self._worker: Optional[asyncio.Task] = None
+        self._owners = 0
+
+    def retain(self) -> None:
+        self._owners += 1
+
+    def submit(self, path: Path) -> bool:
+        """Queue `path` for repair. False when the backlog is full and it was left as-is."""
+        if self._queue is None:
+            self._queue = asyncio.Queue(maxsize=MAX_PENDING_REPAIRS)
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(self._drain(), name="clip-repair")
+        try:
+            self._queue.put_nowait(path)
+        except asyncio.QueueFull:
+            logger.warning("Repair backlog is full; leaving %s as recorded", path.name)
+            return False
+        return True
+
+    async def _drain(self) -> None:
+        queue = self._queue
+        assert queue is not None
+        while True:
+            path = await queue.get()
+            try:
+                await repair_if_corrupt(path, enabled=True)
+            except Exception:
+                logger.exception("Repair worker failed on %s", path.name)
+            finally:
+                queue.task_done()
+
+    async def release(self) -> None:
+        """Drop one owner's claim; the worker stops once the last one is gone.
+
+        Refcounted because the worker is process-wide while its owners are not: two
+        watcher profiles share it, and one of them stopping must not cancel the other's
+        queued repairs.
+        """
+        self._owners = max(0, self._owners - 1)
+        if self._owners:
+            return
+        worker, self._worker, self._queue = self._worker, None, None
+        if worker is None or worker.done():
+            return
+        # An in-flight ffmpeg runs in a thread and cannot be cancelled with the await, so
+        # it may recreate its `.repair` file after the `finally` above has unlinked one.
+        # Nothing reads that path, and the next repair of the same clip passes `-y`.
+        worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker
+
+
+_repairs = _RepairWorker()
+
+
+def retain_repairs() -> None:
+    """Claim the shared repair worker for an action that will submit to it."""
+    _repairs.retain()
+
+
+def submit_repair(path: Path) -> bool:
+    """Hand a finished clip to the background repair worker."""
+    return _repairs.submit(path)
+
+
+async def release_repairs() -> None:
+    """Release one claim on the shared worker, stopping it after the last."""
+    await _repairs.release()
