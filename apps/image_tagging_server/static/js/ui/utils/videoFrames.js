@@ -104,7 +104,10 @@ export function whenPageVisible(timeoutMs = 60000) {
  * Greatest luma spread a frame may have and still count as blank, over 0–255.
  *
  * A decoder's uninitialised buffer is *exactly* uniform — every pixel identical, spread
- * 0.00 — while the darkest usable night frame still carries sensor noise well above 1.
+ * 0.00 — so anything above zero is a picture. The margin is this thin because the spread
+ * is measured on a 32x32 downsample: averaging ~2000 source pixels per output pixel
+ * suppresses sensor noise by ~45x, so what keeps a real night frame above the threshold
+ * is scene structure, not grain. A genuinely featureless dark frame can read as blank.
  */
 export const BLANK_FRAME_MAX_SPREAD = 1;
 
