@@ -425,9 +425,26 @@ export function openEventDetailModal(
 
   // ---------------------------------------------------------------- media
 
+  // The player, and only the player. Pinned while the body scrolls, which is why it is
+  // a child of the scrolling element rather than of the media column: a sticky box is
+  // confined to its own containing block, and the column's is far shorter than the
+  // findings list beside it. Everything else about the media — the tabs, the lead-in
+  // note, the frame tools — scrolls away in `mediaPane` below.
+  const stagePane = el('div', 'event-detail__stage');
+  stagePane.dataset.tour = 'eventDetail.media';
+  body.appendChild(stagePane);
+
   const mediaPane = el('div', 'event-detail__media');
-  mediaPane.dataset.tour = 'eventDetail.media';
   body.appendChild(mediaPane);
+
+  /** Clear both media panes and put the clip/timelapse switcher back at the top. */
+  function resetMedia() {
+    stagePane.innerHTML = '';
+    mediaPane.innerHTML = '';
+    // Kept with the player rather than below it: it is two buttons, and it is the way
+    // back when the recording on screen is the one that cannot be shown.
+    if (mediaSwitcher) stagePane.appendChild(mediaSwitcher);
+  }
 
   const sidebar = el('div', 'event-detail__side');
   sidebar.dataset.tour = 'eventDetail.details';
@@ -630,15 +647,14 @@ export function openEventDetailModal(
     revokePreview();
     previewUrl = preview.url;
     dropOverlay();
-    mediaPane.innerHTML = '';
-    if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
+    resetMedia();
 
     video = document.createElement('video');
     video.className = 'event-detail__video';
     video.controls = true;
     video.src = preview.url;
     video.dataset.testid = 'event-detail-timelapse-preview-video';
-    mediaPane.appendChild(video);
+    stagePane.appendChild(video);
 
     const span = formatDuration(0, preview.sourceSpanS * 1000);
     const note = preview.partial
@@ -664,18 +680,14 @@ export function openEventDetailModal(
     // `innerHTML = ''` does not tell it anything.
     dropOverlay();
     video = null;
-    mediaPane.innerHTML = '';
-    // Kept above the message even when this recording cannot be shown: one of an
-    // event's two videos being off disk is no reason to strand the user on it with no
-    // way back to the other.
-    if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
+    resetMedia();
     if (event.hasSnapshot) {
       const img = document.createElement('img');
       img.className = 'event-detail__image';
       img.alt = '';
       img.src = watchEventSnapshotUrl(event.uuid);
       img.dataset.testid = 'event-detail-snapshot';
-      mediaPane.appendChild(img);
+      stagePane.appendChild(img);
     }
     if (message) mediaPane.appendChild(el('p', 'event-detail__no-video', message));
   }
@@ -693,8 +705,7 @@ export function openEventDetailModal(
     // clip's worth of boxes alive for as long as the modal is open.
     dropOverlay();
     _dropFullscreenSyncs();
-    mediaPane.innerHTML = '';
-    if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
+    resetMedia();
 
     const isTimelapse = recording.kind === 'timelapse';
     currentRecording = recording;
@@ -717,7 +728,7 @@ export function openEventDetailModal(
     // Read back by `seekVideoTo`: a blip's timestamps are the clip's time base, so the
     // one thing they must never be applied to is the timelapse tab.
     video.dataset.kind = isTimelapse ? 'timelapse' : 'clip';
-    mediaPane.appendChild(video);
+    stagePane.appendChild(video);
 
     // Arrived from a harvested frame asking about one instant. Seeking has to wait for
     // metadata: `currentTime` set before the duration is known is silently discarded,

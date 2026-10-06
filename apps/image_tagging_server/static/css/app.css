@@ -2078,17 +2078,28 @@ body.chrome-hidden .event-search__sticky-top {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  /* Sticky to the top of `.event-detail__body` (the scrolling ancestor): the tracking-
-     problems list in `.event-detail__side` can run taller than the player, and without
-     this, scrolling down to a lower blip's play button scrolls the player itself out of
-     view. A background is required — sticky content is otherwise transparent, so the
-     side column's text would show through underneath as it scrolls past. */
+}
+
+/* The player, pinned to the top of `.event-detail__body` while everything else scrolls.
+   Reaching a lower finding's play button must not scroll the picture away; pinning the
+   whole media column did that but carried every tool row with it, and the dialog is
+   560px wide at every viewport, so the columns always stack and that pinned block left
+   the findings list almost nothing.
+
+   A sticky box cannot leave its containing block, which is why this is a child of the
+   scrolling element and not of the media column — the column's box ends level with its
+   own content, a few hundred pixels into a list many times that. A background is
+   required: sticky content is otherwise transparent and the rows scrolling underneath
+   would show through the letterboxing beside the picture. */
+.event-detail__stage {
+  flex: 3 1 28rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   position: sticky;
   top: 0;
   z-index: 1;
-  /* Matches `.app-modal-dialog`'s own background — the dialog's padding means this
-     never has to blend with anything else, only cover the side column scrolling
-     underneath it. */
   background: var(--pico-background-color);
 }
 

@@ -1099,6 +1099,31 @@ class TestTheDetailModal:
         expect(video).to_be_visible()
         assert RECORDING_UUID in video.get_attribute("src")
 
+    def test_scrolling_to_a_lower_finding_keeps_the_picture_but_not_the_tools(self, page: Page, base_url: str):
+        """Reaching a lower finding's play button must not scroll the picture away, which
+        is why the player is pinned. Pinning the whole media column did that too, but
+        carried every tool row along with it and left the findings list almost no room.
+
+        Both halves are asserted, because each one alone passes for the wrong reason: a
+        column that is sticky again keeps the tools on screen, and a player that is not
+        sticky at all scrolls away with them.
+        """
+        self._open_modal(page, base_url, blips=[_blip(uuid=f"blip-uuid-{n:04d}") for n in range(1, 25)])
+
+        video = page.locator("[data-testid='event-detail-video']")
+        tools = page.locator(".event-detail__tools")
+        expect(video).to_be_in_viewport()
+        expect(tools).to_be_in_viewport()
+
+        body = page.locator(".event-detail__body")
+        body.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+
+        # Otherwise the two assertions below are vacuous: nothing moved.
+        assert body.evaluate("el => el.scrollTop") > 0
+
+        expect(video).to_be_in_viewport()
+        expect(tools).not_to_be_in_viewport()
+
     def test_the_lead_in_before_the_event_is_spelled_out(self, page: Page, base_url: str):
         """The clip starts before the event because pre-roll is cut retroactively out of
         the rewind buffer. That is only useful if the player says where in the lead-in
