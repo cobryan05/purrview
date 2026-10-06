@@ -66,7 +66,7 @@ const FACET_HINTS = {
   sources: 'Only cameras with recorded events.',
   subjects: 'Only labels that have acted in an event.',
   targets: 'Only labels an event has acted on.',
-  present: 'Only labels seen inside a recorded clip — not every label you can annotate.',
+  present: 'Only labels seen inside a recorded clip.',
 };
 
 /** The roll-up state keys, for the places that must not treat one as a filter. */
