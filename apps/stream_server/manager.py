@@ -681,7 +681,11 @@ class Manager:
             if not child.is_dir() or child.name in configured:
                 continue
             segments = list(child.glob("*.mp4"))
-            if segments and max(s.stat().st_mtime for s in segments) > cutoff:
+            # The directory's own mtime stands in when it holds no segment yet: MediaMTX
+            # creates it before it flushes the first one, so keying only off segments
+            # would sweep a path that is mid-creation on the very pass that created it.
+            newest = max((s.stat().st_mtime for s in segments), default=child.stat().st_mtime)
+            if newest > cutoff:
                 continue
             await self._purge_buffer(child.name)
             swept += 1
