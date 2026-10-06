@@ -17,19 +17,16 @@ import asyncio
 import base64
 import io
 import logging
-import socket
 import tarfile
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
 from inference_client import ApiClient
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.import_model_artifact_payload import ImportModelArtifactPayload
 
-logger = logging.getLogger(__name__)
+from apps.helpers.serverUrls import url_is_colocated
 
-# Hostnames that can only mean "this process's own host".
-_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+logger = logging.getLogger(__name__)
 
 
 def inference_server_is_colocated(inference_api_client: ApiClient) -> bool:
@@ -56,17 +53,7 @@ def inference_server_is_colocated(inference_api_client: ApiClient) -> bool:
     inference_server is addressed by its own host.
     """
     configured = getattr(getattr(inference_api_client, "configuration", None), "host", None)
-    if not isinstance(configured, str):
-        return False
-    host = (urlparse(configured).hostname or "").lower()
-    if not host:
-        return False
-    if host in _LOCAL_HOSTNAMES:
-        return True
-    try:
-        return host == socket.gethostname().lower()
-    except OSError:
-        return False
+    return url_is_colocated(configured)
 
 
 async def refresh_inference_server_models(inference_api_client: ApiClient) -> None:

@@ -28,6 +28,7 @@ import logging
 import os
 import tarfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
 
@@ -46,6 +47,7 @@ from apps.helpers.modelVersions import (
     artifact_model_names,
     install_with_history,
 )
+from apps.helpers.serverUrls import url_is_colocated
 
 from ._inference_push import (
     inference_server_is_colocated,
@@ -63,7 +65,11 @@ _MODELS_DIR = Path(os.environ.get("MODELS_ROOT", "/models"))
 #: to db_server — it is told the number, it does not look it up.
 TRAINING_ARTIFACTS_KEEP_SETTING_KEY = "training_artifacts_keep"
 DEFAULT_TRAINING_ARTIFACTS_KEEP = 3
-_TAR_BATCH_SIZE = 500  # max images per tar POST
+_TAR_BATCH_SIZE = 200  # max images per tar POST
+#: Concurrent file reads per tar build. The images are scattered across FILES_ROOT,
+#: so the build is seek-bound, not bandwidth-bound: one at a time it tops out around
+#: 18 MB/s, below even a 500 Mbps link. Concurrent opens hide the per-file latency.
+_TAR_READ_WORKERS = 16
 
 # Hard cap on retained per-epoch metric samples. Real runs are tens-to-hundreds of
 # epochs, but the history is persisted into resume_data (and snapshotted into the
@@ -297,48 +303,69 @@ class TrainingJobRunnerMixin:
 
         self.log(f"Pushing {len(missing_uuids)} images to training server")
 
-        # Process in batches of _TAR_BATCH_SIZE, reusing one HTTP client.
+        # The zero-copy local-ingest probe only has an answer when the training server
+        # can reach FILES_ROOT itself. Against another host it stats every UUID in the
+        # batch and returns all of them in not_found — a round trip per batch, for
+        # nothing — so it is asked only when the two share a filesystem.
+        colocated = url_is_colocated(self._training_base_url)
+
+        batches = [missing_uuids[i : i + _TAR_BATCH_SIZE] for i in range(0, len(missing_uuids), _TAR_BATCH_SIZE)]
+
         pushed = 0
         skipped = 0
         local_linked = 0
         local_copied = 0
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            for batch_start in range(0, len(missing_uuids), _TAR_BATCH_SIZE):
-                if self._cancel_flag.is_set():
-                    return
-                batch = missing_uuids[batch_start : batch_start + _TAR_BATCH_SIZE]
 
-                filenameless = [u for u in batch if u not in uuid_to_filename]
-                for u in filenameless:
-                    self.log(f"WARNING: no filename recorded for image {u}, skipping")
-                skipped += len(filenameless)
-                batch = [u for u in batch if u in uuid_to_filename]
-                if not batch:
-                    continue
+        def start_build(index: int) -> Optional[asyncio.Task]:
+            """Begin batch *index*'s tar build so it overlaps the POST now in flight."""
+            if index >= len(batches):
+                return None
+            return asyncio.create_task(asyncio.to_thread(self._build_tar, batches[index], uuid_to_filename))
 
-                # First try zero-copy local ingest: the training server reads
-                # straight from FILES_ROOT itself, no bytes cross HTTP at all.
-                # This only succeeds for UUIDs it can actually see on its own
-                # filesystem (e.g. pusher and training server share a
-                # container/bind mount) — anything else comes back in
-                # not_found and falls through to the tar-upload path below.
-                local_resp = await asyncio.to_thread(
-                    TrainingApi(self._api_client).ingest_local_images,
-                    job_id,
-                    LocalIngestPayload(
-                        entries=[LocalManifestEntry(image_uuid=u, filename=uuid_to_filename[u]) for u in batch]
-                    ),
-                )
-                not_found = set(local_resp.not_found or [])
-                local_linked += local_resp.linked
-                local_copied += local_resp.copied
-                pushed += len(batch) - len(not_found)
+        # Remote: nothing filters the batch before it is tarred, so the next build can
+        # start immediately and run while this batch is on the wire. Disk and link are
+        # within ~15% of each other here, so overlapping them nearly halves the push.
+        pending = None if colocated else start_build(0)
 
-                remaining = [u for u in batch if u in not_found]
-                if remaining:
-                    tar_bytes, added, batch_skipped = await asyncio.to_thread(
-                        self._build_tar, remaining, uuid_to_filename
-                    )
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                for index, batch in enumerate(batches):
+                    if self._cancel_flag.is_set():
+                        return
+
+                    if colocated:
+                        filenameless = [u for u in batch if u not in uuid_to_filename]
+                        for u in filenameless:
+                            self.log(f"WARNING: no filename recorded for image {u}, skipping")
+                        skipped += len(filenameless)
+                        batch = [u for u in batch if u in uuid_to_filename]
+                        if not batch:
+                            continue
+
+                        local_resp = await asyncio.to_thread(
+                            TrainingApi(self._api_client).ingest_local_images,
+                            job_id,
+                            LocalIngestPayload(
+                                entries=[LocalManifestEntry(image_uuid=u, filename=uuid_to_filename[u]) for u in batch]
+                            ),
+                        )
+                        not_found = set(local_resp.not_found or [])
+                        local_linked += local_resp.linked
+                        local_copied += local_resp.copied
+                        pushed += len(batch) - len(not_found)
+
+                        remaining = [u for u in batch if u in not_found]
+                        if remaining:
+                            tar_bytes, added, batch_skipped = await asyncio.to_thread(
+                                self._build_tar, remaining, uuid_to_filename
+                            )
+                        else:
+                            tar_bytes, added, batch_skipped = b"", 0, 0
+                    else:
+                        assert pending is not None  # set before the loop whenever batches is non-empty
+                        tar_bytes, added, batch_skipped = await pending
+                        pending = start_build(index + 1)
+
                     skipped += batch_skipped
                     if added:
                         # Use httpx directly — the generated client can't send raw binary body.
@@ -357,9 +384,14 @@ class TrainingJobRunnerMixin:
                             )
                         pushed += added
 
-                self._update_progress(min(pushed / len(missing_uuids) * 50.0, 50.0))
-                await self.heartbeat()
-                self.log(f"Pushed {pushed}/{len(missing_uuids)} images")
+                    self._update_progress(min(pushed / len(missing_uuids) * 50.0, 50.0))
+                    await self.heartbeat()
+                    self.log(f"Pushed {pushed}/{len(missing_uuids)} images")
+
+        finally:
+            # A push that raises must not leave the next batch's build running.
+            if pending is not None:
+                pending.cancel()
 
         if local_linked or local_copied:
             self.log(f"Zero-copy local ingest: {local_linked} hardlinked, {local_copied} copied on-disk")
@@ -373,27 +405,42 @@ class TrainingJobRunnerMixin:
     def _build_tar(self, uuids: list[str], uuid_to_filename: dict[str, str]) -> tuple[bytes, int, int]:
         """Build a tar in memory for the given UUIDs, reading bytes from FILES_ROOT.
 
+        The reads run concurrently because they are seek-bound (see
+        _TAR_READ_WORKERS); the tar itself is then assembled in the caller's order
+        so a batch always packs deterministically.
+
         Returns (tar_bytes, added_count, skipped_count).
         """
+
+        def read_one(uuid: str) -> tuple[str, Optional[bytes], str]:
+            filename = uuid_to_filename.get(uuid, "")
+            if not filename:
+                return uuid, None, f"no filename recorded for image {uuid}"
+            img_path = FILES_ROOT / filename
+            try:
+                with open(img_path, "rb") as fh:
+                    return uuid, fh.read(), ""
+            except OSError:
+                return uuid, None, f"image file not found: {img_path}"
+
+        with ThreadPoolExecutor(max_workers=_TAR_READ_WORKERS) as pool:
+            members = list(pool.map(read_one, uuids))
+
         buf = io.BytesIO()
         added = 0
         skipped = 0
         with tarfile.open(fileobj=buf, mode="w:") as tf:
-            for uuid in uuids:
-                filename = uuid_to_filename.get(uuid, "")
-                if not filename:
-                    self.log(f"WARNING: no filename recorded for image {uuid}, skipping")
-                    skipped += 1
-                    continue
-                img_path = FILES_ROOT / filename
-                if not img_path.exists():
-                    self.log(f"WARNING: image file not found: {img_path}, skipping")
+            for position, (uuid, data, problem) in enumerate(members):
+                if data is None:
+                    self.log(f"WARNING: {problem}, skipping")
                     skipped += 1
                     continue
                 info = tarfile.TarInfo(name=uuid)
-                info.size = img_path.stat().st_size
-                with open(img_path, "rb") as fh:
-                    tf.addfile(info, fh)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+                # Release each image as it lands in the tar; holding the whole batch
+                # twice over doubles the peak for no reason.
+                members[position] = (uuid, None, "")
                 added += 1
         return buf.getvalue(), added, skipped
 

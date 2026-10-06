@@ -15,8 +15,10 @@ duplicated. See `read_url_overrides`.
 
 import asyncio
 import logging
+import socket
 import sys
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 
@@ -70,3 +72,32 @@ async def read_url_overrides(client: httpx.AsyncClient, db_server_url: str) -> T
         read_url_override(client, db_server_url, INFERENCE_URL_SETTING_KEY),
         read_url_override(client, db_server_url, TRAINING_URL_SETTING_KEY),
     )
+
+
+# Hostnames that can only mean "this process's own host".
+_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def url_is_colocated(url: Optional[str]) -> bool:
+    """Does *url* address this process's own host, so both ends share a filesystem?
+
+    The gate is deliberately narrow: only a loopback name or this host's own
+    hostname counts. Anything else — a sibling container on the compose network,
+    a remote GPU box, a Settings → Servers override — is treated as remote,
+    because a shared filesystem cannot be assumed.
+
+    Both callers are safe in that direction: a false "remote" costs a transfer
+    that was not strictly needed, while a false "colocated" would skip one that
+    was.
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+    if host in _LOCAL_HOSTNAMES:
+        return True
+    try:
+        return host == socket.gethostname().lower()
+    except OSError:
+        return False
