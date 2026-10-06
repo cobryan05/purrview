@@ -811,6 +811,25 @@ class TestFiltersReachTheServer:
         assert queries[-1].get("present_refs") == "label-cat"
         assert queries[-1].get("subject_refs") is None
 
+    def test_the_present_filter_says_where_its_options_come_from(self, page: Page, base_url: str):
+        """The facets are drawn from history, so a label the detector has never reported
+        inside a clip has no row here while still appearing wherever the label tree is
+        offered. The confusing case is therefore a *populated* list missing one value —
+        so the note must stand while there are options, which is exactly when the
+        empty-list placeholder is hidden. Written as an empty-state message it would
+        never appear for the case it exists to explain.
+        """
+        _mock(page)
+        _open_events_pane(page, base_url)
+
+        field = page.locator("[data-testid='event-filter-present']")
+        field.locator(".ms-dropdown__trigger").click()
+        hint = field.locator("[data-testid='ms-dropdown-hint']")
+
+        expect(field.locator(".ms-dropdown__empty")).to_be_hidden()
+        expect(hint).to_be_visible()
+        assert "clip" in (hint.text_content() or "").lower()
+
     def test_rolling_up_what_the_clip_contains_sends_its_children(self, page: Page, base_url: str):
         """Present is always label-valued, so it carries the roll-up. "Any cat appears in
         this clip" is the question it exists for, and the facets only ever name the labels

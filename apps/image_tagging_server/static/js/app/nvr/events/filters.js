@@ -53,6 +53,22 @@ export const FACET_FILTERS = [
   ['presentRefs', 'presentExcludeRefs', 'present', 'Present', 'Anything present', 'event-filter-present', 'presentIncludeChildren'],
 ];
 
+/**
+ * What each facet's options are drawn from, by facet key.
+ *
+ * Shown standing rather than only on an empty list: the confusing case is a *populated*
+ * dropdown missing one value. A label the detector has never reported inside a clip
+ * window has no row here while still appearing wherever the label tree itself is
+ * offered, and nothing on screen distinguishes that from a broken filter.
+ */
+const FACET_HINTS = {
+  rules: 'Only rules that have fired.',
+  sources: 'Only cameras with recorded events.',
+  subjects: 'Only labels that have acted in an event.',
+  targets: 'Only labels an event has acted on.',
+  present: 'Only labels seen inside a recorded clip — not every label you can annotate.',
+};
+
 /** The roll-up state keys, for the places that must not treat one as a filter. */
 const HIERARCHY_KEYS = FACET_FILTERS.map(([, , , , , , key]) => key).filter(Boolean);
 
@@ -445,6 +461,7 @@ export async function createEventFilters(onChange) {
         showModeToggle: false,
         emptySummary: anyLabel,
         emptyText: 'Nothing recorded yet',
+        hint: FACET_HINTS[facetKey] ?? null,
         searchable: items.length > 8,
         filterKey: `event-${facetKey}`,
         // Wider where the rows are a tree: two levels of indent plus a name do not fit

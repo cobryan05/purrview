@@ -33,6 +33,8 @@ import { prefs } from '/app-static/js/shared/prefs.js';
  *   allowExclude?: boolean,      // default true; false hides the per-row "≠" exclude toggle
  *                                // (selection widgets pick items, they don't build queries)
  *   emptyText?: string,          // placeholder shown when `items` is empty
+ *   hint?: string,               // a standing note under the list, for where the options
+ *                                // come from — absence is otherwise unexplainable
  *   searchable?: boolean,        // default false; adds a type-to-filter box above the list
  *                                // (worth it for label-sized vocabularies, noise for 5 tags)
  *   emptySummary?: string,       // trigger text when nothing is selected (default 'All' —
@@ -66,6 +68,7 @@ export function createMultiSelectDropdown({
   allowExclude = true,
   searchable = false,
   emptyText = null,
+  hint = null,
   emptySummary = 'All',
   hierarchyToggle = null,
   onChange,
@@ -403,10 +406,21 @@ export function createMultiSelectDropdown({
   // users read it as decoration or as "equals" — and a row that can be negated is worth
   // nothing if nobody knows it can be. Only where excluding is actually offered.
   if (allowExclude) {
-    const hint = document.createElement('div');
-    hint.className = 'ms-dropdown__exclude-hint';
-    hint.textContent = '≠ excludes an item';
-    panelEl.appendChild(hint);
+    const excludeHint = document.createElement('div');
+    excludeHint.className = 'ms-dropdown__exclude-hint';
+    excludeHint.textContent = '≠ excludes an item';
+    panelEl.appendChild(excludeHint);
+  }
+
+  // Where the list itself cannot say why something is absent. A dropdown built from
+  // history has no row for a value that has never occurred, and the reader's first
+  // reading of that is a broken filter rather than an empty column.
+  if (hint) {
+    const hintEl = document.createElement('div');
+    hintEl.className = 'ms-dropdown__hint';
+    hintEl.dataset.testid = 'ms-dropdown-hint';
+    hintEl.textContent = hint;
+    panelEl.appendChild(hintEl);
   }
 
   /** Hide rows that don't match the search box; no-op when not searchable. */

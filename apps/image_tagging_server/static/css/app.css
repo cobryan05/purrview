@@ -4344,6 +4344,25 @@ button.filter-active {
   pointer-events: none;
 }
 
+/* Where the options come from. Wraps, unlike the exclude legend above it, because it is
+   a sentence rather than a glyph key and the panel is as narrow as its trigger. */
+.ms-dropdown__hint {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  font-size: 0.7em;
+  line-height: 1.3;
+  color: var(--text-faint, var(--pico-muted-color));
+  text-wrap: pretty;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* The legend and the note are one block when both are present, so the rule belongs
+   above the pair rather than on whichever happens to come first. */
+.ms-dropdown__exclude-hint + .ms-dropdown__hint {
+  margin-top: 1px;
+}
+
 /* The per-row exclude toggle.
 
    It used to be invisible until the row was hovered, on the theory that a resting list
