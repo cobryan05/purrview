@@ -220,7 +220,12 @@ class ClipDrain:
         # `durationS: 0.0`, and treating that as "no report" reinstates all three faces
         # of the bug above — the chunk claims the whole requested span, `short_tail`
         # computes false, and the cursor jumps past video that was never copied.
-        reported_duration = result.get("durationS")
+        # The *charged* span, not the playing length. They differ when the cut spans a
+        # hole: `durationS` is then measured off the file and is shorter than the
+        # wallclock it covers, so deriving the end from it rewinds the cursor into video
+        # this chunk already holds and the next drain copies it a second time. The hole
+        # is described by `coveredRanges` instead.
+        reported_duration = result.get("clampedDurationS", result.get("durationS"))
         actual_duration = duration if reported_duration is None else max(0.0, float(reported_duration))
         actual_end = actual_start + timedelta(seconds=actual_duration)
 
