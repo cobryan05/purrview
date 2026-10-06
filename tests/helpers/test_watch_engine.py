@@ -1826,7 +1826,9 @@ class TestTwoSubjectsInOneZoneKeepSeparateEvents:
         matched this frame, so they are one body."""
         spec = self._spec(trigger="on_enter")
         old = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, first_seen=1.0)
-        coasting = _track(track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, matched=False, first_seen=1.0)
+        coasting = _track(
+            track_id=1, bbox=self.HATCHBACK_BESIDE, label=self.HATCHBACK, conf=0.9, matched=False, first_seen=1.0
+        )
         replacement = _track(track_id=9, bbox=self.SEDAN_BESIDE, label=self.HATCHBACK, conf=0.9, first_seen=4.0)
         _machine, emitted = self._drive(
             spec,
@@ -1886,7 +1888,9 @@ class TestASubjectAlreadyThereIsNotAnArrival:
     PARKED = (420, 420, 520, 520)
 
     def _spec(self, **overrides):
-        kwargs = dict(subject_a_refs=[self.HATCHBACK], subject_b_refs=[ZONE_UUID], min_duration_s=2.0, rearm_delay_s=10.0)
+        kwargs = dict(
+            subject_a_refs=[self.HATCHBACK], subject_b_refs=[ZONE_UUID], min_duration_s=2.0, rearm_delay_s=10.0
+        )
         kwargs.update(overrides)
         return _rule(**kwargs)
 
