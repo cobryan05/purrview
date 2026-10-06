@@ -365,11 +365,15 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
   // it is promoted to the wrapper. The re-request runs on the activation that opened
   // fullscreen in the first place; if a browser refuses it, exiting is still the honest
   // outcome — boxes over the picture or no fullscreen, never a picture missing its boxes.
+  // Escalated, not exited and re-entered. Leaving fullscreen first spends the gesture
+  // that opened it, and a request with no transient activation left is refused — which
+  // looked like fullscreen flashing open and shutting again. Asking while a fullscreen
+  // element is already set needs no fresh activation, and the wrapper is the video's own
+  // ancestor, so the picture never leaves the screen on the way. A refusal leaves the
+  // video fullscreen without its boxes, which is merely where this started.
   const onFullscreenChange = () => {
     if (document.fullscreenElement === video) {
-      Promise.resolve(document.exitFullscreen?.())
-        .then(() => wrapper.requestFullscreen?.())
-        .catch(() => {});
+      wrapper.requestFullscreen?.().catch(() => {});
       return;
     }
     redraw();

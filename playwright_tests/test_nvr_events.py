@@ -1261,9 +1261,16 @@ class TestTheDetectionOverlay:
         self._open_modal(page, base_url, overlay=_overlay())
         page.wait_for_selector("[data-testid='clip-overlay-canvas']")
 
-        # Stands in for a native control the headless browser does not render.
+        # Stands in for a native control the headless browser does not render. Every
+        # transition is recorded, because how it reaches the wrapper matters as much as
+        # that it does — see the second assertion.
         page.evaluate("""() => {
               const video = document.querySelector("[data-testid='event-detail-video']");
+              window.__fsSeen = [];
+              document.addEventListener('fullscreenchange', () => {
+                window.__fsSeen.push(
+                  document.fullscreenElement ? document.fullscreenElement.className : null);
+              });
               const btn = document.createElement('button');
               btn.id = 'native-fullscreen-stand-in';
               btn.style.cssText = 'position:fixed;top:0;left:0;z-index:99999';
@@ -1277,6 +1284,12 @@ class TestTheDetectionOverlay:
             lambda: page.evaluate("() => document.fullscreenElement?.classList.contains('clip-overlay') === true"),
             "the video's own fullscreen was never promoted to the overlay wrapper",
         )
+
+        # Escalated, never exited and re-entered on the way. Leaving fullscreen spends the
+        # gesture that opened it, and a browser that wants transient activation for the
+        # second request — Firefox does — refuses it, so fullscreen flashes open and shuts
+        # again. Chromium allows that re-request, so the end state alone does not catch it.
+        assert None not in page.evaluate("() => window.__fsSeen")
 
     def test_a_clip_without_a_sidecar_offers_no_overlay(self, page: Page, base_url: str):
         """Every clip written before this existed has no boxes, and they cannot be
