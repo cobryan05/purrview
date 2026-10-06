@@ -1,6 +1,7 @@
 """Manager for Image Tagging Server"""
 
 import asyncio
+import hashlib
 import hmac
 import logging
 import sys
@@ -15,7 +16,13 @@ import tasks_client
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers import serviceStatus
-from apps.helpers.authSettings import read_auth_config
+from apps.helpers.authSettings import (
+    AUTH_SETTING_KEY,
+    AuthConfig,
+    hash_password,
+    read_auth_config,
+    verify_password,
+)
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.reverseProxy import ReverseProxy
 from apps.helpers.serverUrls import (
@@ -95,8 +102,7 @@ class Manager:
         self._unreachable_notified: Dict[str, bool] = {}
 
         # Off by default. See Settings → Security / AuthGate in web.py.
-        self._require_auth: bool = False
-        self._auth_token: str = ""
+        self._auth: AuthConfig = AuthConfig()
 
     async def start(self) -> None:
         """Load URL overrides and auth settings from DB on startup."""
@@ -151,17 +157,14 @@ class Manager:
             logger.warning(f"Could not notify tasks_server of server-config change: {e}")
 
     async def _reload_auth_config(self) -> None:
-        """Re-read the Security setting from the DB."""
-        self._require_auth, self._auth_token = await read_auth_config(self._test_client, self._db_server_url)
+        """Re-read the Security setting from the DB.
 
-    async def reload_auth_config(self) -> None:
-        """Public method called after Settings → Security is saved.
-
-        Unlike the server-URL overrides this doesn't need to notify tasks_server —
-        the auth gate lives entirely in `image_tagging_server`'s `AuthGate` middleware,
-        the only externally reachable port (see `HA_INTEGRATION_PLAN.md` WP-3).
+        Only the startup path needs this: a save goes through `save_auth_config`,
+        which updates the cache itself, and the gate lives entirely in this service's
+        `AuthGate` so no other service has to be told (see `HA_INTEGRATION_PLAN.md`
+        WP-3).
         """
-        await self._reload_auth_config()
+        self._auth = await read_auth_config(self._test_client, self._db_server_url)
 
     @property
     def require_auth(self) -> bool:
@@ -173,18 +176,132 @@ class Manager:
         panel refuses to save `require_auth=true` with an empty token, so this is
         only a defense-in-depth backstop, not the normal path.
         """
-        return self._require_auth and bool(self._auth_token)
+        return self._auth.require_auth and bool(self._auth.token)
+
+    @property
+    def password_enabled(self) -> bool:
+        """Whether `/login` wants the password rather than the API token.
+
+        Same fail-open reasoning as `require_auth`: a toggle with no hash behind it
+        would make the login form unanswerable.
+        """
+        return self._auth.password_enabled and bool(self._auth.password_hash)
+
+    @property
+    def auth_config(self) -> AuthConfig:
+        """The cached Security settings blob."""
+        return self._auth
 
     def check_token(self, candidate: Optional[str]) -> bool:
-        """Constant-time comparison against the configured token.
+        """Constant-time comparison against the configured API token.
 
-        `hmac.compare_digest` over `==` because this is the one string in the app
-        that's actually a secret — everything else here has never needed to care
-        about a timing side-channel.
+        `hmac.compare_digest` over `==` because this is one of the two secrets in the
+        app — everything else here has never needed to care about a timing
+        side-channel.
         """
-        if not candidate or not self._auth_token:
+        if not candidate or not self._auth.token:
             return False
-        return hmac.compare_digest(candidate, self._auth_token)
+        return hmac.compare_digest(candidate, self._auth.token)
+
+    def session_cookie_value(self) -> str:
+        """The value `/login` writes into the auth cookie.
+
+        Derived from both secrets rather than being either of them, so that (a) a
+        stolen browser cookie cannot be replayed as a Bearer token against the API,
+        and (b) rotating the token or changing the password invalidates every
+        outstanding session for free, with no session store to keep.
+
+        Returns:
+            str: An opaque, stable-per-configuration session value.
+        """
+        key = f"{self._auth.token}\n{self._auth.password_hash}".encode("utf-8")
+        return hmac.new(key, b"purrview-session", hashlib.sha256).hexdigest()
+
+    def check_session(self, candidate: Optional[str]) -> bool:
+        """Constant-time check of an auth cookie against `session_cookie_value`.
+
+        Args:
+            candidate (Optional[str]): The cookie value presented.
+
+        Returns:
+            bool: True when the cookie belongs to the current configuration.
+        """
+        if not candidate:
+            return False
+        return hmac.compare_digest(candidate, self.session_cookie_value())
+
+    async def check_login(self, candidate: Optional[str]) -> bool:
+        """Check a credential submitted to the interactive login form.
+
+        With a password configured the API token is **not** accepted here: the point
+        of the split is that the token is a machine credential, and a token that also
+        opens a browser session is one a Home Assistant config entry can be read out
+        of. That leaves no in-band way back from a forgotten password; the way back is
+        `scripts/reset_login_password.py`, out of band on the host.
+
+        Args:
+            candidate (Optional[str]): The submitted secret.
+
+        Returns:
+            bool: True when the credential opens a session.
+        """
+        if not candidate:
+            return False
+        if not self.password_enabled:
+            return self.check_token(candidate)
+        # scrypt is deliberately slow and memory-hard; keep it off the event loop.
+        return await asyncio.to_thread(verify_password, candidate, self._auth.password_hash)
+
+    async def save_auth_config(
+        self,
+        require_auth: bool,
+        token: str,
+        password_enabled: bool,
+        password: Optional[str],
+    ) -> AuthConfig:
+        """Persist the Security panel and apply it immediately.
+
+        The plaintext password is hashed here and never stored or echoed back; an
+        empty `password` means "leave the existing hash alone", which is what lets the
+        panel re-save the other fields without re-typing it.
+
+        Args:
+            require_auth (bool): Whether the gate enforces.
+            token (str): API token.
+            password_enabled (bool): Whether login wants a password.
+            password (Optional[str]): New plaintext password, or empty to keep the
+                current one.
+
+        Returns:
+            AuthConfig: The configuration now in force.
+
+        Raises:
+            ValueError: If the request would lock the operator out — auth required
+                with no token, or a password required with none ever set.
+        """
+        token = (token or "").strip()
+        if require_auth and not token:
+            raise ValueError("An API token is required before access control can be turned on.")
+
+        password_hash = self._auth.password_hash
+        if password:
+            password_hash = await asyncio.to_thread(hash_password, password)
+        if password_enabled and not password_hash:
+            raise ValueError("Set a password before requiring one.")
+
+        config = AuthConfig(
+            require_auth=require_auth,
+            token=token,
+            password_enabled=password_enabled,
+            password_hash=password_hash,
+        )
+        res = await self._test_client.put(
+            f"{self._db_server_url.rstrip('/')}/api/settings/{AUTH_SETTING_KEY}",
+            json={"value": config.to_json()},
+        )
+        res.raise_for_status()
+        self._auth = config
+        return config
 
     @property
     def effective_inference_url(self) -> str:

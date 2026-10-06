@@ -261,7 +261,10 @@ Service health, retention for recordings and timelapse frames (age and size caps
 with a "clean up now"), model-version and training-folder retention, the
 thumbnail cache, dedup hash sizes, the MQTT broker, and optional access control:
 an API token for Home Assistant and other callers, plus a separate login password —
-off by default, stored only as a hash — for signing in to the web interface.
+off by default, stored only as a hash — for signing in to the web interface. Once a
+password is set the sign-in page stops accepting the token, so the integration's copy
+of it cannot open a browser session; a forgotten password is cleared with
+`python scripts/reset_login_password.py` on the host.
 
 ## How watching works
 

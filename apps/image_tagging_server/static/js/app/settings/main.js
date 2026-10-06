@@ -1105,25 +1105,30 @@ async function _buildMqttSection() {
 /* ── Security ─────────────────────────────────────────────────────────────── */
 
 /**
- * One shared secret gates both the web UI (a login cookie, see `/login` in
- * `image_tagging_server/web.py`) and the API (`Authorization: Bearer` or `?token=`,
- * for the purrview_ha integration and anything an `<img>`/`<video>` tag can't attach
- * a header to). See `HA_INTEGRATION_PLAN.md` WP-3 for why one secret does both jobs
- * instead of two separate systems.
+ * Two credentials, one gate. The API token authenticates machines — Home Assistant,
+ * and `<img>`/`<video>` URLs that cannot attach a header — as `Authorization: Bearer`
+ * or `?token=`. The optional login password authenticates a person at `/login`, and
+ * is the only credential that form accepts once it is on, so a token pasted into a
+ * Home Assistant config entry never doubles as a browser session.
+ *
+ * This panel does not write the `auth_config` setting itself: it posts to
+ * `/api/auth-config`, because the password has to be hashed server-side and is never
+ * stored or read back in the clear. See `apps/helpers/authSettings.py`.
  */
-export const SECURITY_SETTING_KEY = 'auth_config';
+const AUTH_CONFIG_ENDPOINT = '/api/auth-config';
 
-const SECURITY_DEFAULTS = { require_auth: false, token: '' };
+const SECURITY_DEFAULTS = {
+  requireAuth: false,
+  token: '',
+  passwordEnabled: false,
+  passwordSet: false,
+};
 
 async function _loadSecurityConfig() {
-  let stored = null;
   try {
-    stored = await getSetting(SECURITY_SETTING_KEY);
-  } catch (_) {}
-  if (!stored) return { ...SECURITY_DEFAULTS };
-  try {
-    const parsed = JSON.parse(stored);
-    if (parsed && typeof parsed === 'object') return { ...SECURITY_DEFAULTS, ...parsed };
+    const res = await apiFetch(AUTH_CONFIG_ENDPOINT);
+    const data = await res.json();
+    if (data && data.status === 'success') return { ...SECURITY_DEFAULTS, ...data };
   } catch (_) {}
   return { ...SECURITY_DEFAULTS };
 }
@@ -1139,6 +1144,13 @@ function _generateToken() {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+function _securityStatusText(config) {
+  if (!config.requireAuth) return 'Open — no credentials required.';
+  return config.passwordEnabled
+    ? 'Token required for the API; password required to sign in.'
+    : 'Token required — it also signs you in.';
+}
+
 async function _buildSecuritySection() {
   const { section, body } = _panel('Security', { id: 'settings-section-security' });
 
@@ -1147,19 +1159,23 @@ async function _buildSecuritySection() {
   const warning = document.createElement('p');
   warning.className = 'settings-dedup-warning';
   warning.textContent =
-    'Off by default. Once on, this token is required for every request: the web UI (via a ' +
-    'login page) and the API alike (as an Authorization: Bearer header, or ?token= for ' +
-    'things like <video> tags that cannot send a header). Paste the same token into the ' +
-    'PurrView integration\'s setup form in Home Assistant. Stored unencrypted in the ' +
-    'settings database, the same as the MQTT broker password above.';
+    'Off by default. Once access control is on, the API token is required for every ' +
+    'request (as an Authorization: Bearer header, or ?token= for things like <video> ' +
+    'tags that cannot send a header) — paste it into the PurrView integration\'s setup ' +
+    'form in Home Assistant. The login password is separate and optional: turn it on ' +
+    'and the sign-in page stops accepting the token, so the integration\'s copy of it ' +
+    'cannot open a browser session. The token is stored unencrypted in the settings ' +
+    'database, the same as the MQTT broker password above; the login password is only ' +
+    'ever stored as a hash — which means a forgotten one cannot be recovered, only ' +
+    'cleared, by running scripts/reset_login_password.py on the host.';
   body.appendChild(warning);
 
   const requireInput = document.createElement('input');
   requireInput.type = 'checkbox';
-  requireInput.checked = Boolean(config.require_auth);
+  requireInput.checked = Boolean(config.requireAuth);
   requireInput.dataset.testid = 'settings-security-require';
   const { row: requireRow } = _buildRow({
-    label: 'Require a token',
+    label: 'Require access control',
     controls: [requireInput],
   });
 
@@ -1178,8 +1194,35 @@ async function _buildSecuritySection() {
   });
 
   const { row: tokenRow } = _buildRow({
-    label: 'Access token',
+    label: 'API token',
+    description: 'For Home Assistant and other API callers.',
     controls: [tokenInput, generateBtn],
+  });
+
+  const passwordToggle = document.createElement('input');
+  passwordToggle.type = 'checkbox';
+  passwordToggle.checked = Boolean(config.passwordEnabled);
+  passwordToggle.dataset.testid = 'settings-security-password-enabled';
+  const { row: passwordToggleRow } = _buildRow({
+    label: 'Require a login password',
+    controls: [passwordToggle],
+  });
+
+  const passwordInput = document.createElement('input');
+  passwordInput.type = 'password';
+  passwordInput.className = 'settings-server-input';
+  passwordInput.autocomplete = 'new-password';
+  // Never prefilled: the server only reports *whether* a password exists, so the
+  // field is the one place a plaintext password lives, and only until Save.
+  passwordInput.placeholder = config.passwordSet
+    ? 'Leave blank to keep the current password'
+    : 'Choose a password';
+  passwordInput.dataset.testid = 'settings-security-password';
+
+  const { row: passwordRow } = _buildRow({
+    label: 'Login password',
+    description: 'For signing in to this web interface.',
+    controls: [passwordInput],
   });
 
   const saveBtn = _rowButton('Save');
@@ -1196,36 +1239,49 @@ async function _buildSecuritySection() {
   });
   actionRow.dataset.testid = 'settings-security-actions';
 
-  setStatus(
-    config.require_auth ? 'Token required.' : 'Open — no token required.',
-    config.require_auth ? 'info' : 'muted'
-  );
+  setStatus(_securityStatusText(config), config.requireAuth ? 'info' : 'muted');
 
   saveBtn.addEventListener('click', async () => {
-    const values = { require_auth: requireInput.checked, token: tokenInput.value.trim() };
-    if (values.require_auth && !values.token) {
-      setStatus('Enter or generate a token before requiring one.', 'error');
+    const values = {
+      requireAuth: requireInput.checked,
+      token: tokenInput.value.trim(),
+      passwordEnabled: passwordToggle.checked,
+      password: passwordInput.value,
+    };
+    if (values.requireAuth && !values.token) {
+      setStatus('Enter or generate an API token before requiring access control.', 'error');
+      return;
+    }
+    if (values.passwordEnabled && !values.password && !config.passwordSet) {
+      setStatus('Choose a login password before requiring one.', 'error');
       return;
     }
     await _withSaveFeedback(
       saveBtn,
       async () => {
-        await setSetting(SECURITY_SETTING_KEY, JSON.stringify(values));
-        const res = await apiFetch('/api/reload-auth-config', { method: 'POST' });
+        const res = await apiFetch(AUTH_CONFIG_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(values),
+        });
         const data = await res.json();
         if (data.status !== 'success') {
           throw new Error(`Save failed: ${data.message ?? 'unknown error'}`);
         }
-        setStatus(
-          values.require_auth ? 'Token required.' : 'Open — no token required.',
-          values.require_auth ? 'info' : 'muted'
-        );
+        config.requireAuth = data.requireAuth;
+        config.passwordEnabled = data.passwordEnabled;
+        config.passwordSet = data.passwordSet;
+        passwordInput.value = '';
+        passwordInput.placeholder = config.passwordSet
+          ? 'Leave blank to keep the current password'
+          : 'Choose a password';
+        setStatus(_securityStatusText(config), config.requireAuth ? 'info' : 'muted');
       },
       (msg) => setStatus(`✗ ${msg}`, 'error')
     );
   });
 
-  body.append(requireRow, tokenRow, actionRow);
+  body.append(requireRow, tokenRow, passwordToggleRow, passwordRow, actionRow);
   return section;
 }
 

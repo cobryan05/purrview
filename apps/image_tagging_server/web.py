@@ -243,7 +243,9 @@ class AuthGate:
             await self._app(scope, receive, send)
             return
 
-        if self._manager.check_token(self._extract_token(request)):
+        if self._manager.check_token(self._extract_token(request)) or self._manager.check_session(
+            request.cookies.get(AUTH_COOKIE_NAME)
+        ):
             await self._app(scope, receive, send)
             return
 
@@ -259,13 +261,15 @@ class AuthGate:
 
     @staticmethod
     def _extract_token(request: Request) -> Optional[str]:
+        """Pull the API token out of a request.
+
+        The cookie is deliberately not consulted here — it carries a session value,
+        not the token, and the two are checked separately by the caller.
+        """
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:]
-        query_token = request.query_params.get("token")
-        if query_token:
-            return query_token
-        return request.cookies.get(AUTH_COOKIE_NAME)
+        return request.query_params.get("token")
 
 
 class WebApp:
@@ -338,28 +342,33 @@ class WebApp:
             return self._templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context={"next": self._safe_next(next), "error": error},
+                context={
+                    "next": self._safe_next(next),
+                    "error": error,
+                    "password_mode": self._manager.password_enabled,
+                },
             )
 
         @self._app.post("/login")
         async def login_submit(request: Request):
-            """Check the submitted token and, if it matches, set the auth cookie.
+            """Check the submitted credential and, if it matches, set the auth cookie.
 
-            Compares with the same `hmac.compare_digest` path AuthGate itself uses —
-            there's exactly one secret in this app, and both callers go through
-            `Manager.check_token` rather than each rolling their own comparison.
+            `Manager.check_login` decides which secret is wanted — the password when
+            one is configured, the API token otherwise. The cookie never carries
+            either: it holds the session value below, so a stolen cookie cannot be
+            replayed as a Bearer token against the API.
             """
             form = await request.form()
-            token = str(form.get("token", ""))
+            secret = str(form.get("token", ""))
             next_path = self._safe_next(str(form.get("next", "/")))
 
-            if not self._manager.check_token(token):
+            if not await self._manager.check_login(secret):
                 return RedirectResponse(url=f"/login?next={quote(next_path, safe='')}&error=1", status_code=303)
 
             response = RedirectResponse(url=next_path, status_code=303)
             response.set_cookie(
                 AUTH_COOKIE_NAME,
-                token,
+                self._manager.session_cookie_value(),
                 max_age=60 * 60 * 24 * 30,
                 httponly=True,
                 samesite="lax",
@@ -653,18 +662,52 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
 
-        @self._app.post("/api/reload-auth-config", response_class=JSONResponse)
-        async def reload_auth_config() -> JSONResponse:
-            """Reload the Security setting from the DB.
+        @self._app.get("/api/auth-config", response_class=JSONResponse)
+        async def get_auth_config() -> JSONResponse:
+            """Return the Security panel's state for Settings → Security.
 
-            Called by the Settings → Security "Save" button so a toggled `require_auth`
-            or a freshly-generated token takes effect immediately, rather than waiting
-            for the next process restart — `AuthGate` reads `Manager` state live on
-            every request, so nothing else needs to change once this returns.
+            The password hash never leaves the server — the panel only needs to know
+            whether one has been set, so it can offer "leave blank to keep it".
+            """
+            config = self._manager.auth_config
+            return JSONResponse(
+                content={
+                    "status": WebApp.SUCCESS_KEY,
+                    "requireAuth": config.require_auth,
+                    "token": config.token,
+                    "passwordEnabled": config.password_enabled,
+                    "passwordSet": bool(config.password_hash),
+                }
+            )
+
+        @self._app.post("/api/auth-config", response_class=JSONResponse)
+        async def save_auth_config(request: Request) -> JSONResponse:
+            """Save Settings → Security and apply it without a restart.
+
+            The password arrives as plaintext exactly once, here, and is hashed before
+            it is written — which is why the panel posts to this route instead of
+            PUTting the settings blob to db_server itself. `AuthGate` reads `Manager`
+            state live on every request, so nothing else needs to change once this
+            returns.
             """
             try:
-                await self._manager.reload_auth_config()
-                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "requireAuth": self._manager.require_auth})
+                body = await request.json()
+                config = await self._manager.save_auth_config(
+                    require_auth=bool(body.get("requireAuth")),
+                    token=str(body.get("token") or ""),
+                    password_enabled=bool(body.get("passwordEnabled")),
+                    password=str(body.get("password") or ""),
+                )
+                return JSONResponse(
+                    content={
+                        "status": WebApp.SUCCESS_KEY,
+                        "requireAuth": config.require_auth,
+                        "passwordEnabled": config.password_enabled,
+                        "passwordSet": bool(config.password_hash),
+                    }
+                )
+            except ValueError as e:
+                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)}, status_code=400)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})

@@ -66,8 +66,8 @@
 <body>
   <form method="post" action="/login">
     <h1>PurrView</h1>
-    {% if error %}<p class="error">Wrong token — try again.</p>{% endif %}
-    <label for="token">Access token</label>
+    {% if error %}<p class="error">{% if password_mode %}Wrong password{% else %}Wrong token{% endif %} — try again.</p>{% endif %}
+    <label for="token">{% if password_mode %}Password{% else %}Access token{% endif %}</label>
     <input type="password" id="token" name="token" autofocus required autocomplete="current-password" />
     <input type="hidden" name="next" value="{{ next }}" />
     <button type="submit">Sign in</button>
