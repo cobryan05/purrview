@@ -2023,8 +2023,14 @@ body.chrome-hidden .event-search__sticky-top {
 }
 
 /* ----- detail modal ----- */
-.event-detail {
+/* Compound with `.app-modal-dialog` deliberately: that rule caps every dialog at
+   `--modal-w-sm` (560px), a max-width clamps a width however much larger it asks to be,
+   and it is declared later in this file — so at equal specificity it wins and the width
+   below is inert. This modal is an evidence surface holding a video, the event's facts
+   and its findings, not a confirm box. */
+.app-modal-dialog.event-detail {
   width: min(72rem, 94vw);
+  max-width: none;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
@@ -2067,13 +2073,23 @@ body.chrome-hidden .event-search__sticky-top {
 
 .event-detail__body {
   display: flex;
-  flex-wrap: wrap;
+  /* Stacked by default and turned into two columns at the breakpoint below, rather than
+     left to wrap: with three items and a wrapping row, a middling width put the media
+     rows and the details side by side on the second line. */
+  flex-direction: column;
   gap: var(--space-4);
   overflow: auto;
 }
 
+/* Generates no box below the two-column breakpoint, so the player, the rows under it and
+   the details all stack as siblings of the scrolling body — which is what lets the player
+   stay pinned across the whole scroll. See `.event-detail__stage`. */
+.event-detail__left {
+  display: contents;
+}
+
 .event-detail__media {
-  flex: 3 1 28rem;
+  flex: 0 0 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -2092,7 +2108,7 @@ body.chrome-hidden .event-search__sticky-top {
    required: sticky content is otherwise transparent and the rows scrolling underneath
    would show through the letterboxing beside the picture. */
 .event-detail__stage {
-  flex: 3 1 28rem;
+  flex: 0 0 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -2104,11 +2120,54 @@ body.chrome-hidden .event-search__sticky-top {
 }
 
 .event-detail__side {
-  flex: 1 1 14rem;
+  flex: 0 0 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+}
+
+/* Two columns once the dialog is wide enough to hold them: the clip on the left, the
+   event's facts and findings on the right, each scrolling on its own. Nothing is pinned
+   here — the picture does not move because its column does not scroll, which is steadier
+   than a sticky box and leaves the findings a full column instead of the strip under a
+   pinned player.
+
+   The breakpoint is on the viewport because the dialog is sized from it
+   (`min(72rem, 94vw)`); below it the stacked layout above applies unchanged. */
+@media (min-width: 60rem) {
+  .event-detail__body {
+    flex-direction: row;
+    /* The columns scroll, not the body. A body that also scrolled would let the whole
+       layout slide and take the picture with it. */
+    overflow: hidden;
+  }
+
+  .event-detail__left {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    /* Takes the surplus, because the picture is the thing being read and its height
+       follows its width. The details column holds text at a fixed comfortable measure
+       and has no use for more. */
+    flex: 1 1 0;
+    min-width: 0;
+    /* Only reachable if the player and its tools together outgrow the dialog, which the
+       60vh cap on the picture makes unlikely — but unreachable tools would be worse. */
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .event-detail__stage {
+    /* Its column no longer scrolls, so there is nothing to stick to. */
+    position: static;
+  }
+
+  .event-detail__side {
+    flex: 0 1 20rem;
+    min-height: 0;
+    overflow-y: auto;
+  }
 }
 
 .event-detail__video,
@@ -2357,7 +2416,11 @@ body.chrome-hidden .event-search__sticky-top {
 
 /* The identity_switch crop-compare modal — two frames side by side, wide enough to
    actually judge a pose from rather than a thumbnail. */
-.event-blips__review-dialog {
+/* Compound with `.app-modal-dialog` for the same reason as `.event-detail`: that rule's
+   `--modal-w-sm` cap is declared later in this file, so at equal specificity it clamps
+   the width here to a confirm box's. `.blip-queue` is layered onto this same dialog and
+   asks for more again, which this lets through. */
+.app-modal-dialog.event-blips__review-dialog {
   width: var(--modal-w-md, 32rem);
   max-width: calc(100vw - 2rem);
 }

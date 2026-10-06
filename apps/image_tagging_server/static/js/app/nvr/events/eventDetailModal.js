@@ -425,17 +425,24 @@ export function openEventDetailModal(
 
   // ---------------------------------------------------------------- media
 
-  // The player, and only the player. Pinned while the body scrolls, which is why it is
-  // a child of the scrolling element rather than of the media column: a sticky box is
-  // confined to its own containing block, and the column's is far shorter than the
-  // findings list beside it. Everything else about the media — the tabs, the lead-in
-  // note, the frame tools — scrolls away in `mediaPane` below.
+  // Groups the player with the rows under it, so the wide layout can put the two of them
+  // in one column beside the details rather than in three columns across. It is
+  // `display: contents` until that breakpoint — generating no box of its own — because
+  // the stacked layout pins the player with `position: sticky`, and a sticky box cannot
+  // leave the box its parent generates.
+  const mediaColumn = el('div', 'event-detail__left');
+  body.appendChild(mediaColumn);
+
+  // The player, and only the player, so that what is pinned — or held still, in the wide
+  // layout — is the picture rather than the picture plus every tool that acts on it.
   const stagePane = el('div', 'event-detail__stage');
   stagePane.dataset.tour = 'eventDetail.media';
-  body.appendChild(stagePane);
+  mediaColumn.appendChild(stagePane);
 
+  // The tabs, the lead-in note and the frame tools: everything about the media that is
+  // worth reaching but not worth permanent space.
   const mediaPane = el('div', 'event-detail__media');
-  body.appendChild(mediaPane);
+  mediaColumn.appendChild(mediaPane);
 
   /** Clear both media panes and put the clip/timelapse switcher back at the top. */
   function resetMedia() {
