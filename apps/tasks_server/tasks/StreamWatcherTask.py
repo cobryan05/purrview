@@ -988,6 +988,13 @@ class StreamWatcherTask(Task):
                 max_duration_s=cap,
             )
             self._manual_open[source_uuid] = recording
+            # The clip action caps the window it cuts at its own `max_length_s` (180s by
+            # default) in both `plan_window` and the concat muxer, so a cap above that
+            # would be honoured by the ring and the drain and then truncated at the file.
+            # Raised, never lowered: a shorter recording is bounded by its own window.
+            if self._manual_clip is not None:
+                clip_action = self._manual_clip[1]
+                clip_action.max_length_s = max(float(clip_action.max_length_s), cap)
             self.log(f"Manual recording started on {pipeline.source_name} (max {cap:.0f}s)")
             await self._dispatch(self._manual_signal(recording, EventPhase.START, now), pipeline)
 
@@ -1104,6 +1111,25 @@ class StreamWatcherTask(Task):
             instance_id=recording.instance_id,
         )
 
+    def _open_event_starts(self, pipeline: WatchPipeline) -> List[float]:
+        """Monotonic start of everything currently recording this source.
+
+        A manual recording is not one of the engine's events, so it is absent from
+        `open_events()` — and every per-pass service keyed off that list (the drain, the
+        ring hold, the live hold) would treat a camera recording by hand as idle: the
+        chunks are discarded, the ring's floor is released and an on-demand camera is
+        allowed to sleep, taking its MediaMTX path and buffer with it.
+        """
+        starts = [e["startedAt"] for e in pipeline.engine.open_events() if e.get("startedAt") is not None]
+        # getattr, as everywhere else that reads this: the tests build the class with
+        # `__new__`, and the live-preview endpoint reaches it during the PENDING window
+        # before `__init__` has run.
+        open_recordings: Dict[str, ManualRecording] = getattr(self, "_manual_open", None) or {}
+        recording = open_recordings.get(pipeline.source_uuid or "")
+        if recording is not None:
+            starts.append(recording.started_at)
+        return starts
+
     def _service_ring_hold(self, pipeline: WatchPipeline) -> None:
         """Hold the frame ring open across every event currently recording this source.
 
@@ -1129,7 +1155,7 @@ class StreamWatcherTask(Task):
         ring = self._frame_rings.get(pipeline.source_uuid or "")
         if ring is None:
             return
-        starts = [e["startedAt"] for e in pipeline.engine.open_events() if e.get("startedAt") is not None]
+        starts = self._open_event_starts(pipeline)
         if not starts:
             ring.hold_from(None)
             return
@@ -1162,7 +1188,7 @@ class StreamWatcherTask(Task):
         what bounds a stuck event, and the hold expires with it.
         """
         hold = getattr(pipeline.provider, "hold_live", None)
-        if hold is None or not pipeline.engine.open_events():
+        if hold is None or not self._open_event_starts(pipeline):
             return
         hold()
 
@@ -1177,10 +1203,10 @@ class StreamWatcherTask(Task):
         Called every pass for every source. The common case — no event open — costs one
         dict lookup and returns.
         """
-        open_events = pipeline.engine.open_events()
+        starts = self._open_event_starts(pipeline)
         drain = self._clip_drains.get(pipeline.source_uuid)
 
-        if not open_events or not self._wants_clip_chunks(pipeline.source_uuid):
+        if not starts or not self._wants_clip_chunks(pipeline.source_uuid):
             if drain is not None:
                 drain.note_idle()
             return
@@ -1189,9 +1215,6 @@ class StreamWatcherTask(Task):
         if drain is None:
             return
 
-        starts = [e["startedAt"] for e in open_events if e.get("startedAt") is not None]
-        if not starts:
-            return
         # Event timing is monotonic; the buffer is addressed by wallclock.
         earliest = datetime.fromtimestamp(min(starts) + self._wallclock_offset, tz=timezone.utc)
         drain.note_open(earliest)
