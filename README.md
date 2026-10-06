@@ -259,8 +259,9 @@ filter chains and watchers are launched from the same page.*
 
 Service health, retention for recordings and timelapse frames (age and size caps,
 with a "clean up now"), model-version and training-folder retention, the
-thumbnail cache, dedup hash sizes, the MQTT broker, and an optional access token
-that gates the whole app.
+thumbnail cache, dedup hash sizes, the MQTT broker, and optional access control:
+an API token for Home Assistant and other callers, plus a separate login password —
+off by default, stored only as a hash — for signing in to the web interface.
 
 ## How watching works
 
@@ -597,14 +598,19 @@ it belongs to the app, so moving the whole thing is always safe.
 > hanging off it; a crashed ffmpeg leaves a `.part` nothing ever referenced), and
 > those files are otherwise permanent.
 >
-> It has two safety rails and neither one protects *your* files. Anything a
+> It has three safety rails, and only one of them is about *your* files. Anything a
 > surviving row names is exempt, and anything newer than
-> `RECORDINGS_ORPHAN_GRACE_S` (default 900 s) is exempt — the grace period is there
-> so the sweep cannot race a clip that is still being written, not to protect
-> unrelated data. It has no extension filter and cannot tell your files from its
-> own. Its only real safety argument is that those directories belong to the app
-> alone. Point one at a shared media folder and that folder will be emptied, an
-> hour later, with no prompt.
+> `RECORDINGS_ORPHAN_GRACE_S` (default 900 s) is exempt — but that grace period is
+> there so the sweep cannot race a clip that is still being written, not to protect
+> unrelated data. The third rail is the one that helps you: the sweep only deletes
+> the file types the app itself writes (`.mp4`, `.jpg`, `.json`, and the `.part`,
+> `.txt` and `.png` scratch left beside them). A document, an archive or a database
+> under a recordings root is left alone.
+>
+> That narrows the damage; it does not prevent it. `.jpg` and `.mp4` are exactly
+> what a photo or video library is made of, so pointing a recordings root at one
+> still empties it of media, an hour later, with no prompt. The only real safety
+> argument is that these directories belong to the app alone.
 
 `RECORDINGS_CLIP_DIR`, `RECORDINGS_SNAPSHOT_DIR` and `RECORDINGS_TIMELAPSE_DIR`
 are deliberately not wired through `.env` for that reason. The safe knob is

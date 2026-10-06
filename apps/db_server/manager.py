@@ -224,6 +224,21 @@ TIMELAPSE_SCAN_MAX_DEPTH = 4
 #: How often the sweep runs. The window it enforces is measured in days, so anything
 #: tighter than hourly is filesystem work for no benefit.
 RETENTION_SWEEP_INTERVAL_S = 3600.0
+
+#: Every suffix this app writes under a recordings root: `.mp4` clips and compiled
+#: timelapses, `.jpg` snapshots and timelapse frames, `.json` sidecars and detection
+#: tracks, and the `.part`/`.txt`/`.png` scratch ffmpeg and the overlay burner leave
+#: beside their output.
+#:
+#: The orphan sweep deletes by walking a directory rather than by following a row, so
+#: this is its only guard against files it could not have produced. It narrows the blast
+#: radius of a misconfigured root; it does not close it, because `.jpg` and `.mp4` are
+#: precisely what a media folder holds. The README's warning stands.
+#:
+#: A writer that starts emitting a suffix missing from this set stops having its orphans
+#: collected — silently, and for ever. `sweep_orphan_recording_files` logs what it
+#: skipped so that shows up as a line in the log rather than as a full disk.
+RECORDING_SWEEPABLE_SUFFIXES = frozenset({".mp4", ".jpg", ".json", ".part", ".txt", ".png"})
 # The WAL only needs reclaiming on a slow burn, and a checkpoint that finds the
 # file under threshold still costs a stat — so this is deliberately far coarser
 # than the 5s poll, and far finer than the hourly retention sweep it rides beside.
@@ -5066,14 +5081,18 @@ class Manager:
         ffmpeg leaves a `.part` file no row ever referenced. Nothing else ever looks at
         those files again, so without this they are permanent.
 
-        Two rails, because a sweep that walks a directory and deletes is exactly the kind
-        of thing that eats live data when it is subtly wrong:
+        Three rails, because a sweep that walks a directory and deletes is exactly the
+        kind of thing that eats live data when it is subtly wrong:
 
         * every path any surviving row names is exempt, compared on the real path so a
-          symlinked or non-normalised stored path still matches; and
+          symlinked or non-normalised stored path still matches;
         * anything younger than the grace period is exempt, because a clip exists on
           disk before the row referencing it is written — without this the sweep races
-          clip extraction and deletes its output mid-write.
+          clip extraction and deletes its output mid-write; and
+        * anything whose suffix is not in `RECORDING_SWEEPABLE_SUFFIXES` is exempt. The
+          first two rails protect this app's own files from being taken early; only this
+          one protects files it never wrote at all, which is what a root pointed at the
+          wrong directory is full of.
 
         A third exemption, for a different reason: dot-prefixed directories under a root
         are the watcher's own scratch space (`.drain` chunks, `.spool`ed event frames),
@@ -5093,10 +5112,14 @@ class Manager:
 
         removed = 0
         freed = 0
+        foreign = 0
         for path, size, mtime in entries:
             if self._in_watcher_scratch(path):
                 continue
             if os.path.realpath(path) in safe:
+                continue
+            if path.suffix.lower() not in RECORDING_SWEEPABLE_SUFFIXES:
+                foreign += 1
                 continue
             if now_ts - mtime < RECORDINGS_ORPHAN_GRACE_S:
                 continue
@@ -5110,6 +5133,15 @@ class Manager:
 
         if removed:
             logger.info("Retention sweep removed %s orphaned file(s), freeing %.1f MB", removed, freed / 1048576)
+        if foreign:
+            # Either a recordings root holds files this app did not write, or a writer
+            # has started emitting a suffix the allowlist does not know about — in which
+            # case its orphans are now accumulating unreclaimed. Both are worth a line.
+            logger.info(
+                "Retention sweep left %s file(s) alone: suffix not one this app writes (%s)",
+                foreign,
+                ", ".join(sorted(RECORDING_SWEEPABLE_SUFFIXES)),
+            )
         return {"files": removed, "bytes": freed}
 
     @staticmethod
