@@ -1099,15 +1099,50 @@ class TestTheDetailModal:
         expect(video).to_be_visible()
         assert RECORDING_UUID in video.get_attribute("src")
 
-    def test_scrolling_to_a_lower_finding_keeps_the_picture_but_not_the_tools(self, page: Page, base_url: str):
-        """Reaching a lower finding's play button must not scroll the picture away, which
-        is why the player is pinned. Pinning the whole media column did that too, but
-        carried every tool row along with it and left the findings list almost no room.
-
-        Both halves are asserted, because each one alone passes for the wrong reason: a
-        column that is sticky again keeps the tools on screen, and a player that is not
-        sticky at all scrolls away with them.
+    def test_a_wide_dialog_gives_the_picture_more_room_than_the_details(self, page: Page, base_url: str):
+        """The dialog asks for `min(72rem, 94vw)`, which the shared `.app-modal-dialog`
+        max-width silently clamped to the width of a confirm box for as long as this
+        modal has existed. Asserted as a comparison rather than a pixel count: the
+        picture is what is being read and its height follows its width, so the column
+        holding it must be the wider of the two. Under the clamp it is the narrower.
         """
+        page.set_viewport_size({"width": 1440, "height": 900})
+        self._open_modal(page, base_url, blips=[_blip(uuid=f"blip-uuid-{n:04d}") for n in range(1, 25)])
+
+        widths = page.evaluate("""() => {
+              const w = s => document.querySelector(s).getBoundingClientRect().width;
+              return {left: w('.event-detail__left'), side: w('.event-detail__side')};
+            }""")
+
+        assert widths["left"] > widths["side"]
+
+    def test_a_wide_dialog_scrolls_the_findings_without_moving_the_picture(self, page: Page, base_url: str):
+        """Two columns, each scrolling on its own, so reading down a long findings list
+        leaves the clip exactly where it was. The picture is held still by its column not
+        scrolling rather than by being pinned, which is why this asserts the body does
+        not scroll: a body that scrolls takes both columns with it.
+        """
+        page.set_viewport_size({"width": 1440, "height": 900})
+        self._open_modal(page, base_url, blips=[_blip(uuid=f"blip-uuid-{n:04d}") for n in range(1, 25)])
+
+        video = page.locator("[data-testid='event-detail-video']")
+        side = page.locator(".event-detail__side")
+        before = video.bounding_box()["y"]
+
+        side.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+
+        # Otherwise the assertion below is vacuous: nothing moved.
+        assert side.evaluate("el => el.scrollTop") > 0
+        assert page.locator(".event-detail__body").evaluate("el => el.scrollTop") == 0
+        assert video.bounding_box()["y"] == before
+
+    def test_a_narrow_dialog_pins_the_picture_and_lets_the_tools_scroll_away(self, page: Page, base_url: str):
+        """Stacked, there is only one column and the body scrolls, so the picture is
+        pinned instead — but only the picture. Both halves are asserted because each one
+        alone passes for the wrong reason: pinning the media column keeps every tool on
+        screen with it, and pinning nothing lets the picture scroll away.
+        """
+        page.set_viewport_size({"width": 640, "height": 900})
         self._open_modal(page, base_url, blips=[_blip(uuid=f"blip-uuid-{n:04d}") for n in range(1, 25)])
 
         video = page.locator("[data-testid='event-detail-video']")
@@ -1118,7 +1153,6 @@ class TestTheDetailModal:
         body = page.locator(".event-detail__body")
         body.evaluate("el => el.scrollTo(0, el.scrollHeight)")
 
-        # Otherwise the two assertions below are vacuous: nothing moved.
         assert body.evaluate("el => el.scrollTop") > 0
 
         expect(video).to_be_in_viewport()
@@ -1214,6 +1248,35 @@ class TestTheDetectionOverlay:
         self._open_modal(page, base_url, overlay=_overlay())
 
         expect(page.locator("[data-testid='clip-overlay-canvas']")).to_have_count(1)
+
+    def test_fullscreening_the_video_itself_is_promoted_to_the_wrapper(self, page: Page, base_url: str):
+        """The canvas is a sibling of the video, so fullscreening the video element shows
+        the picture with no boxes on it. `controlsList="nofullscreen"` hides the control
+        bar's own button, but only on Chromium — it is not standard, and Firefox and
+        Safari offer it regardless.
+
+        The request is made here the way that button makes it: on the video, from a real
+        click so it carries the user activation a fullscreen request needs.
+        """
+        self._open_modal(page, base_url, overlay=_overlay())
+        page.wait_for_selector("[data-testid='clip-overlay-canvas']")
+
+        # Stands in for a native control the headless browser does not render.
+        page.evaluate("""() => {
+              const video = document.querySelector("[data-testid='event-detail-video']");
+              const btn = document.createElement('button');
+              btn.id = 'native-fullscreen-stand-in';
+              btn.style.cssText = 'position:fixed;top:0;left:0;z-index:99999';
+              btn.onclick = () => video.requestFullscreen();
+              document.body.appendChild(btn);
+            }""")
+        page.locator("#native-fullscreen-stand-in").click()
+
+        wait_until(
+            page,
+            lambda: page.evaluate("() => document.fullscreenElement?.classList.contains('clip-overlay') === true"),
+            "the video's own fullscreen was never promoted to the overlay wrapper",
+        )
 
     def test_a_clip_without_a_sidecar_offers_no_overlay(self, page: Page, base_url: str):
         """Every clip written before this existed has no boxes, and they cannot be
@@ -1852,6 +1915,27 @@ class TestTheSwitchReviewQueue:
     @staticmethod
     def _switch(**overrides) -> dict:
         return _blip(kind="identity_switch", fault="tracker", harvestable=False, **overrides)
+
+    def test_the_queue_gets_the_width_it_asks_for(self, page: Page, base_url: str):
+        """Two crops side by side is the whole job, so the dialog asks for `--modal-w-lg`.
+        The shared `.app-modal-dialog` cap is declared later in the stylesheet and clamped
+        it to `--modal-w-sm` — the same fault the event modal had. Compared against the
+        token rather than a pixel count, so retuning the scale does not touch this.
+        """
+        page.set_viewport_size({"width": 1440, "height": 900})
+        self._open_queue(page, base_url, blips=[self._switch()])
+        expect(page.locator("[data-testid='blip-queue-progress']")).to_be_visible()
+
+        measured = page.evaluate("""() => {
+              const root = getComputedStyle(document.documentElement);
+              const px = name => parseFloat(root.getPropertyValue(name));
+              return {
+                dialog: document.querySelector('.blip-queue').getBoundingClientRect().width,
+                small: px('--modal-w-sm'),
+              };
+            }""")
+
+        assert measured["dialog"] > measured["small"]
 
     def test_the_queue_walks_the_switches_and_states_its_position(self, page: Page, base_url: str):
         self._open_queue(

@@ -357,6 +357,25 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
     else wrapper.requestFullscreen?.().catch(() => {});
   };
   wrapper.addEventListener('dblclick', onDoubleClick);
+
+  // `controlsList="nofullscreen"` hides the control bar's own fullscreen button, but only
+  // on Chromium — it is not a standard attribute, and Firefox and Safari show the button
+  // regardless. That button fullscreens the VIDEO, which leaves this canvas behind and is
+  // the same loss `onDoubleClick` exists to prevent, so wherever the request comes from
+  // it is promoted to the wrapper. The re-request runs on the activation that opened
+  // fullscreen in the first place; if a browser refuses it, exiting is still the honest
+  // outcome — boxes over the picture or no fullscreen, never a picture missing its boxes.
+  const onFullscreenChange = () => {
+    if (document.fullscreenElement === video) {
+      Promise.resolve(document.exitFullscreen?.())
+        .then(() => wrapper.requestFullscreen?.())
+        .catch(() => {});
+      return;
+    }
+    redraw();
+  };
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+
   const observer = new ResizeObserver(redraw);
   observer.observe(video);
   draw();
@@ -391,6 +410,7 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
       video.removeEventListener('loadedmetadata', onMetadata);
       video.removeEventListener('durationchange', onMetadata);
       wrapper.removeEventListener('dblclick', onDoubleClick);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
       if (rafHandle != null && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(rafHandle);
       canvas.remove();
       // Put the video back where it was before unwrapping, so a caller that kept a
