@@ -910,7 +910,15 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     const sessions = pageSessions.filter(session => selectedSessions.has(session.representativeUuid));
     const pages = await Promise.all(sessions.map(session => {
       const from = parseApiDate(session.startedAt);
-      const to = sessionWindowEnd(session);
+      // Not `sessionWindowEnd`: that deliberately returns null for an open visit so the
+      // drill-down filter spans "still going", and an unbounded window here would hand
+      // `limit: count` the *newest* count events of the identity (the query sorts by
+      // start descending) — a later visit's events, armed for whatever the bar does
+      // next. `endedAt` bounds event *starts* in either case: for a closed visit it is
+      // the last event's end, for an open one the last event's own start. The extra
+      // millisecond is the microsecond-truncation guard `sessionWindowEnd` documents.
+      const end = parseApiDate(session.endedAt);
+      const to = end ? new Date(end.getTime() + 1) : null;
       const query = {
         ...queryState(),
         ...groupDrilldownFilters(session, { splitByCamera }),
@@ -918,8 +926,6 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
         offset: 0,
       };
       if (from) query.startFrom = from.toISOString();
-      // An open visit has no end yet, and a bound equal to its start matches nothing —
-      // see `sessionWindowEnd`. Left unset it stays open-ended, which is what it is.
       if (to) query.startTo = to.toISOString();
       else delete query.startTo;
       return fetchWatchEvents(query);
@@ -1429,6 +1435,11 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     // more; the fold toggles must fetch rather than redraw rows for a different query.
     aggregate = null;
     selected.clear();
+    // Including the visits: the rows on screen are a different page or a different
+    // query now, and a key that is no longer in `pageSessions` counts as zero events
+    // while still arming the bar — "2 visits — 0 events" over a Delete that does
+    // nothing.
+    selectedSessions.clear();
     anchorIndex = -1;
 
     if (!sessions.length) {
