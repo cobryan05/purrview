@@ -7,6 +7,8 @@ docker-compose.override.yml
 # Local host/dev environment helpers — not part of the project
 cl.sh
 cl_install.sh
+.clipwatch.py
+.clipwatch.seen
 uv.lock
 
 # Model binary files — too large for git (use DVC or direct copy).
