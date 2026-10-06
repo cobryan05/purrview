@@ -2772,3 +2772,77 @@ class TestAvailabilitySurvivesAReconnect:
 
         assert client.published, "availability was not published with the client paho supplied"
         assert client.subscribed == ["pv/cmd"]
+
+
+WATCHING_SET_TOPIC = f"{PREFIX}/living-room-watcher/kitchen-cam/watching/set"
+WATCHING_STATE_TOPIC = f"{PREFIX}/living-room-watcher/kitchen-cam/watching"
+
+
+def _watching_bridge(profiles, retained=None):
+    """A bridge primed as a reconcile would leave it, with the watching switch wired up."""
+    bridge, fake = _armed_bridge(profiles, retained)
+    bridge._subscribe_watching()
+    return bridge, fake
+
+
+class TestTheCameraWatchingSwitch:
+    """Taking one camera out of a running watcher from Home Assistant.
+
+    A standing decision, not an action — so unlike the recording switch it is restored
+    from its own retained topic, and unlike `WatchProfileSource.enabled` it never touches
+    the config DB. The watcher half is in `tests/tasks_server/test_watch_source_watching.py`.
+    """
+
+    def test_every_camera_is_watched_until_something_says_otherwise(self):
+        """The default that stops this feature ever being the reason a camera fails to
+        start: a source the bridge has never heard about is watched."""
+        bridge = MqttBridge(db_api_client=None)
+
+        assert bridge.is_source_watching("src-never-mentioned") is True
+
+    def test_the_camera_device_offers_the_switch(self):
+        topics = _desired([_profile()])
+
+        assert _topic_for(topics, source_device_id("src-1"), "watching") is not None
+
+    async def test_turning_it_off_in_ha_is_remembered_and_echoed(self):
+        bridge, fake = _watching_bridge([_profile()])
+
+        assert fake.deliver(WATCHING_SET_TOPIC, b"OFF") == 1
+        await asyncio.sleep(0)
+
+        assert bridge.is_source_watching("src-1") is False
+        echoes = [c for c in fake.calls if c["topic"] == "living-room-watcher/kitchen-cam/watching"]
+        assert echoes and echoes[-1]["payload"] == "OFF"
+        # Retained, which is what carries the decision across a restart.
+        assert echoes[-1]["retain"] is True
+
+    async def test_a_payload_that_is_neither_on_nor_off_changes_nothing(self):
+        """A malformed or empty retained message must not read as "turn this camera off" —
+        the failure direction that silently stops a camera recording."""
+        bridge, fake = _watching_bridge([_profile()])
+
+        fake.deliver(WATCHING_SET_TOPIC, b"")
+        fake.deliver(WATCHING_SET_TOPIC, b"maybe")
+        await asyncio.sleep(0)
+
+        assert bridge.is_source_watching("src-1") is True
+
+    async def test_a_camera_turned_off_stays_off_across_a_restart(self):
+        """The one way this differs from the recording switch. Without the restore a
+        service restart quietly puts every camera somebody turned off back on, which is
+        the privacy-invasive direction and reports nothing."""
+        bridge, _fake = _watching_bridge([_profile()], retained={WATCHING_STATE_TOPIC: b"OFF"})
+
+        await bridge._restore_watching_state()
+
+        assert bridge.is_source_watching("src-1") is False
+
+    async def test_the_command_topic_is_not_read_back_as_state(self):
+        """`.../watching/set` is what HA writes; reading it back as state would let a
+        stale command outlive the decision it was meant to make."""
+        bridge, _fake = _watching_bridge([_profile()], retained={WATCHING_SET_TOPIC: b"OFF"})
+
+        await bridge._restore_watching_state()
+
+        assert bridge.is_source_watching("src-1") is True

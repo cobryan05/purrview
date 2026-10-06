@@ -544,6 +544,26 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         "name": None,
         "topic": f"{base}/image",
     }
+    # Take one camera out of a running watcher, and put it back, without stopping the
+    # watcher or touching the profile the editor shows. Off closes whatever events it was
+    # holding, cuts any recording in flight, and hands back the stream lease — so the
+    # camera goes genuinely idle rather than being read and ignored, which is what lets a
+    # Ring camera get its own motion detection back.
+    #
+    # Distinct from `WatchProfileSource.enabled`, and the distinction is the same one the
+    # rules draw between `enabled` and armed: `enabled` is the editor's standing config
+    # and takes effect when a watcher is built, this is the running state and takes
+    # effect on the next pass.
+    cmps["watching"] = {
+        "p": "switch",
+        "unique_id": f"{source_device_id(source.uuid)}_watching",
+        "name": "watching",
+        "icon": "mdi:camera-off",
+        "command_topic": f"{base}/watching/set",
+        "state_topic": f"{base}/watching",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+    }
     # Start and stop a recording that no rule asked for. A switch rather than a button
     # because it has a state worth seeing and an automation has to be able to turn it
     # *off* — a button could only ever start one, and the cap would then be the only way
@@ -1675,6 +1695,16 @@ class MqttBridge:
         #: camera, silently blinding it. The reconcile publishes `OFF` instead.
         self._recording: Dict[str, bool] = {}
         self._recording_subscribed: bool = False
+        #: source_uuid → whether this camera should be watched at all. Polled by the
+        #: watchers like the two above.
+        #:
+        #: Restored from its retained topic and kept across a reconnect, so it follows
+        #: `_armed` rather than `_recording`: taking a camera out is a standing decision,
+        #: and quietly resuming a camera somebody turned off — because the broker blipped
+        #: or the service restarted — is the privacy-invasive direction, exactly as
+        #: re-arming a rule would be.
+        self._watching: Dict[str, bool] = {}
+        self._watching_subscribed: bool = False
         #: The loop this bridge was started on, captured so inbound MQTT callbacks —
         #: which arrive on paho's network thread — have somewhere to hand work back to.
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1695,6 +1725,34 @@ class MqttBridge:
         recording.
         """
         return self._recording.get(source_uuid, False)
+
+    def is_source_watching(self, source_uuid: str) -> bool:
+        """Whether this camera should be watched. Unknown sources are watched.
+
+        Defaults the way `is_rule_armed` does and for the same reason: a camera nobody
+        has an opinion about must keep working, so the feature can only ever be the
+        reason a camera stops, never the reason one fails to start.
+        """
+        return self._watching.get(source_uuid, True)
+
+    def set_source_watching(self, source_uuid: str, watching: bool) -> None:
+        """Record the decision and echo it. **Must be called on the event loop.**
+
+        The single writer, as with the other two switches: the HA switch arrives through
+        `_on_watching_command`, and the status card's buttons call this directly, so the
+        two cannot disagree about which cameras are being watched.
+        """
+        if self._watching.get(source_uuid, True) == watching:
+            return
+        self._watching[source_uuid] = watching
+        self._publish_source_watching(source_uuid, watching)
+
+    def _publish_source_watching(self, source_uuid: str, watching: bool) -> None:
+        base = self._slugs.source_base(source_uuid) if self._slugs else None
+        if base is None or self._publisher is None:
+            return
+        # Retained, and that is what makes the flag outlive the process — see `_watching`.
+        self._publisher.publish(f"{base}/watching", "ON" if watching else "OFF", retain=True)
 
     def set_source_recording(self, source_uuid: str, recording: bool) -> None:
         """Record a recording request and echo it. **Must be called on the event loop.**
@@ -1827,6 +1885,9 @@ class MqttBridge:
         # running. See `_recording`.
         self._recording_subscribed = False
         self._recording.clear()
+        # Subscription flag only. `_watching` is kept, like `_armed` and unlike
+        # `_recording`: a camera somebody took out stays out across a reconnect.
+        self._watching_subscribed = False
 
     async def reconcile(self) -> None:
         """Connect if not already connected, then republish discovery against current
@@ -1980,9 +2041,15 @@ class MqttBridge:
         # clears a retained `ON` a killed process left behind, so the switch starts off
         # and no camera is recording because of a message that outlived its watcher.
         self._subscribe_recording()
+        # Restored, unlike recording, because taking a camera out is a standing decision
+        # — see `_watching`. The publish below re-states it so a switch that appeared
+        # after the flag was set does not sit unknown.
+        await self._restore_watching_state()
+        self._subscribe_watching()
         for profile in profiles:
             for source in profile.sources:
                 self._publish_source_recording(source.uuid, self.wants_recording(source.uuid))
+                self._publish_source_watching(source.uuid, self.is_source_watching(source.uuid))
         subjects = self._subject_views(profiles)
         # ⚠️ Opted-out labels are **left out**, for the same reason `build_slug_index`
         # drops an opted-out rule or camera: this map is the gate every subject publisher
@@ -2184,6 +2251,79 @@ class MqttBridge:
             self._recording[source_uuid] = value == "ON"
             return
         loop.call_soon_threadsafe(self.set_source_recording, source_uuid, value == "ON")
+
+    def _subscribe_watching(self) -> None:
+        """Subscribe to every camera's watching command topic, once.
+
+        A wildcard for the same reason as the other two: cameras are added, renamed and
+        removed without this process being told.
+        """
+        if self._publisher is None or self._watching_subscribed:
+            return
+        self._publisher.subscribe("+/+/watching/set", self._on_watching_command)
+        self._watching_subscribed = True
+
+    def _source_uuid_from_watching_topic(self, topic: str, *, command: bool) -> Optional[str]:
+        """`<profile>/<source>/watching[/set]` → source uuid, or None.
+
+        None for a camera this process does not know, which is the ordinary case for a
+        retained flag belonging to a source since deleted.
+        """
+        parts = topic.split("/")
+        if command:
+            if len(parts) < 4 or parts[-1] != "set" or parts[-2] != "watching":
+                return None
+            parts = parts[:-1]
+        elif len(parts) < 3 or parts[-1] != "watching":
+            return None
+        return self._slugs.source_uuid_for_slugs(parts[-3], parts[-2]) if self._slugs else None
+
+    def _on_watching_command(self, topic: str, payload: bytes) -> None:
+        """Handle the watching switch being flipped in Home Assistant.
+
+        ⚠️ Runs on paho's network thread — see `_on_armed_command`. Parses and hops back
+        to the loop, and does nothing else here.
+        """
+        source_uuid = self._source_uuid_from_watching_topic(topic, command=True)
+        if source_uuid is None:
+            return
+        value = payload.decode(errors="replace").strip().upper()
+        if value not in ("ON", "OFF"):
+            logger.debug("Ignoring unrecognised watching payload %r on %s", value, topic)
+            return
+        loop = self._loop
+        if loop is None:
+            # Nothing to echo through yet. Kept so a watcher starting later still reads
+            # the right answer from `is_source_watching`.
+            self._watching[source_uuid] = value == "ON"
+            return
+        loop.call_soon_threadsafe(self.set_source_watching, source_uuid, value == "ON")
+
+    async def _restore_watching_state(self) -> None:
+        """Re-read the retained watching flags, once per process.
+
+        The counterpart to `_restore_armed_state`, and it exists for the same reason:
+        without it a service restart would quietly put every camera somebody had taken
+        out back on. Failure leaves every camera watched, which is the pre-feature
+        behaviour.
+        """
+        if self._publisher is None or self._watching:
+            return
+        try:
+            # Three levels, so the four-level command topic cannot be read back as state.
+            retained = await self._publisher.read_retained("+/+/watching")
+        except Exception:
+            logger.warning("Could not read retained camera watching; every camera starts watched", exc_info=True)
+            return
+        restored = 0
+        for topic, payload in retained.items():
+            source_uuid = self._source_uuid_from_watching_topic(topic, command=False)
+            if source_uuid is None:
+                continue
+            self._watching[source_uuid] = payload.decode(errors="replace").strip().upper() == "ON"
+            restored += 1
+        if restored:
+            logger.info("MQTT bridge restored watching for %s camera(s)", restored)
 
     def _rule_uuid_from_topic(self, topic: str) -> Optional[str]:
         """`<prefix>/<profile>/rules/<rule>/armed[/set]` → rule uuid, or None.
