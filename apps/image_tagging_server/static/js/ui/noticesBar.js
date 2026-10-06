@@ -9,7 +9,13 @@
  * Subscribes to /api/notices/stream (SSE) for push updates. The bar is
  * hidden when there are no active notices and shown automatically when any arrive.
  *
- * Notice shape: { key: string, level: "info"|"warning"|"error", message: string }
+ * Notice shape: { key: string, level: "info"|"warning"|"error", message: string,
+ *                 actions?: [{ label: string, url: string }] }
+ *
+ * A notice carrying `actions` is one the user has to answer, not just read: each
+ * action is a button that POSTs to its url, and the next SSE frame is what removes
+ * the notice. Urls are restricted to relative `/api/` paths — a notice is backend
+ * text, and the bar must not be a way to aim a POST somewhere else.
  *
  * The bar is fixed to the bottom above the whole app, so its height is capped
  * and the list scrolls inside it: an outage produces one notice per unreachable
@@ -18,6 +24,7 @@
  */
 
 import { suspendWhileHidden } from '/app-static/js/shared/visibility.js';
+import { toast } from '/app-static/js/ui/utils/logging.js';
 
 const LEVEL_ICONS = {
   info: 'ℹ',
@@ -30,6 +37,11 @@ const LEVEL_ICONS = {
 const LEVEL_RANK = ['error', 'warning', 'info'];
 
 const COLLAPSED_KEY = 'ww_notices_bar_collapsed';
+
+/** Same-origin API paths only — see the action note in the module docstring. */
+function _safeActionUrl(url) {
+  return typeof url === 'string' && url.startsWith('/api/') && !url.startsWith('//') ? url : null;
+}
 
 function _readCollapsed() {
   try { return localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { return false; }
@@ -113,6 +125,30 @@ export function mountNoticesBar(containerId = 'notices-bar') {
     msg.className = 'notices-bar__message';
     msg.textContent = notice.message || '';
     item.appendChild(msg);
+
+    for (const action of notice.actions ?? []) {
+      const url = _safeActionUrl(action?.url);
+      if (!url) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'notices-bar__action';
+      btn.textContent = action.label || 'OK';
+      btn.dataset.testid = 'notice-action';
+      btn.addEventListener('click', async () => {
+        // Disabled for the round trip, not removed: the notice is only gone once the
+        // backend says so, and a button that vanishes on click leaves the row looking
+        // answered while the write is still in flight.
+        btn.disabled = true;
+        try {
+          const res = await fetch(url, { method: 'POST' });
+          if (!res.ok) throw new Error(`${res.status}`);
+        } catch (err) {
+          btn.disabled = false;
+          toast(`Could not apply "${btn.textContent}"`, 4000);
+        }
+      });
+      item.appendChild(btn);
+    }
 
     return item;
   }

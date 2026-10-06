@@ -11,7 +11,12 @@ The decoder already knows how to do better. `-ec favor_inter` fills a damaged ma
 from the *previous* frame instead of guessing within the current one, which for a static
 scene is very nearly the right pixels. But concealment happens at decode time, so it
 only reaches the file by re-encoding — which is why this is opt-in per camera rather
-than something every clip pays for.
+than something every clip pays for. The switch is `repair_corruption` on the source,
+read off the provider and carried to the clip action on its `ActionContext`.
+
+A camera that has *not* opted in gets `probe_for_corruption` instead: the same decode
+scan with no encode, bounded per source, so the app can suggest the switch rather than
+leaving the user to guess which of their cameras is lossy. See `clipRepairAdvice`.
 
 Two rules this file exists to keep:
 
@@ -47,6 +52,19 @@ DURATION_TOLERANCE_S = 0.25
 #: Below this many decoder errors a clip is not worth a full re-encode — a handful of
 #: damaged macroblocks in one frame is a flicker nobody sees.
 MIN_ERRORS_TO_REPAIR = 5
+
+#: Help text for the per-source switch. Lives here rather than in either provider so the
+#: two cannot drift; both relay-capable providers import it into their `params_schema`.
+REPAIR_CORRUPTION_DESCRIPTION = (
+    "Repair frames this camera's stream lost packets in, instead of leaving the picture to "
+    "break up. A lossy camera \u2014 anything over wifi, and the Ring cameras in particular "
+    "\u2014 drops parts of a frame, and the player renders the damage as a band of noise that "
+    "lasts until the next keyframe. With this on, the damaged part of the frame is filled in "
+    "from the frame before it, so the picture holds still rather than turning to garbage. Only "
+    "clips that are actually damaged are re-encoded, and it does not recover video the camera "
+    "never sent \u2014 a clip that jumps still jumps. Costs a minute or two of background CPU on "
+    "a long clip, so leave it off for cameras with a clean feed."
+)
 
 #: The live app shares this box, and a 1080p re-encode will take every core it is given.
 #: Clips have no deadline; the app does.
@@ -166,6 +184,23 @@ async def repair_if_corrupt(path: Path, *, enabled: bool = True) -> dict:
         partial.unlink(missing_ok=True)
 
 
+async def probe_for_corruption(path: Path) -> Optional[int]:
+    """Count `path`'s decoder errors without touching the file. None if it can't be read.
+
+    The scan half of `repair_if_corrupt`, for a camera that has *not* opted in: it is one
+    decode pass with no encode, so it costs a fraction of a repair and can be spent on a
+    camera that turns out to be clean. Bounded by the caller — see
+    `clipRepairAdvice.wants_probe`.
+    """
+    if not path.is_file():
+        return None
+    try:
+        return await asyncio.to_thread(_count_errors, path)
+    except Exception as exc:
+        logger.warning("Could not scan %s for decoder errors: %s", path.name, exc)
+        return None
+
+
 #: How deep the backlog may get before new clips are left alone. A repair that never
 #: runs leaves the file exactly as the recorder wrote it, which is what every failure
 #: path above already settles for.
@@ -190,14 +225,19 @@ class _RepairWorker:
     def retain(self) -> None:
         self._owners += 1
 
-    def submit(self, path: Path) -> bool:
-        """Queue `path` for repair. False when the backlog is full and it was left as-is."""
+    def submit(self, path: Path, probe: Optional[dict] = None) -> bool:
+        """Queue `path`. False when the backlog is full and it was left as-is.
+
+        With `probe` the job is scan-only and the dict says which source to attribute the
+        result to; without it the clip is repaired in place. Both share the one queue so a
+        probe can never run beside a re-encode — the whole point of serialising here.
+        """
         if self._queue is None:
             self._queue = asyncio.Queue(maxsize=MAX_PENDING_REPAIRS)
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._drain(), name="clip-repair")
         try:
-            self._queue.put_nowait(path)
+            self._queue.put_nowait((path, probe))
         except asyncio.QueueFull:
             logger.warning("Repair backlog is full; leaving %s as recorded", path.name)
             return False
@@ -207,9 +247,12 @@ class _RepairWorker:
         queue = self._queue
         assert queue is not None
         while True:
-            path = await queue.get()
+            path, probe = await queue.get()
             try:
-                await repair_if_corrupt(path, enabled=True)
+                if probe is None:
+                    await repair_if_corrupt(path, enabled=True)
+                else:
+                    await _run_probe(path, probe)
             except Exception:
                 logger.exception("Repair worker failed on %s", path.name)
             finally:
@@ -247,6 +290,31 @@ def retain_repairs() -> None:
 def submit_repair(path: Path) -> bool:
     """Hand a finished clip to the background repair worker."""
     return _repairs.submit(path)
+
+
+def submit_probe(path: Path, *, source_uuid: str, source_name: str = "") -> bool:
+    """Queue a scan-only pass over a clip from a camera that has not opted in."""
+    return _repairs.submit(path, probe={"sourceUuid": source_uuid, "sourceName": source_name})
+
+
+async def _run_probe(path: Path, probe: dict) -> None:
+    """Scan one clip and, if it is badly damaged, record a finding for the notices bar."""
+    from . import clipRepairAdvice
+
+    source_uuid = probe["sourceUuid"]
+    # Re-checked here, not only at submit time: several clips for the same camera can sit
+    # in the queue together, and the user may have answered the suggestion in between.
+    if not clipRepairAdvice.wants_probe(source_uuid):
+        return
+    errors = await probe_for_corruption(path)
+    if errors is None:
+        return
+    if clipRepairAdvice.record_probe(source_uuid, errors, path.name, source_name=probe.get("sourceName", "")):
+        logger.info(
+            "%s decoded with %d error(s); suggesting clip repair for it",
+            probe.get("sourceName") or source_uuid,
+            errors,
+        )
 
 
 async def release_repairs() -> None:

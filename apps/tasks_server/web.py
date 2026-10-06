@@ -46,6 +46,10 @@ class CreateTaskConfigResponse(StatusResponse):
     config_uuid: Optional[str] = None
 
 
+class ClipRepairAnswerResponse(StatusResponse):
+    detail: str = ""
+
+
 class DeleteTasksPayload(Payload):
     task_uuids: List[str]
 
@@ -846,6 +850,36 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdateTaskConfigResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.post(
+            "/api/clip-repair/enable/{source_uuid}",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="enable_clip_repair",
+            response_model=ClipRepairAnswerResponse,
+        )
+        async def enable_clip_repair_api(source_uuid: str) -> ClipRepairAnswerResponse:
+            """Turn on clip repair for one camera, answering its suggestion notice."""
+            try:
+                detail = await self._manager.answer_clip_repair_suggestion(source_uuid, enable=True)
+                return ClipRepairAnswerResponse(detail=detail)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ClipRepairAnswerResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.post(
+            "/api/clip-repair/dismiss/{source_uuid}",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="dismiss_clip_repair",
+            response_model=ClipRepairAnswerResponse,
+        )
+        async def dismiss_clip_repair_api(source_uuid: str) -> ClipRepairAnswerResponse:
+            """Decline clip repair for one camera, for good — the decision is persisted."""
+            try:
+                detail = await self._manager.answer_clip_repair_suggestion(source_uuid, enable=False)
+                return ClipRepairAnswerResponse(detail=detail)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ClipRepairAnswerResponse(status=WebApp.FAILURE_KEY, message=str(e))
 
         @self._app.post(
             "/task_schema",

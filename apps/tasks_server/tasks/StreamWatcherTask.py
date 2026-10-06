@@ -39,6 +39,7 @@ import db_client
 import inference_client
 from db_client.api.labels_api import LabelsApi
 from db_client.api.model_groups_api import ModelGroupsApi
+from db_client.api.settings_api import SettingsApi
 from db_client.api.sources_api import SourcesApi
 from db_client.api.watch_profiles_api import WatchProfilesApi
 from db_client.models.get_source_regions_payload import GetSourceRegionsPayload
@@ -73,6 +74,7 @@ from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_an
 from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.labelHelper import build_label_ancestry_map, build_label_group_map, build_label_metadata_map
+from apps.helpers.recordings import clipRepairAdvice
 from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
 from apps.helpers.tracking.Registry import create_tracker
@@ -1324,6 +1326,48 @@ class StreamWatcherTask(Task):
             )
         return ring
 
+    async def _load_repair_dismissals(self, db_api_client: db_client.ApiClient) -> None:
+        """Seed the "don't suggest clip repair for this camera" set from Settings.
+
+        Read once here rather than per notice: `get_notices()` is called from `/status`,
+        which the notices SSE loop polls every few seconds.
+        """
+        api = SettingsApi(db_api_client)
+        try:
+            resp = await asyncio.to_thread(api.get_setting, clipRepairAdvice.CLIP_REPAIR_DISMISSED_SETTING_KEY)
+            clipRepairAdvice.load_dismissed(resp.value)
+        except Exception:
+            # A missing key is the ordinary case on a fresh install, and a settings read
+            # that fails is not a reason to refuse to watch cameras.
+            logger.debug("Could not read clip-repair dismissals", exc_info=True)
+
+    def adopt_repair_corruption(self, source_uuid: str) -> bool:
+        """Turn clip repair on for one of this watcher's live sources. True if it had it.
+
+        A task reads its configuration once, in `_init`, so a source edited underneath a
+        running watcher normally needs a restart to take effect — which for this switch
+        would mean the user answers the notice, is told repair is on, and watches the next
+        clip break up anyway. The flag is read off the provider afresh on every event, so
+        setting it on the live object is enough and the next clip is repaired.
+        """
+        for pipeline in self._pipelines:
+            if pipeline.source_uuid == source_uuid:
+                pipeline.provider.repair_corruption = True
+                return True
+        return False
+
+    def get_notices(self) -> list[dict]:
+        """Advisories from this watcher, including cameras whose clips look damaged.
+
+        The suggestion only shows while the watcher that found it is running, which is
+        also the only time the camera is producing clips to be annoyed by.
+        """
+        notices = super().get_notices()
+        watched = {p.source_uuid for p in self._pipelines}
+        return notices + [
+            clipRepairAdvice.notice_for(f) for f in clipRepairAdvice.findings() if f["sourceUuid"] in watched
+        ]
+
     async def _load_mqtt_settings(self, db_api_client: db_client.ApiClient) -> Optional[MqttSettings]:
         """Read broker config from global Settings — shared with `MqttBridge`, which
         reads the same one broker every MQTT publisher in the app uses."""
@@ -1681,6 +1725,8 @@ class StreamWatcherTask(Task):
         swept_spool = await asyncio.to_thread(sweep_spool_root, self._spool_root())
         if swept_spool:
             self.log(f"Swept {swept_spool} spooled event(s) left behind by a previous run")
+
+        await self._load_repair_dismissals(db_api_client)
 
         self._status_msg = "Building pipelines"
         await self._build_pipelines(db_api_client)
@@ -2997,6 +3043,7 @@ class StreamWatcherTask(Task):
             relay_path=(getattr(pipeline.provider, "relay_path", "") or None) if pipeline else None,
             buffered=bool(pipeline and pipeline.buffered),
             retention_s=pipeline.retention_s if pipeline else 0.0,
+            repair_corruption=bool(pipeline and getattr(pipeline.provider, "repair_corruption", False)),
             frame=pipeline.last_frame if pipeline else None,
             full_frame=pipeline.last_full_frame if pipeline else None,
             detections=list(pipeline.detections) if pipeline else [],

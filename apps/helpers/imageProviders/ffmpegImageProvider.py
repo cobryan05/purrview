@@ -12,6 +12,7 @@ import numpy as np
 from apps import APPS, APPS_CONFIG
 from apps.helpers.apiCall import bind_default_timeout
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.recordings.repairClip import REPAIR_CORRUPTION_DESCRIPTION
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 from apps.helpers.streams.ingest import resolve_ingest_tier
 
@@ -79,6 +80,7 @@ class FfmpegImageProvider(ImageProvider):
         loop: bool = True,
         rtsp_relay: bool = True,
         min_capture_interval: float = 0.0,
+        repair_corruption: bool = False,
     ):
         output_args = {
             "format": "rawvideo",
@@ -98,6 +100,10 @@ class FfmpegImageProvider(ImageProvider):
         }  # decode raw frames
         self._video_path: str = video_path.strip()
         self._loop: bool = loop
+        #: Whether clips cut from this camera are worth re-encoding to hide packet loss.
+        #: A property of the camera, not of any one action, so it is read off the provider
+        #: the way `relay_path` is — see `ActionContext.repair_corruption`.
+        self.repair_corruption: bool = bool(repair_corruption)
         self._frame_size: Optional[Tuple[int, int]] = None
         self._buffer: bytes = b""
         self._rtsp_relay_api: Optional[stream_client.ApiClient] = None
@@ -559,5 +565,12 @@ class FfmpegImageProvider(ImageProvider):
                 "required": False,
                 "default": 0.0,
                 "description": "Minimum seconds between frames returned by this source. 0 = no source-level limit (the task's own interval applies).",
+            },
+            "repair_corruption": {
+                "label": "Repair Corrupt Frames",
+                "type": "boolean",
+                "required": False,
+                "default": False,
+                "description": REPAIR_CORRUPTION_DESCRIPTION,
             },
         }

@@ -21,6 +21,7 @@ from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
 from apps.helpers.consts import TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.mqtt.bridge import MqttBridge
+from apps.helpers.recordings import clipRepairAdvice
 from apps.helpers.recordings.streamClipClient import StreamClipClient
 from apps.helpers.serverUrls import read_url_overrides
 from apps.helpers.serviceStatus import row, section
@@ -133,6 +134,64 @@ class Manager:
 
     def get_mqtt_bridge(self) -> MqttBridge:
         return self._mqtt_bridge
+
+    async def answer_clip_repair_suggestion(self, source_uuid: str, *, enable: bool) -> str:
+        """Act on a "this camera's clips look damaged" notice, and stop offering it.
+
+        Either answer marks the source decided, so the notice does not come back on the
+        next clip. Only the decline is persisted: turning repair on is already recorded
+        where it belongs, on the source itself, and reading it back is what a restart
+        does anyway.
+        """
+        if enable:
+            await self.db_call(self._enable_source_repair, source_uuid)
+            clipRepairAdvice.decide(source_uuid)
+            self._adopt_repair_corruption(source_uuid)
+            return "Repair is on for this camera; its damaged clips will be re-encoded."
+
+        clipRepairAdvice.decide(source_uuid)
+        settings_api = db_client.SettingsApi(self._db_api_client)
+        await self.db_call(
+            settings_api.set_setting,
+            clipRepairAdvice.CLIP_REPAIR_DISMISSED_SETTING_KEY,
+            db_models.SetSettingPayload(value=clipRepairAdvice.dismissed_json()),
+        )
+        return "Left as recorded. This camera will not be suggested again."
+
+    def _adopt_repair_corruption(self, source_uuid: str) -> None:
+        """Push the new flag into whichever running watcher owns this source.
+
+        Without this the write lands in the DB and the running watcher keeps the value it
+        read at `_init` — so the notice would report success and the next clip would break
+        up exactly as before, until someone restarted the task by hand.
+        """
+        for ti in self._running_tasks.values():
+            adopt = getattr(ti.task, "adopt_repair_corruption", None)
+            if adopt is not None and adopt(source_uuid):
+                return
+
+    def _enable_source_repair(self, source_uuid: str) -> None:
+        """Set `repair_corruption` on one source, keeping the rest of its params.
+
+        `update_source` replaces `params` wholesale, so the surrounding keys — the RTSP
+        url, the broker, the capture interval — have to be read back and resent. Writing
+        only the one key would blank the source's whole configuration.
+        """
+        sources_api = db_client.SourcesApi(self._db_api_client)
+        resp = sources_api.get_sources()
+        source = next((s for s in (resp.sources or []) if s.uuid == source_uuid), None)
+        if source is None:
+            raise ValueError(f"Source {source_uuid} not found")
+        params = dict(source.params or {})
+        params["repair_corruption"] = True
+        sources_api.update_source(
+            db_models.UpdateSourcePayload(
+                source_uuid=source_uuid,
+                source_name=source.name,
+                image_provider=source.typename,
+                provider_params=params,
+            )
+        )
 
     def get_inference_api_client(self) -> inference_client.ApiClient:
         """The inference client to use *right now*.

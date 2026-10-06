@@ -7976,6 +7976,38 @@ button.filter-active {
   padding: 0.3em 1.2em;
   font-size: 0.82em;
   border-top: 1px solid transparent;
+  /* A notice with answer buttons is the only row wide enough to need it: at phone
+     width the buttons drop below the message rather than squeezing it to nothing. */
+  flex-wrap: wrap;
+}
+
+/* Same Pico override as `__toggle` — display:block and width:100% would give each
+   answer its own full-width line. Bordered rather than bare, because unlike the
+   toggle these commit the user to something. */
+.notices-bar__action {
+  flex-shrink: 0;
+  width: auto;
+  margin: 0;
+  padding: 0.1em 0.7em;
+  line-height: 1.5;
+  background: none;
+  border: 1px solid currentColor;
+  border-radius: var(--pico-border-radius, 4px);
+  color: inherit;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+
+.notices-bar__action:hover:not(:disabled),
+.notices-bar__action:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  border-color: currentColor;
+  color: inherit;
+}
+
+.notices-bar__action:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .notices-bar__item--info {

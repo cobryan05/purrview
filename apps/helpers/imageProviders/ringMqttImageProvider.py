@@ -78,6 +78,7 @@ from PIL import Image
 
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.mqttClient import MqttClient
+from apps.helpers.recordings.repairClip import REPAIR_CORRUPTION_DESCRIPTION
 
 from .ffmpegImageProvider import FfmpegImageProvider
 from .imageProvider import (
@@ -160,6 +161,7 @@ class RingMqttImageProvider(ImageProvider):
         live_on_motion: bool = True,
         live_hold_s: float = 15.0,
         min_capture_interval: float = 0.0,
+        repair_corruption: bool = False,
     ):
         self._broker_address: str = broker_address
         self._broker_port: int = int(broker_port)
@@ -173,6 +175,10 @@ class RingMqttImageProvider(ImageProvider):
         self._rtsp_port: int = int(rtsp_port)
         self._live_on_motion: bool = bool(live_on_motion)
         self._live_hold_s: float = float(live_hold_s)
+        #: See `FfmpegImageProvider.repair_corruption`. Read off this provider rather than
+        #: off `_live_provider`: the flag has to answer while the camera is idle too, and
+        #: the delegate only exists while it is live.
+        self.repair_corruption: bool = bool(repair_corruption)
 
         self._min_capture_interval: float = min_capture_interval
         self.min_capture_interval: float = min_capture_interval
@@ -789,5 +795,12 @@ class RingMqttImageProvider(ImageProvider):
                     "Minimum seconds between frames returned by this source. "
                     "0 = no source-level limit (the task's own interval applies)."
                 ),
+            },
+            "repair_corruption": {
+                "label": "Repair Corrupt Frames",
+                "type": "boolean",
+                "required": False,
+                "default": False,
+                "description": REPAIR_CORRUPTION_DESCRIPTION,
             },
         }

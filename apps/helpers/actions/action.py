@@ -38,6 +38,10 @@ class ActionContext:
     buffered: bool = False
     #: Seconds of rewind actually configured, for clamping pre-roll at cut time.
     retention_s: float = 0.0
+    #: Whether this camera's clips are worth re-encoding to hide packet loss. A property
+    #: of the camera, so it is configured on the source and injected here rather than
+    #: repeated on every action that writes video for it.
+    repair_corruption: bool = False
     #: Latest analysed frame, for snapshot actions. Numpy array or None. This is the
     #: *downscaled* frame — the one inference ran on, and the one `detections` are in
     #: the pixel space of.

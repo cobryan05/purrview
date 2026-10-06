@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from apps.helpers.recordings import repairClip
+from apps.helpers.recordings import clipRepairAdvice, repairClip
 from apps.helpers.recordings.repairClip import repair_if_corrupt
 
 
@@ -178,10 +178,11 @@ class TestTheErrorScan:
         assert not repairClip._ERROR_PATTERN.search("[mp4 @ 0x55] track 0 has no keyframes")
 
 
-class TestTheClipActionAsksForItOnlyWhenConfigured:
-    """Concealment is per camera because it is a property of the camera's stream, and a
-    clean feed must not pay a re-encode for it. The clip action scoped to those cameras
-    is what carries the choice.
+class TestTheCameraCarriesTheChoiceNotTheAction:
+    """Concealment is a property of the camera's stream, so the switch lives on the
+    source and reaches the action through its context. An action cannot be configured
+    for it: two clip actions on one lossy camera could otherwise disagree, and anything
+    else that re-encodes that camera's video would have no way to ask.
     """
 
     @staticmethod
@@ -191,25 +192,77 @@ class TestTheClipActionAsksForItOnlyWhenConfigured:
         return RecordClipAction(**kwargs)
 
     @staticmethod
+    def _context(*, repair: bool, source_uuid: str = "src-1"):
+        from apps.helpers.actions.action import ActionContext
+
+        return ActionContext(
+            profile_uuid="p",
+            profile_name="P",
+            source_uuid=source_uuid,
+            source_name="Garage",
+            repair_corruption=repair,
+        )
+
+    @staticmethod
     async def _settle(action):
         """Close the action and let the worker finish whatever it had started."""
         await asyncio.sleep(0)
         await action.close()
 
-    async def test_it_is_off_by_default(self, tmp_path, monkeypatch):
-        called = []
+    @pytest.fixture(autouse=True)
+    def _fresh_advice(self):
+        """Probe bookkeeping is process-wide, so a test must not inherit another's."""
+        clipRepairAdvice.reset()
+        yield
+        clipRepairAdvice.reset()
 
-        async def _fake(path, *, enabled=True):
-            called.append(path)
-            return {"repaired": False}
+    async def test_the_action_cannot_be_configured_for_it(self):
+        """The knob is gone from the action: a per-camera fact must have exactly one
+        place to be set, or two actions on one camera can disagree."""
+        from apps.helpers.actions.recordClipAction import RecordClipAction
 
-        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
+        assert "repair_corruption" not in RecordClipAction.params_schema()
+
+    async def test_a_source_that_opted_in_is_repaired(self, tmp_path, monkeypatch):
+        repaired, probed = [], []
+        monkeypatch.setattr(repairClip, "submit_repair", lambda p: repaired.append(p) or True)
+        monkeypatch.setattr(repairClip, "submit_probe", lambda p, **kw: probed.append(p) or True)
+
         action = self._action()
-        action._conceal_damage({}, tmp_path / "x.mp4")
-        await asyncio.sleep(0)
+        action._conceal_damage({}, tmp_path / "clip.mp4", self._context(repair=True))
+        await self._settle(action)
 
-        assert called == []
-        assert action.repair_corruption is False
+        assert repaired == [tmp_path / "clip.mp4"]
+        assert probed == []
+
+    async def test_a_source_that_did_not_is_only_scanned(self, tmp_path, monkeypatch):
+        """The conditional that matters: a camera which has not opted in never gets a
+        re-encode, only the far cheaper scan that can suggest one."""
+        repaired, probed = [], []
+        monkeypatch.setattr(repairClip, "submit_repair", lambda p: repaired.append(p) or True)
+        monkeypatch.setattr(repairClip, "submit_probe", lambda p, **kw: probed.append(p) or True)
+
+        action = self._action()
+        action._conceal_damage({}, tmp_path / "clip.mp4", self._context(repair=False))
+        await self._settle(action)
+
+        assert repaired == []
+        assert probed == [tmp_path / "clip.mp4"]
+
+    async def test_an_answered_source_is_neither_repaired_nor_scanned(self, tmp_path, monkeypatch):
+        """Once the user has declined the suggestion the scan stops too — otherwise a
+        camera they said no to pays a decode pass on every clip forever."""
+        repaired, probed = [], []
+        monkeypatch.setattr(repairClip, "submit_repair", lambda p: repaired.append(p) or True)
+        monkeypatch.setattr(repairClip, "submit_probe", lambda p, **kw: probed.append(p) or True)
+        clipRepairAdvice.decide("src-1")
+
+        action = self._action()
+        action._conceal_damage({}, tmp_path / "clip.mp4", self._context(repair=False))
+        await self._settle(action)
+
+        assert repaired == []
+        assert probed == []
 
     async def test_the_caller_does_not_wait_for_the_repair(self, tmp_path, monkeypatch):
         """The watcher awaits its actions inside the frame loop, so the minutes a decode
@@ -226,9 +279,9 @@ class TestTheClipActionAsksForItOnlyWhenConfigured:
             return {"repaired": True, "decodeErrors": 42}
 
         monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
-        action = self._action(repair_corruption=True)
+        action = self._action()
 
-        action._conceal_damage({}, tmp_path / "clip.mp4")
+        action._conceal_damage({}, tmp_path / "clip.mp4", self._context(repair=True))
         await asyncio.wait_for(started.wait(), 1)
 
         # The repair is in flight and the action has already returned — the assertion
@@ -254,10 +307,41 @@ class TestTheClipActionAsksForItOnlyWhenConfigured:
             return {"repaired": False}
 
         monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
-        action = self._action(repair_corruption=True)
+        action = self._action()
+        context = self._context(repair=True)
 
-        action._conceal_damage({}, tmp_path / "a.mp4")
-        action._conceal_damage({}, tmp_path / "b.mp4")
+        action._conceal_damage({}, tmp_path / "a.mp4", context)
+        action._conceal_damage({}, tmp_path / "b.mp4", context)
+        await asyncio.sleep(0)
+        release.set()
+        await self._settle(action)
+
+        assert peak == 1
+
+    async def test_a_scan_never_runs_beside_a_re_encode(self, tmp_path, monkeypatch):
+        """Probes share the repair queue rather than getting their own: a scan that ran
+        alongside a 1080p re-encode would defeat the point of serialising at all.
+        """
+        concurrent, peak, release = 0, 0, asyncio.Event()
+
+        async def _busy(*args, **kwargs):
+            nonlocal concurrent, peak
+            concurrent += 1
+            peak = max(peak, concurrent)
+            await release.wait()
+            concurrent -= 1
+            return {"repaired": False}
+
+        async def _busy_probe(path):
+            await _busy(path)
+            return 0
+
+        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _busy)
+        monkeypatch.setattr("apps.helpers.recordings.repairClip.probe_for_corruption", _busy_probe)
+        action = self._action()
+
+        action._conceal_damage({}, tmp_path / "a.mp4", self._context(repair=True, source_uuid="opted-in"))
+        action._conceal_damage({}, tmp_path / "b.mp4", self._context(repair=False, source_uuid="undecided"))
         await asyncio.sleep(0)
         release.set()
         await self._settle(action)
@@ -266,21 +350,19 @@ class TestTheClipActionAsksForItOnlyWhenConfigured:
 
     async def test_a_ring_cut_clip_is_skipped(self, tmp_path, monkeypatch):
         """A ring-cut clip is encoded from whole JPEGs, so it has no damaged slices to
-        conceal — scanning one would be a decode pass for a guaranteed zero."""
-        called = []
+        conceal — scanning one would be a decode pass for a guaranteed zero. True of
+        the probe as much as the repair: there is nothing for either to find."""
+        repaired, probed = [], []
+        monkeypatch.setattr(repairClip, "submit_repair", lambda p: repaired.append(p) or True)
+        monkeypatch.setattr(repairClip, "submit_probe", lambda p, **kw: probed.append(p) or True)
 
-        async def _fake(path, *, enabled=True):
-            called.append(path)
-            return {"repaired": False}
-
-        monkeypatch.setattr("apps.helpers.recordings.repairClip.repair_if_corrupt", _fake)
-        action = self._action(repair_corruption=True)
-
-        action._conceal_damage({"lowFps": True}, tmp_path / "c.mp4")
-        await asyncio.sleep(0)
-
-        assert called == []
+        action = self._action()
+        action._conceal_damage({"lowFps": True}, tmp_path / "c.mp4", self._context(repair=True))
+        action._conceal_damage({"lowFps": True}, tmp_path / "d.mp4", self._context(repair=False))
         await self._settle(action)
+
+        assert repaired == []
+        assert probed == []
 
     async def test_a_full_backlog_leaves_the_clip_as_recorded(self, tmp_path, monkeypatch):
         """A repair that never runs leaves the file exactly as the recorder wrote it,

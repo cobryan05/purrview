@@ -51,6 +51,13 @@ TASKS_PROXY = ReverseProxy(
     port=APPS_CONFIG[APPS.TASKS_SERVER].port,
     path="/api/tasks",
 )
+# Answers to the clip-repair suggestion notice. On the tasks server because the watcher
+# that found the damage is also what holds the finding in memory.
+CLIP_REPAIR_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.TASKS_SERVER].host,
+    port=APPS_CONFIG[APPS.TASKS_SERVER].port,
+    path="/api/clip-repair",
+)
 DATASETS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host,
     port=APPS_CONFIG[APPS.DB_SERVER].port,
@@ -446,6 +453,10 @@ class WebApp:
         @self._app.api_route("/api/tasks/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
         async def proxy_tasks(request: Request, path: str):
             return await TASKS_PROXY.handle_request(path, request)
+
+        @self._app.api_route("/api/clip-repair/{path:path}", methods=["POST"])
+        async def proxy_clip_repair(request: Request, path: str):
+            return await CLIP_REPAIR_PROXY.handle_request(path, request)
 
         @self._app.api_route(
             "/api/datasets/{path:path}",
