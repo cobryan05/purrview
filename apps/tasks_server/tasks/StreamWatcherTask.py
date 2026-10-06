@@ -240,6 +240,15 @@ class StreamWatcherTask(Task):
         #: Ring camera reports no motion — so closing the view says so explicitly
         #: rather than leaving the camera blind for the rest of the window.
         self._release_requests: Set[str] = set()
+        #: source_uuid → whether this watcher currently has the camera running, as last
+        #: reconciled against the bridge. Absent means watched: a camera nobody has an
+        #: opinion about keeps working, so this can only ever stop one.
+        #:
+        #: Held here rather than read off the bridge at every use because it is the record
+        #: of what was actually *done* — the provider stopped, the events closed — and the
+        #: bridge holds what was *asked for*. Comparing the two is how the reconcile knows
+        #: a transition from a steady state.
+        self._source_watching: Dict[str, bool] = {}
         #: source_uuid → cap, for recordings asked for but not yet opened. Same
         #: no-I/O-in-handle_command reason as the two sets above: the START signal has to
         #: be dispatched from the loop, because dispatching it writes a row and cuts into
@@ -1723,6 +1732,9 @@ class StreamWatcherTask(Task):
                 # disarm has to close what it closes even when no source is due, and
                 # "stop recording now that everyone is home" must not wait on a frame.
                 await self._apply_rule_arming(now)
+                # Before every per-source pass below, so a camera turned off this tick
+                # is not serviced, not asked for a frame, and not counted as due.
+                await self._apply_source_watching(now)
                 # Same placement argument again, and the strongest case of the three:
                 # an idle Ring source spends nearly all its time blocked inside
                 # `getNextImage` waiting for a cloud snapshot, so a "go live" honoured
@@ -1737,11 +1749,17 @@ class StreamWatcherTask(Task):
                 # the user's only protection against recording until the disk fills, so
                 # a camera that fails mid-recording must still stop recording.
                 for pipeline in self._pipelines:
+                    if not self._is_watching(pipeline):
+                        continue
                     await self._service_manual_recordings(pipeline)
                 # A source already being read is not due again, however long it has
                 # been: `due()` only knows about pacing, and a source blocked on a
                 # slow frame has not been rescheduled yet.
-                due = [p for p in self._pipelines if p.source_uuid not in self._inflight and p.due(now)]
+                due = [
+                    p
+                    for p in self._pipelines
+                    if self._is_watching(p) and p.source_uuid not in self._inflight and p.due(now)
+                ]
                 if not due:
                     await asyncio.sleep(self._idle_sleep(now))
                     continue
@@ -1898,6 +1916,112 @@ class StreamWatcherTask(Task):
                     self._resolve_slot_names(signal, pipeline)
                     self._note_event(signal)
                     await self._dispatch(signal, pipeline)
+
+    async def _apply_source_watching(self, now: float) -> None:
+        """Take cameras out of the running watcher, and put them back.
+
+        Polled off the bridge once a pass for the same reasons as `_apply_rule_arming`:
+        commands arrive on paho's thread, the loop is always running, and a dict lookup
+        per source per pass costs nothing in the steady state.
+
+        Turning a camera off hands back its stream lease rather than merely skipping its
+        frames. A camera that is still being read and then ignored is not off — on a Ring
+        camera, holding the stream is precisely what stops its own motion detection
+        working, so "off" has to mean the stream goes away.
+        """
+        try:
+            bridge = self._manager.get_mqtt_bridge()
+        except Exception:
+            return
+        for pipeline in self._pipelines:
+            wanted = bridge.is_source_watching(pipeline.source_uuid)
+            if self._source_watching.get(pipeline.source_uuid, True) == wanted:
+                continue
+            # Written before the work, not after: suspending dispatches closing signals
+            # and awaits the provider, and a pass that ran again in between must not
+            # start the same transition a second time.
+            self._source_watching[pipeline.source_uuid] = wanted
+            if wanted:
+                await self._resume_source(pipeline)
+            else:
+                await self._suspend_source(pipeline, now)
+
+    def _is_watching(self, pipeline: WatchPipeline) -> bool:
+        return self._source_watching.get(pipeline.source_uuid, True)
+
+    async def _suspend_source(self, pipeline: WatchPipeline, now: float) -> None:
+        """Close what this camera was holding, cut what it was recording, and let it go.
+
+        Ordered so nothing is lost: the events close first, which dispatches their END
+        signals and so cuts their clips out of the buffer while the lease still exists —
+        a released lease takes its buffer segments with it, and a clip cut after the
+        release is a clip cut from nothing.
+
+        The source's own read is stopped first, for the reason `_drain_inflight` gives:
+        that task closes events and cuts clips too, so leaving it running while this
+        closes the same pipeline's events has the two writing one event from opposite
+        ends — and stopping the provider under it would report a torn read as a camera
+        fault, which is the one thing turning a camera off must not look like.
+        """
+        inflight = self._inflight.pop(pipeline.source_uuid, None)
+        if inflight is not None:
+            inflight.cancel()
+            await asyncio.gather(inflight, return_exceptions=True)
+
+        async with pipeline.dispatch_lock:
+            signals = pipeline.close_open_events(now, EventCloseReason.SOURCE_DISABLED)
+            if signals:
+                self.log(
+                    f"Camera '{pipeline.source_name}' turned off — closing "
+                    f"{len(signals)} event(s) it was holding open."
+                )
+                for signal in signals:
+                    self._resolve_slot_names(signal, pipeline)
+                    self._note_event(signal)
+                    await self._dispatch(signal, pipeline)
+
+        # After the events, before the provider: a manual recording is not a rule event
+        # and `close_open_events` knows nothing about it, so it has to be asked to stop
+        # and then serviced, which is what cuts its clip.
+        recording = (getattr(self, "_manual_open", None) or {}).get(pipeline.source_uuid)
+        if recording is not None:
+            recording.stop_requested = True
+            await self._service_manual_recordings(pipeline)
+        self._manual_requests.pop(pipeline.source_uuid, None)
+
+        try:
+            await pipeline.provider.stop()
+        except Exception:
+            # Said once, not raised: the lease expires on its own if the release failed,
+            # and a watcher that refused to turn a camera off would be worse than one
+            # that turned it off untidily.
+            logger.warning("Error stopping source %s on suspend", pipeline.source_uuid, exc_info=True)
+            self.log(f"Camera '{pipeline.source_name}' turned off, but its stream did not shut down cleanly.")
+        else:
+            self.log(f"Camera '{pipeline.source_name}' turned off — stream released.")
+
+        # Its last sighting would otherwise pin a subject "detected" with nothing left
+        # running to contradict it, exactly as at shutdown.
+        try:
+            self._manager.get_mqtt_bridge().forget_source_presence(pipeline.source_uuid)
+        except Exception:
+            logger.debug("Could not withdraw presence for %s", pipeline.source_uuid, exc_info=True)
+
+    async def _resume_source(self, pipeline: WatchPipeline) -> None:
+        """Put a camera back, taking its stream lease again.
+
+        A failure here leaves the camera marked as watched and unstarted: the frame path
+        is what reports a source that cannot be read, through the health and backoff every
+        other kind of camera failure already goes through, and duplicating that here would
+        report the same fault twice.
+        """
+        try:
+            await pipeline.provider.start()
+        except Exception:
+            logger.warning("Error starting source %s on resume", pipeline.source_uuid, exc_info=True)
+            self.log(f"Camera '{pipeline.source_name}' turned back on, but its stream did not come up.")
+            return
+        self.log(f"Camera '{pipeline.source_name}' turned back on.")
 
     async def _apply_rule_arming(self, now: float) -> None:
         """Mirror Home Assistant's per-rule arming switches onto the engines.
@@ -3292,6 +3416,17 @@ class StreamWatcherTask(Task):
                 if recording is not None:
                     recording.stop_requested = True
             return
+        if command == "set_source_watching":
+            source_uuid = str(params.get("sourceUuid") or "")
+            if not source_uuid:
+                raise ValueError("set_source_watching requires a sourceUuid")
+            if self._pipeline_for(source_uuid) is None:
+                raise ValueError(f"No source {source_uuid!r} in this watcher")
+            # Same shape as the arming command below: the bridge is the single writer and
+            # the loop reconciles on its next pass, so a camera turned off from this card
+            # and one turned off from Home Assistant take the identical path.
+            self._manager.get_mqtt_bridge().set_source_watching(source_uuid, bool(params.get("watching")))
+            return
         if command != "set_rule_armed":
             raise ValueError(f"Unknown command {command!r}")
         rule_uuid = str(params.get("ruleUuid") or "")
@@ -3369,6 +3504,28 @@ class StreamWatcherTask(Task):
                     "params": {"ruleUuid": rule_uuid, "armed": not armed},
                 }
             )
+
+        # One per camera, for the same reasons as the rule buttons above: reachable with
+        # no broker at all, and labelled with the effect rather than the state.
+        try:
+            bridge = self._manager.get_mqtt_bridge()
+        except Exception:
+            bridge = None
+        if bridge is not None:
+            pipelines = sorted(
+                getattr(self, "_pipelines", None) or [],
+                key=lambda p: (p.source_name or "").lower(),
+            )
+            for pipeline in pipelines:
+                watching = bridge.is_source_watching(pipeline.source_uuid)
+                actions.append(
+                    {
+                        "type": "task_command",
+                        "label": f"{'Turn off' if watching else 'Turn on'} '{pipeline.source_name}'",
+                        "command": "set_source_watching",
+                        "params": {"sourceUuid": pipeline.source_uuid, "watching": not watching},
+                    }
+                )
         return actions
 
     # ------------------------------------------------------------------ live view

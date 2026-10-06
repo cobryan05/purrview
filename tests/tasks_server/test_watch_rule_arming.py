@@ -61,6 +61,7 @@ def _inside() -> list:
 def _pipeline(name: str, engine: WatchEngine) -> SimpleNamespace:
     return SimpleNamespace(
         source_name=name,
+        source_uuid=f"src-{name.lower().replace(' ', '-')}",
         engine=engine,
         tracks=[],
         status_row=lambda now: {"source": name},
@@ -209,6 +210,7 @@ class TestArmingIsReachableFromTheApp:
         bridge = SimpleNamespace(
             is_rule_armed=lambda _uuid: True,
             set_rule_armed=lambda uuid, armed: task.armed_calls.append((uuid, armed)),
+            is_source_watching=lambda _uuid: True,
         )
         task._manager = SimpleNamespace(get_mqtt_bridge=lambda: bridge)
         return task
