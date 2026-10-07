@@ -185,11 +185,15 @@ export function frameHasPicture(imageData, maxSpread = BLANK_FRAME_MAX_SPREAD) {
  * @returns {Promise<boolean>} whether the playhead could be moved at all
  */
 export async function stepToFreshFrame(video, { timeoutMs = 1500, stepS = 1 / 30 } = {}) {
-  const duration = video?.duration;
-  if (!video || !Number.isFinite(duration) || duration <= 0) return false;
-  const from = video.currentTime;
-  // Forward unless that runs past the end, where there is no frame to decode.
-  const to = from + stepS < duration - 0.01
+  const from = video?.currentTime;
+  if (!Number.isFinite(from)) return false;
+  const duration = video.duration;
+  // A clip whose duration is not known yet (an unfinished or fragmented mp4 reports
+  // Infinity) still seeks perfectly well — it just cannot be clamped, so step forward
+  // and let the browser refuse an out-of-range target itself. Declining here instead
+  // would leave the caller with the wait that does not work on a paused clip.
+  const bounded = Number.isFinite(duration) && duration > 0;
+  const to = !bounded || from + stepS < duration - 0.01
     ? from + stepS
     : Math.max(0, from - stepS);
   if (!Number.isFinite(to) || Math.abs(to - from) < 1e-6) return false;
@@ -211,4 +215,96 @@ export async function stepToFreshFrame(video, { timeoutMs = 1500, stepS = 1 / 30
   await seeked;
   await presented;
   return true;
+}
+
+
+/**
+ * What a capture would see right now, for an error message that names the cause.
+ *
+ * The capture refusal has four causes behind one sentence — no intrinsic size, a flat
+ * frame, a readback the browser refuses, and a media error — and which one fired is the
+ * whole diagnosis. Cheap enough to run on the failure path only: it draws the same
+ * 32x32 downsample `captureVideoFrame` already measures, and never encodes a blob.
+ *
+ * `spread` is measured on a thumbnail drawn straight off the video; `fullSpread` on a
+ * full-size draw, downsampled after the fact. The pair is the diagnosis whenever they
+ * disagree — a healthy `spread` beside a flat `fullSpread` is a browser whose
+ * full-resolution video blit paints nothing, which no single measurement can show.
+ *
+ * @param {HTMLVideoElement} video
+ * @returns {{width: number, height: number, spread: ?number, fullSpread: ?number,
+ *   readyState: number, currentTime: number, paused: boolean, error: ?string,
+ *   readback: ?string}}
+ */
+export function frameDiagnostics(video) {
+  const out = {
+    width: video?.videoWidth ?? 0,
+    height: video?.videoHeight ?? 0,
+    spread: null,
+    fullSpread: null,
+    readyState: video?.readyState ?? -1,
+    currentTime: video?.currentTime ?? -1,
+    paused: video?.paused !== false,
+    error: video?.error ? `code ${video.error.code}: ${video.error.message}` : null,
+    readback: null,
+  };
+  if (!out.width || !out.height) return out;
+  const sample = (draw, w, h) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, w);
+    canvas.height = Math.max(1, h);
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    draw(context, canvas.width, canvas.height);
+    return Number(lumaSpread(context.getImageData(0, 0, canvas.width, canvas.height)).toFixed(2));
+  };
+  try {
+    out.spread = sample((c, w, h) => c.drawImage(video, 0, 0, w, h), Math.min(32, out.width), Math.min(32, out.height));
+    const full = document.createElement('canvas');
+    full.width = out.width;
+    full.height = out.height;
+    full.getContext('2d').drawImage(video, 0, 0, out.width, out.height);
+    out.fullSpread = sample((c, w, h) => c.drawImage(full, 0, 0, w, h), 32, 32);
+  } catch (e) {
+    // A tainted canvas throws here and nowhere else, so this is the only place that can
+    // tell "the picture is blank" from "the browser will not let us read it".
+    out.readback = String(e);
+  }
+  return out;
+}
+
+/**
+ * The diagnosis as one short clause, for a toast the reader can report back.
+ *
+ * `reason` is what the capture itself refused on; the measurements only describe the
+ * state it refused in. Deriving the reason from the measurements instead reads the
+ * wrong one whenever the two disagree — which is exactly the interesting case, since a
+ * frame measuring a healthy luma spread and still refusing to encode is a fault in the
+ * encoder, not in the picture.
+ *
+ * @param {Object} d - from frameDiagnostics
+ * @param {?string} [reason] - 'no-size' | 'blank' | 'encode'
+ */
+export function describeCaptureFailure(d, reason = null) {
+  if (d?.error) return `the video errored (${d.error})`;
+  if (d?.readback) return `the browser refused to read the frame back (${d.readback})`;
+  const size = `${d?.width}x${d?.height}`;
+  const where = Number.isFinite(d?.currentTime) ? ` at ${d.currentTime.toFixed(2)}s` : '';
+  if (reason === 'no-size' || !d?.width || !d?.height) {
+    return `the video reports no size yet (readyState ${d?.readyState})`;
+  }
+  const spreads = `luma spread ${d.spread} off the video, ${d.fullSpread} off a ${size} canvas`;
+  if (reason === 'encode') {
+    return `this browser produced no image data from a ${size} canvas (${spreads}${where})`;
+  }
+  if (reason === 'blank') {
+    // Worth separating: one of these is a frame with nothing in it, the other a browser
+    // that will not paint a frame there plainly is something in.
+    const painted = d.spread !== null && d.spread > BLANK_FRAME_MAX_SPREAD;
+    return painted
+      ? `this browser painted nothing into a ${size} canvas from a frame that has a `
+        + `picture in it (${spreads}${where})`
+      : `the frame is blank (${size}, ${spreads}${where}, `
+        + `readyState ${d.readyState}${d.paused ? ', paused' : ''})`;
+  }
+  return `the capture was refused (${size}, ${spreads}${where})`;
 }

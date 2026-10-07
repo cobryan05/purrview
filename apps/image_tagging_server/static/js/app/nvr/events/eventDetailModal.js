@@ -39,6 +39,8 @@ import {
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import {
+  describeCaptureFailure,
+  frameDiagnostics,
   frameHasPicture,
   frameIsTrustworthy,
   nextPresentedFrame,
@@ -70,6 +72,17 @@ const EVENT_TOUR_ID = 'event-detail';
 
 // Keeps a seek strictly before the end of the media without rejecting the final sample.
 const CLIP_END_EPSILON_S = 0.001;
+
+/**
+ * How far to nudge the playhead, in order, when a capture reads back blank.
+ *
+ * Growing rather than uniform, because the two causes need different distances. A clip
+ * that simply has not composited yet needs any completed seek at all, and one frame is
+ * the smallest move that keeps the picture the moment the reader is looking at. A head
+ * holding no video — an assembled clip can open on a stretch the muxer filled with
+ * audio only — needs a step past the end of it, and no seek inside it decodes anything.
+ */
+const CAPTURE_STEPS_S = [1 / 30, 0.5, 1.5];
 
 /**
  * How a settled review state reads in the sidebar.
@@ -194,29 +207,100 @@ export function eventOffsetInClip(event, recording) {
 /**
  * Grab the video's current frame as a JPEG blob.
  *
- * Reads at the video's *intrinsic* size, not its displayed size: the point of saving a
+ * Reads at the frame's own pixel grid, not its displayed size: the point of saving a
  * frame is to annotate it, and a training image downscaled to whatever the modal
  * happened to be sized at is worth much less than the frame itself.
  *
+ * Three ways of getting the pixels off the video, each measured on **the canvas that
+ * would be encoded**. That is the only sound place to check: a 32x32 sample taken
+ * straight off the `<video>` can read a healthy picture while the full-size draw of the
+ * same frame comes back black, so a check on anything but the finished surface can pass
+ * a frame that is about to be saved blank.
+ *
+ * `requirePicture: false` saves a blank frame rather than refusing it, reporting
+ * `blank: true`. The blank guard is for the batch harvest, which files frames nobody is
+ * looking at; a reader who picked one frame off the screen can see what is in it.
+ *
  * @param {HTMLVideoElement} video
- * @returns {Promise<?{blob: Blob, width: number, height: number}>}
+ * @param {Object} [opts]
+ * @param {boolean} [opts.requirePicture]
+ * @returns {Promise<{ok: boolean, blank?: boolean, via?: string,
+ *   frame?: {blob: Blob, width: number, height: number}, reason?: string}>}
  */
-export async function captureVideoFrame(video) {
-  const width = video.videoWidth;
-  const height = video.videoHeight;
+export async function captureVideoFrame(video, { requirePicture = true } = {}) {
+  if (!video?.videoWidth || !video?.videoHeight) return { ok: false, reason: 'no-size' };
+  let blankFallback = null;
+  for (const [via, paint] of Object.entries(FRAME_PAINTERS)) {
+    let painted;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      painted = await paint(video);
+    } catch (e) {
+      // A surface that cannot be allocated throws on some paths and returns a canvas
+      // that draws nothing on others, so both land here: try the next way in.
+      Logger.warn(`frame paint via ${via} failed: ${e}`);
+      continue;
+    }
+    if (!painted) continue;
+    if (frameHasPicture(sampleCanvasPixels(painted.canvas))) {
+      // eslint-disable-next-line no-await-in-loop
+      const blob = await encodeCanvas(painted.canvas);
+      if (blob) return { ok: true, blank: false, via, frame: { blob, ...painted.size } };
+      continue;
+    }
+    // Kept rather than discarded: if every painter comes back blank the frame really is
+    // blank, and a reader who asked for it anyway still needs something to save.
+    blankFallback = blankFallback || painted;
+  }
+  if (blankFallback && !requirePicture) {
+    const blob = await encodeCanvas(blankFallback.canvas);
+    if (blob) return { ok: true, blank: true, via: 'blank', frame: { blob, ...blankFallback.size } };
+  }
+  return { ok: false, reason: blankFallback ? 'blank' : 'encode' };
+}
+
+/**
+ * Ways to get a video's current frame onto a canvas, best first.
+ *
+ * `bitmap` leads because it is the only one that never scales. A stream with
+ * non-square pixels — every Ring camera here reports `sample_aspect_ratio 189:190` —
+ * has a *fractional* intrinsic height, so `videoHeight` is a rounded 1085 against a
+ * coded 1080 and a full-size draw is a resample. `createImageBitmap` hands over the
+ * coded frame, which is both the frame's real pixel grid and the draw that does not
+ * have to resize anything.
+ */
+const FRAME_PAINTERS = {
+  bitmap: async (video) => {
+    if (typeof createImageBitmap !== 'function') return null;
+    const bitmap = await createImageBitmap(video);
+    const painted = paintTo(bitmap.width, bitmap.height, (context, w, h) => context.drawImage(bitmap, 0, 0, w, h));
+    bitmap.close?.();
+    return painted;
+  },
+  // The ordinary accelerated draw, at the intrinsic size the element reports.
+  direct: (video) => paintTo(video.videoWidth, video.videoHeight,
+    (context, w, h) => context.drawImage(video, 0, 0, w, h)),
+  // The same request of a canvas pinned to software, for an accelerated surface that
+  // allocates and then paints nothing.
+  software: (video) => paintTo(video.videoWidth, video.videoHeight,
+    (context, w, h) => context.drawImage(video, 0, 0, w, h), { willReadFrequently: true }),
+};
+
+/** A canvas of the given size with `draw` applied, or null if it has no 2d context. */
+function paintTo(width, height, draw, contextOptions = undefined) {
   if (!width || !height) return null;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  canvas.getContext('2d').drawImage(video, 0, 0, width, height);
-  // A frame can be presented, on time, and still hold no picture — a seek on a lossy
-  // clip composites an uninitialised decode buffer, which reaches the canvas as a flat
-  // green. Refused here rather than at either call site: both of them write the frame
-  // into the dataset with boxes beside it, and a blank one is the exact training image
-  // `videoFrames` exists to keep out.
-  if (!frameHasPicture(sampleCanvasPixels(canvas))) return null;
-  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-  return blob ? { blob, width, height } : null;
+  const context = canvas.getContext('2d', contextOptions);
+  if (!context) return null;
+  draw(context, width, height);
+  return { canvas, size: { width, height } };
+}
+
+/** The canvas as a JPEG blob, or null if the browser produced no image data. */
+function encodeCanvas(canvas) {
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
 }
 
 /**
@@ -1286,19 +1370,22 @@ export function openEventDetailModal(
         onProgress?.(attempted, times.length);
         continue;
       }
-      let frame = await captureVideoFrame(video);
-      if (!frame) {
+      let shot = await captureVideoFrame(video);
+      if (!shot.ok) {
         // Blank means the decoder handed over an uninitialised buffer, which the next
         // composite usually replaces — so the moment gets one more wait before it is
         // given up, rather than being dropped on the strength of one bad buffer.
         await nextPresentedFrame(video, { timeoutMs: 600 });
-        frame = await captureVideoFrame(video);
+        shot = await captureVideoFrame(video);
       }
-      if (frame) frames.push({ at: playerT, sidecarAt: t, frame });
+      if (shot.ok) frames.push({ at: playerT, sidecarAt: t, frame: shot.frame });
       // Counted as a skip, not silently dropped: these used to vanish from the harvest
       // with the progress line still reaching its total, so eight picks yielding six
       // images looked like a success.
-      else skipped += 1;
+      else {
+        skipped += 1;
+        Logger.warn(`capture refused at ${t.toFixed(2)}s: ${shot.reason}`);
+      }
       // Counted as attempted, not as kept: a skip still consumed a seek, and a progress
       // line that stalls short of its own total reads as a hang.
       attempted += 1;
@@ -1503,27 +1590,39 @@ export function openEventDetailModal(
     // above it and are never composited in. That is what makes this safe to feed
     // straight into the dataset: a training image with rectangles burnt into it is
     // worse than useless.
-    let frame = await captureVideoFrame(video);
-    if (!frame) {
+    let shot = await captureVideoFrame(video);
+    if (!shot.ok) {
       // A clip the reader has opened but never played can read back blank: it reports
       // `readyState` 4 and its full dimensions while the one frame it has presented is
       // not there for `drawImage`. Waiting is no use — a paused video presents nothing
       // further, so the wait runs out and the retry reads the same empty buffer. Only a
       // seek forces a fresh decode, which is why the harvest above, which seeks to
       // every moment it captures, never sees this.
-      if (await stepToFreshFrame(video)) {
-        frame = await captureVideoFrame(video);
-      } else {
-        // No duration to step within — a clip still loading its metadata. One more
-        // composite is all there is to wait for.
-        await nextPresentedFrame(video, { timeoutMs: 1500 });
-        frame = await captureVideoFrame(video);
+      //
+      // Each step is bigger than the last. One frame is enough for a clip that simply
+      // had not composited yet, but not for a head with no video in it at all — an
+      // assembled clip can open on a stretch the muxer filled with audio only, and
+      // every seek inside it decodes nothing.
+      for (const stepS of CAPTURE_STEPS_S) {
+        if (!await stepToFreshFrame(video, { stepS })) break;
+        shot = await captureVideoFrame(video);
+        if (shot.ok) break;
       }
+      // The reader picked this frame off the screen, so a blank one is their call to
+      // make and not this code's — said out loud below, and saved. Only a frame that
+      // will not encode has nothing to save.
+      if (!shot.ok && shot.reason === 'blank') shot = await captureVideoFrame(video, { requirePicture: false });
     }
-    if (!frame) {
-      toast('The video has not painted a usable frame yet — let it play a moment and try again', 4000, 'error');
+    if (!shot.ok) {
+      // Named, not just reported: the refusal has four causes behind it and the reader
+      // is the only one who can see which fired.
+      const diagnosis = frameDiagnostics(video);
+      Logger.error(`frame capture refused (${shot.reason}): ${JSON.stringify(diagnosis)}`);
+      toast(`Could not capture this frame — ${describeCaptureFailure(diagnosis, shot.reason)}.`,
+        8000, 'error');
       return;
     }
+    const frame = shot.frame;
     saveBtn.disabled = true;
     annotateBtn.disabled = true;
     try {
@@ -1546,6 +1645,9 @@ export function openEventDetailModal(
         },
       });
       savedHint.textContent = `Saved ${result.path}`;
+      if (shot.blank) {
+        toast('That frame looks blank — saved anyway, since you picked it', 6000);
+      }
       // Recorded before the canvas opens: opening it tears this modal down and rebuilds
       // it through `navContext.onClose`, and a memo written afterwards would be written
       // onto the modal that is going away.
