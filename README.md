@@ -747,4 +747,18 @@ sub-models works and is supported, but it has had much less exposure.
 
 ## License
 
-[GNU AGPL-3.0](LICENSE).
+PurrView — event-driven camera watching, tracking and annotation.
+Copyright (C) 2025–2026 Chris OBryan
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the [GNU Affero General Public License](LICENSE) for
+more details.
+
+AGPL-3.0 is not a free choice here: PurrView imports `ultralytics`, which is
+itself AGPL-3.0, so a permissive licence is not available to this project.
