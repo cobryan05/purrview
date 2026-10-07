@@ -42,6 +42,7 @@ import {
   frameHasPicture,
   frameIsTrustworthy,
   nextPresentedFrame,
+  stepToFreshFrame,
   whenPageVisible,
 } from '/app-static/js/ui/utils/videoFrames.js';
 import { attachClipOverlay, fetchClipOverlay, sampleAt, seekTargetFor } from './clipOverlay.js';
@@ -1504,14 +1505,20 @@ export function openEventDetailModal(
     // worse than useless.
     let frame = await captureVideoFrame(video);
     if (!frame) {
-      // A clip whose metadata has just arrived reports `readyState` 4 and its full
-      // dimensions while still compositing nothing, so the first capture off a
-      // just-opened modal is reliably black rather than occasionally so. Same recovery
-      // as the harvest above: wait for a presented frame, then capture once more. The
-      // wait's own timeout is the fallback for a paused clip that presents no further
-      // frame — by the time it expires the first one has been composited.
-      await nextPresentedFrame(video, { timeoutMs: 1500 });
-      frame = await captureVideoFrame(video);
+      // A clip the reader has opened but never played can read back blank: it reports
+      // `readyState` 4 and its full dimensions while the one frame it has presented is
+      // not there for `drawImage`. Waiting is no use — a paused video presents nothing
+      // further, so the wait runs out and the retry reads the same empty buffer. Only a
+      // seek forces a fresh decode, which is why the harvest above, which seeks to
+      // every moment it captures, never sees this.
+      if (await stepToFreshFrame(video)) {
+        frame = await captureVideoFrame(video);
+      } else {
+        // No duration to step within — a clip still loading its metadata. One more
+        // composite is all there is to wait for.
+        await nextPresentedFrame(video, { timeoutMs: 1500 });
+        frame = await captureVideoFrame(video);
+      }
     }
     if (!frame) {
       toast('The video has not painted a usable frame yet — let it play a moment and try again', 4000, 'error');

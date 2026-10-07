@@ -159,3 +159,56 @@ export function lumaSpread(imageData) {
 export function frameHasPicture(imageData, maxSpread = BLANK_FRAME_MAX_SPREAD) {
   return lumaSpread(imageData) > maxSpread;
 }
+
+/**
+ * Move the playhead a frame and resolve once the browser has shown the result.
+ *
+ * A paused `<video>` the reader has never played presents frame 0 once and then
+ * nothing ever again, so a capture that reads that frame back blank has no second
+ * composite to wait for: `nextPresentedFrame` runs out its timeout and the retry reads
+ * the same empty buffer. A seek is what forces a fresh decode and a fresh composite,
+ * which is why the batch harvest — which seeks to every moment it captures — never hits
+ * this and a single-frame save does.
+ *
+ * One frame's step keeps the picture the moment the reader is looking at. The playhead
+ * is left where it lands: the caller records the time it actually captured, and seeking
+ * back would cost another composite for no gain.
+ *
+ * Waits on `seeked` as well as `requestVideoFrameCallback` because rVFC is the half
+ * that does not exist on Firefox, where an unsupported `nextPresentedFrame` resolves
+ * immediately and would leave nothing waited on at all.
+ *
+ * @param {HTMLVideoElement} video
+ * @param {Object} [opts]
+ * @param {number} [opts.timeoutMs]
+ * @param {number} [opts.stepS]
+ * @returns {Promise<boolean>} whether the playhead could be moved at all
+ */
+export async function stepToFreshFrame(video, { timeoutMs = 1500, stepS = 1 / 30 } = {}) {
+  const duration = video?.duration;
+  if (!video || !Number.isFinite(duration) || duration <= 0) return false;
+  const from = video.currentTime;
+  // Forward unless that runs past the end, where there is no frame to decode.
+  const to = from + stepS < duration - 0.01
+    ? from + stepS
+    : Math.max(0, from - stepS);
+  if (!Number.isFinite(to) || Math.abs(to - from) < 1e-6) return false;
+  // Both armed before the playhead moves: a completed seek presents exactly one frame,
+  // and a listener added afterwards is waiting for something that already happened.
+  const presented = nextPresentedFrame(video, { timeoutMs });
+  const seeked = new Promise(resolve => {
+    const done = () => {
+      clearTimeout(timer);
+      video.removeEventListener('seeked', done);
+      resolve();
+    };
+    // Bounded: `seeked` never fires if the media errors, and an unguarded await would
+    // hang with both save buttons disabled and nothing on screen to say why.
+    const timer = setTimeout(done, timeoutMs);
+    video.addEventListener('seeked', done, { once: true });
+  });
+  video.currentTime = to;
+  await seeked;
+  await presented;
+  return true;
+}
