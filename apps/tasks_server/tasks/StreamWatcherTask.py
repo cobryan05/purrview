@@ -3251,7 +3251,16 @@ class StreamWatcherTask(Task):
         # row to patch, so this forgets rather than closes.
         await self._recorder.close_all()
 
-        for _row, action in self._actions:
+        # The manual clip action is built outside `_actions` and is a real action with a
+        # real `close()` — it claims the shared repair worker in its constructor, so
+        # leaving it out leaks one owner per watcher run and the worker is never released.
+        closing = [action for _row, action in self._actions]
+        # getattr, as at the status call above: `_deinit` runs against partially
+        # constructed tasks.
+        manual_clip = getattr(self, "_manual_clip", None)
+        if manual_clip is not None:
+            closing.append(manual_clip[1])
+        for action in closing:
             try:
                 await action.close()
             except Exception:
