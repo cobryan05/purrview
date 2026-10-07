@@ -227,8 +227,8 @@ RETENTION_SWEEP_INTERVAL_S = 3600.0
 
 #: Every suffix this app writes under a recordings root: `.mp4` clips and compiled
 #: timelapses, `.jpg` snapshots and timelapse frames, `.json` sidecars and detection
-#: tracks, and the `.part`/`.txt`/`.png` scratch ffmpeg and the overlay burner leave
-#: beside their output.
+#: tracks, and the `.part`/`.repair`/`.txt`/`.png` scratch ffmpeg, the clip repairer and
+#: the overlay burner leave beside their output.
 #:
 #: The orphan sweep deletes by walking a directory rather than by following a row, so
 #: this is its only guard against files it could not have produced. It narrows the blast
@@ -238,7 +238,7 @@ RETENTION_SWEEP_INTERVAL_S = 3600.0
 #: A writer that starts emitting a suffix missing from this set stops having its orphans
 #: collected — silently, and for ever. `sweep_orphan_recording_files` logs what it
 #: skipped so that shows up as a line in the log rather than as a full disk.
-RECORDING_SWEEPABLE_SUFFIXES = frozenset({".mp4", ".jpg", ".json", ".part", ".txt", ".png"})
+RECORDING_SWEEPABLE_SUFFIXES = frozenset({".mp4", ".jpg", ".json", ".part", ".repair", ".txt", ".png"})
 # The WAL only needs reclaiming on a slow burn, and a checkpoint that finds the
 # file under threshold still costs a stat — so this is deliberately far coarser
 # than the 5s poll, and far finer than the hourly retention sweep it rides beside.
