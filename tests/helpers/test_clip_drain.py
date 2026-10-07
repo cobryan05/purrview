@@ -490,6 +490,67 @@ class TestAssembleReportsWhatTheFileHolds:
 
         assert result["hasGap"] is False
 
+    async def test_a_gapped_clip_keeps_its_overlay_when_the_pieces_describe_themselves(self, tmp_path):
+        """The outcome the whole per-piece cut exists for.
+
+        A clip with a hole in it is mappable exactly when its parts report coverage that
+        agrees with the file: `build_overlay` then puts each box through the segment
+        holding its wallclock instead of subtracting one start from all of them. Without
+        the map there is nothing to do but withhold the overlay, which is how a gapped
+        clip loses every box it had.
+        """
+        from apps.helpers.recordings.clipDrain import assemble
+
+        # Two 2s parts a wallclock minute apart: 4s of video spanning 62s of world.
+        first = self._chunk(tmp_path / "a.mp4", 0, 2)
+        second = self._chunk(tmp_path / "b.mp4", 60, 2, gap_before=True)
+        chunks = [
+            DrainedChunk(path=first.path, start=first.start, end=first.end, covered=((_at(0), 2.0),)),
+            DrainedChunk(
+                path=second.path, start=second.start, end=second.end, gap_before=True, covered=((_at(60), 2.0),)
+            ),
+        ]
+
+        result = await assemble(chunks, None, tmp_path / "out.mp4")
+
+        assert result["hasGap"] is True, "the hole is real and must still be declared"
+        segments = result["segments"]
+        assert segments is not None, "coverage that agrees with the file must yield a map"
+        # The second stretch of wallclock starts 2s into the video, not 60s into it.
+        assert [round(seg["videoOffsetS"], 2) for seg in segments] == [0.0, 2.0]
+        assert [seg["wallStart"] for seg in segments] == [_at(0).isoformat(), _at(60).isoformat()]
+
+    async def test_coverage_that_disagrees_with_the_file_still_withholds_the_map(self, tmp_path):
+        """The guard that makes the map worth trusting.
+
+        Without this the test above passes on a function that believes whatever `/list`
+        said, which is the failure the measurement is there to prevent: boxes placed
+        from coverage the cut did not honour land on the wrong frames, and nothing
+        downstream can tell.
+        """
+        from apps.helpers.recordings.clipDrain import assemble
+
+        first = self._chunk(tmp_path / "a.mp4", 0, 2)
+        chunks = [
+            # Claims 30s of coverage for a file holding 2s.
+            DrainedChunk(path=first.path, start=first.start, end=_at(30), covered=((_at(0), 30.0),)),
+        ]
+
+        result = await assemble(chunks, None, tmp_path / "out.mp4")
+
+        assert result["segments"] is None
+
+    async def test_a_chunk_that_reported_no_coverage_withholds_the_map(self, tmp_path):
+        """Unreported is "unknown", never "contiguous" — the distinction the older
+        backends depended on, and the one a default of `()` would quietly lose."""
+        from apps.helpers.recordings.clipDrain import assemble
+
+        chunks = [self._chunk(tmp_path / "a.mp4", 0, 2)]
+
+        result = await assemble(chunks, None, tmp_path / "out.mp4")
+
+        assert result["segments"] is None
+
     async def test_a_sub_second_tail_clamp_is_rounding_not_a_hole(self, tmp_path):
         """Segments are keyframe-aligned, so a fraction of a second of movement at the
         seam is ordinary. Flagging it would cost every clip its overlay."""

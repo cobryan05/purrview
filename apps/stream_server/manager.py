@@ -50,7 +50,7 @@ from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.playbackClient import (
     PlaybackClient,
     PlaybackError,
-    covered_windows,
+    piece_windows,
     probe_duration_s,
 )
 from apps.helpers.serviceStatus import fmt_duration, row, section
@@ -649,9 +649,22 @@ class Manager:
                 f"(buffer covers {oldest.isoformat()}..{newest_end.isoformat()})"
             )
 
-        size = await client.write_clip(path, actual_start, actual_duration, dest)
         truncated = actual_start > requested_start
-        covered = covered_windows(ranges, actual_start, end)
+        # One cut per advertised range, not one cut spanning them all. A window that
+        # covers several ranges can come back short with the shortfall anywhere inside
+        # it, and nothing downstream can then place a box: the hole has no position.
+        # Cut per range and every piece is contiguous by construction, so measuring it
+        # is enough to say exactly which wallclock it holds.
+        pieces = piece_windows(ranges, actual_start, end)
+        if len(pieces) > 1:
+            size, covered = await self._write_clip_in_pieces(client, path, pieces, dest)
+        else:
+            size = await client.write_clip(path, actual_start, actual_duration, dest)
+            held = await probe_duration_s(dest)
+            # Measured, not advertised. A single range is contiguous, so the video it
+            # delivered starts where it was asked to and runs for as long as the file
+            # says — which makes this window exact even when the cut came back short.
+            covered = [(actual_start, actual_duration if held is None else held)]
 
         # Measured off the file, never taken from the requested window: `/list` describes
         # more than `/get` serves. It advertises the segment MediaMTX is still writing,
@@ -689,17 +702,73 @@ class Manager:
             # advancing a cursor needs the span it asked for; one placing boxes needs
             # `durationS`. They differ exactly when video is missing.
             "clampedDurationS": actual_duration,
-            # The sub-windows the buffer actually held, so a caller placing boxes can
-            # map wallclock piecewise instead of assuming the cut is one unbroken run.
-            # Advisory: `/list` is not a promise, so a consumer must check these against
-            # the measured duration before trusting them.
-            "coveredRanges": [
-                {"startedAt": lo.isoformat(), "durationS": (hi - lo).total_seconds()} for lo, hi in covered
-            ],
+            # The sub-windows the cut actually holds, each measured off its own piece,
+            # so a caller placing boxes can map wallclock piecewise. Their durations sum
+            # to `durationS` by construction rather than by luck — which is what lets a
+            # consumer check them, and what `/list` alone could never support.
+            "coveredRanges": [{"startedAt": lo.isoformat(), "durationS": held} for lo, held in covered],
             # The caller writes this onto the recording row: a clip whose pre-roll was
             # cut short by buffer eviction is a different artifact from a complete one.
             "partialPreroll": truncated,
         }
+
+    async def _write_clip_in_pieces(
+        self,
+        client: PlaybackClient,
+        path: str,
+        pieces: "List[tuple[datetime, datetime]]",
+        dest: Path,
+    ) -> "tuple[int, List[tuple[datetime, float]]]":
+        """Cut each piece separately, measure it, and join them into ``dest``.
+
+        Returns the byte count and the windows the finished file holds, each paired with
+        the video length measured off its own piece. Those lengths are what make the
+        result mappable: a piece is one contiguous range, so its video starts where the
+        piece was asked to start, and the measurement says how far it runs.
+
+        A piece the server will not serve is a hole, not a failure. It is dropped, the
+        remaining pieces still describe themselves correctly, and the clip is still
+        worth having — the alternative is losing the whole event to one evicted segment.
+        """
+        from ..helpers.recordings.clipDrain import concat_parts
+
+        staging = dest.parent / f".{dest.stem}.pieces"
+        staging.mkdir(parents=True, exist_ok=True)
+        parts: "List[Path]" = []
+        covered: "List[tuple[datetime, float]]" = []
+        try:
+            for index, (lo, hi) in enumerate(pieces):
+                span = (hi - lo).total_seconds()
+                part = staging / f"{index:03d}.mp4"
+                try:
+                    await client.write_clip(path, lo, span, part)
+                except Exception as exc:
+                    logger.warning(f"Piece {index} of {path} ({lo.isoformat()}+{span:.2f}s) could not be cut: {exc}")
+                    continue
+                held = await probe_duration_s(part)
+                # An unmeasurable piece is charged at its requested span: that is the
+                # pre-existing behaviour for an unreadable file, and it is the only
+                # figure available. The map's own total check is what catches it.
+                held = span if held is None else held
+                if held <= 0:
+                    continue
+                parts.append(part)
+                covered.append((lo, held))
+            if not parts:
+                raise PlaybackError(f"No piece of the requested window for {path!r} could be cut")
+            if len(parts) == 1:
+                size = parts[0].stat().st_size
+                parts[0].replace(dest)
+            else:
+                size = await asyncio.to_thread(concat_parts, parts, dest)
+            return size, covered
+        finally:
+            for part in staging.glob("*.mp4"):
+                part.unlink(missing_ok=True)
+            try:
+                staging.rmdir()
+            except OSError:
+                logger.debug("Could not remove piece staging dir %s", staging, exc_info=True)
 
     async def _purge_buffer(self, path_name: str) -> None:
         """Delete a destroyed path's recorded segments.

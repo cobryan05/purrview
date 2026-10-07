@@ -62,25 +62,33 @@ class BufferedRange:
         }
 
 
-def covered_windows(ranges: "list[BufferedRange]", start: datetime, end: datetime) -> "list[tuple[datetime, datetime]]":
-    """The sub-windows of ``[start, end)`` the buffer actually holds, merged, in order.
+def piece_windows(ranges: "list[BufferedRange]", start: datetime, end: datetime) -> "list[tuple[datetime, datetime]]":
+    """``[start, end)`` split into one window per advertised range, in order.
 
-    Overlapping ranges are merged rather than counted twice — MediaMTX reports them for
-    a stream it recorded discontinuously, and their durations can sum past their own
-    envelope. Holes between ranges are preserved: they are the whole point, being the
-    stretches a caller must not assume it received.
+    Adjacent and overlapping ranges are kept **separate** rather than merged into one
+    span. That distinction is the whole point: a merged span asserts that every instant
+    inside it is present, and ``/list`` is not entitled to assert that — it advertises
+    the segment MediaMTX is still writing, segments its own retention has deleted, and
+    after a re-arm ranges that overlap each other. A cut taken per range can be measured
+    per range, so a range that delivers less than it claimed is found out on its own
+    instead of passing the shortfall to its neighbours, where it has no position and
+    nothing downstream can place a box.
+
+    Overlaps are resolved by clipping, never by dropping: each window starts where the
+    previous one ended, so the same wallclock is never served twice and nothing inside
+    the envelope is skipped.
     """
-    spans: list[list[datetime]] = []
+    out: "list[tuple[datetime, datetime]]" = []
+    cursor = start
     for r in sorted(ranges, key=lambda r: r.start):
-        lo, hi = max(r.start, start), min(r.end, end)
+        lo, hi = max(r.start, cursor), min(r.end, end)
         if (hi - lo).total_seconds() <= 0:
             continue
-        if spans and (lo - spans[-1][1]).total_seconds() <= 0:
-            if hi > spans[-1][1]:
-                spans[-1][1] = hi
-        else:
-            spans.append([lo, hi])
-    return [(lo, hi) for lo, hi in spans]
+        out.append((lo, hi))
+        cursor = hi
+        if cursor >= end:
+            break
+    return out
 
 
 async def probe_duration_s(path: Path) -> Optional[float]:

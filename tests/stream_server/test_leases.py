@@ -252,6 +252,123 @@ class TestExtractClip:
             await lease_manager.extract_clip("relay_master_abc", datetime.now(timezone.utc), 30, tmp_path / "c.mp4")
 
 
+class TestExtractClipInPieces:
+    """A cut spanning several advertised ranges must describe itself by measurement.
+
+    `/list` is not a promise — it advertises the unfinalised segment, segments its own
+    retention deleted, and overlapping ranges after a re-arm. A window spanning several
+    of them can come back short with the shortfall anywhere inside, which leaves a
+    detection box with no placeable position; the clip then loses its overlay entirely.
+    Cutting per range makes every piece contiguous, so measuring it says exactly which
+    wallclock it holds.
+    """
+
+    @staticmethod
+    def _stub(manager, monkeypatch, ranges, held_by_start=None, refuse=()):
+        """Playback stubbed so each piece can be given its own measured length.
+
+        `held_by_start` maps a piece's requested start (seconds past base) to the video
+        its file turns out to hold; `refuse` names starts the server will not serve.
+        """
+        written = {}
+
+        async def write_clip(path, start, duration_s, dest, fmt="mp4"):
+            key = round((start - ranges[0].start).total_seconds(), 3)
+            if key in refuse:
+                raise PlaybackError(f"no segment at {key}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"x" * 100)
+            written[key] = duration_s
+            return 100
+
+        async def probe(dest):
+            key = round(written_key_of(dest), 3)
+            return (held_by_start or {}).get(key)
+
+        def written_key_of(dest):
+            # The staging files are numbered in piece order, so the nth file is the nth
+            # key written. Keeps the stub from needing to parse timestamps out of names.
+            order = list(written)
+            try:
+                return order[int(dest.stem)]
+            except (ValueError, IndexError):
+                return -1.0
+
+        client = MagicMock()
+        client.list_ranges = AsyncMock(return_value=list(ranges))
+        client.write_clip = AsyncMock(side_effect=write_clip)
+        monkeypatch.setattr(manager, "playback_client", lambda: client)
+        monkeypatch.setattr("apps.stream_server.manager.probe_duration_s", AsyncMock(side_effect=probe))
+        # Patched on `clipDrain` itself, which is where the function-local import in
+        # `_write_clip_in_pieces` resolves it from.
+        monkeypatch.setattr(
+            "apps.helpers.recordings.clipDrain.concat_parts",
+            lambda parts, dest, max_length_s=None: (dest.write_bytes(b"y" * 200), 200)[1],
+        )
+        return client
+
+    @staticmethod
+    def _ranges(base):
+        """The real deck case: two advertised ranges that overlap each other."""
+        from apps.helpers.recordings.playbackClient import BufferedRange
+
+        return [BufferedRange(base, 5.05), BufferedRange(base + timedelta(seconds=3.861), 9.99)]
+
+    async def test_each_range_is_cut_separately(self, lease_manager, monkeypatch, tmp_path):
+        base = datetime(2026, 10, 7, 11, 17, 36, tzinfo=timezone.utc)
+        client = self._stub(lease_manager, monkeypatch, self._ranges(base), held_by_start={0.0: 5.05, 5.05: 2.898})
+        await lease_manager.extract_clip("relay_master_abc", base, 7.948, tmp_path / "c.mp4")
+        # Two calls, and the second starts where the first ended: the overlap is clipped
+        # rather than served twice.
+        starts = [round((call.args[1] - base).total_seconds(), 3) for call in client.write_clip.call_args_list]
+        assert starts == [0.0, 5.05]
+
+    async def test_covered_durations_are_measured_not_advertised(self, lease_manager, monkeypatch, tmp_path):
+        base = datetime(2026, 10, 7, 11, 17, 36, tzinfo=timezone.utc)
+        # The second piece delivers 1.2s of the 2.898s it was asked for.
+        self._stub(lease_manager, monkeypatch, self._ranges(base), held_by_start={0.0: 5.05, 5.05: 1.2})
+        result = await lease_manager.extract_clip("relay_master_abc", base, 7.948, tmp_path / "c.mp4")
+        held = [r["durationS"] for r in result["coveredRanges"]]
+        assert held == [5.05, 1.2], "a short piece must report what it holds, not what it claimed"
+
+    async def test_covered_ranges_sum_to_the_measured_file(self, lease_manager, monkeypatch, tmp_path):
+        """The invariant the segment map checks before it will place a box."""
+        from apps.helpers.recordings.clipDrain import map_from_windows
+
+        base = datetime(2026, 10, 7, 11, 17, 36, tzinfo=timezone.utc)
+        self._stub(lease_manager, monkeypatch, self._ranges(base), held_by_start={0.0: 5.05, 5.05: 1.2})
+        result = await lease_manager.extract_clip("relay_master_abc", base, 7.948, tmp_path / "c.mp4")
+        windows = [(datetime.fromisoformat(r["startedAt"]), r["durationS"]) for r in result["coveredRanges"]]
+        total = sum(d for _, d in windows)
+        # The map is only emitted when the windows agree with the file, so this is the
+        # difference between a clip that keeps its boxes and one that loses them.
+        assert map_from_windows(windows, total) is not None
+        assert map_from_windows(windows, total + 5) is None, "a map that disagrees with the file must still be refused"
+
+    async def test_a_piece_the_server_refuses_becomes_a_hole(self, lease_manager, monkeypatch, tmp_path):
+        base = datetime(2026, 10, 7, 11, 17, 36, tzinfo=timezone.utc)
+        self._stub(lease_manager, monkeypatch, self._ranges(base), held_by_start={0.0: 5.05}, refuse={5.05})
+        result = await lease_manager.extract_clip("relay_master_abc", base, 7.948, tmp_path / "c.mp4")
+        # One evicted segment costs its own stretch, not the whole event.
+        assert [r["durationS"] for r in result["coveredRanges"]] == [5.05]
+
+    async def test_every_piece_refused_raises(self, lease_manager, monkeypatch, tmp_path):
+        base = datetime(2026, 10, 7, 11, 17, 36, tzinfo=timezone.utc)
+        self._stub(lease_manager, monkeypatch, self._ranges(base), refuse={0.0, 5.05})
+        with pytest.raises(PlaybackError):
+            await lease_manager.extract_clip("relay_master_abc", base, 7.948, tmp_path / "c.mp4")
+
+    async def test_a_single_range_is_still_one_cut(self, lease_manager, monkeypatch, tmp_path):
+        """The common case must not pay for staging, concatenation or extra requests."""
+        from apps.helpers.recordings.playbackClient import BufferedRange
+
+        base = datetime(2026, 10, 7, 11, 17, 36, tzinfo=timezone.utc)
+        client = self._stub(lease_manager, monkeypatch, [BufferedRange(base, 60)], held_by_start={0.0: 20})
+        result = await lease_manager.extract_clip("relay_master_abc", base, 20, tmp_path / "c.mp4")
+        assert client.write_clip.await_count == 1
+        assert [r["durationS"] for r in result["coveredRanges"]] == [20]
+
+
 class TestLeaseAccounting:
     def test_recording_lease_commits_bitrate_times_retention(self):
         lease = Lease(
