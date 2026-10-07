@@ -949,11 +949,6 @@ class RecordClipAction(Action):
             if tail is not None:
                 tail.unlink(missing_ok=True)
         result["requestedStart"] = chunks[0].start.isoformat()
-        # A clip built this way always reached back past the buffer, so its pre-roll is
-        # whole unless a drain was missed (`hasGap`) or the first cut started later than
-        # it was asked to (`headClamped`). The two are separate because only the former
-        # invalidates the overlay; both mean the pre-roll is short.
-        result["partialPreroll"] = bool(result.get("hasGap")) or bool(result.get("headClamped"))
         # The sum of what the parts hold, capped the same way `concat_parts` caps the
         # muxer. Reporting nothing here is not a neutral omission: the recording row
         # stores 0, `ended_at` lands empty, and the overlay writer — which needs a
@@ -981,6 +976,14 @@ class RecordClipAction(Action):
                 )
             played = measured
         result["durationS"] = max(0.0, played)
+        # Must follow the measured-duration check above: a shortfall against what the
+        # parts hold sets `hasGap` too.
+        #
+        # A clip built this way always reached back past the buffer, so its pre-roll is
+        # whole unless a drain was missed (`hasGap`) or the first cut started later than
+        # it was asked to (`headClamped`). The two are separate because only the former
+        # invalidates the overlay; both mean the pre-roll is short.
+        result["partialPreroll"] = bool(result.get("hasGap")) or bool(result.get("headClamped"))
         return result
 
     async def close(self) -> None:
