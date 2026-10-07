@@ -103,6 +103,11 @@ class Manager:
 
         # Off by default. See Settings → Security / AuthGate in web.py.
         self._auth: AuthConfig = AuthConfig()
+        # `/login` is the one path AuthGate exempts, and a password check is ~100ms of
+        # CPU and 16 MiB of scrypt memory. Unbounded, a handful of concurrent POSTs from
+        # an unauthenticated caller is enough to starve the thread pool every proxied
+        # request shares. Two at a time is more than a human ever needs.
+        self._login_gate: asyncio.Semaphore = asyncio.Semaphore(2)
 
     async def start(self) -> None:
         """Load URL overrides and auth settings from DB on startup."""
@@ -252,8 +257,10 @@ class Manager:
             return False
         if not self.password_enabled:
             return self.check_token(candidate)
-        # scrypt is deliberately slow and memory-hard; keep it off the event loop.
-        return await asyncio.to_thread(verify_password, candidate, self._auth.password_hash)
+        # scrypt is deliberately slow and memory-hard; keep it off the event loop, and
+        # keep the number running at once bounded — see `_login_gate`.
+        async with self._login_gate:
+            return await asyncio.to_thread(verify_password, candidate, self._auth.password_hash)
 
     async def save_auth_config(
         self,
