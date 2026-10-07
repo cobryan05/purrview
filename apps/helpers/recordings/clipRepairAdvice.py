@@ -14,9 +14,11 @@ Two states are tracked per source and both live in memory:
     the notices SSE loop every few seconds and must not touch the DB.
 
 *decided*
-    Sources that need no further advice — the user turned repair on, or said no. The
-    user's "no" has to outlive the container, so it is also persisted to the settings
-    store under `CLIP_REPAIR_DISMISSED_SETTING_KEY` and read back once at watcher start.
+    Sources that need no further advice — the user turned repair on, or said no. Only
+    the "no" is persisted, to the settings store under
+    `CLIP_REPAIR_DISMISSED_SETTING_KEY` and read back once at watcher start: a "yes"
+    lives on the source row, which a restart reads anyway, and recording it as a
+    decline would silence a camera whose repair is later switched off again.
 
 Probing is bounded by `MAX_PROBES_PER_SOURCE`. A clean camera is scanned a few times and
 then left alone for the life of the process: the question is "is this camera lossy", which
@@ -50,6 +52,10 @@ class _Advice:
     def __init__(self) -> None:
         self._findings: Dict[str, dict] = {}
         self._decided: Set[str] = set()
+        #: The subset of `_decided` that was an explicit "no". Only this is persisted:
+        #: a "yes" is recorded on the source row itself, and writing it here too would
+        #: mean a camera whose repair is later turned off is never suggested again.
+        self._dismissed: Set[str] = set()
         self._probes: Dict[str, int] = {}
 
     def load_dismissed(self, raw: Optional[str]) -> None:
@@ -62,10 +68,12 @@ class _Advice:
             logger.warning("Ignoring unparseable %s", CLIP_REPAIR_DISMISSED_SETTING_KEY)
             return
         if isinstance(uuids, list):
-            self._decided.update(str(u) for u in uuids)
+            loaded = {str(u) for u in uuids}
+            self._decided.update(loaded)
+            self._dismissed.update(loaded)
 
     def dismissed_json(self) -> str:
-        return json.dumps(sorted(self._decided))
+        return json.dumps(sorted(self._dismissed))
 
     def wants_probe(self, source_uuid: Optional[str]) -> bool:
         """Whether this source is still worth a scan-only pass."""
@@ -89,9 +97,14 @@ class _Advice:
         return True
 
     def decide(self, source_uuid: str) -> None:
-        """Mark a source answered — repair turned on, or the suggestion declined."""
+        """Mark a source answered, without persisting anything. For "repair turned on"."""
         self._decided.add(source_uuid)
         self._findings.pop(source_uuid, None)
+
+    def dismiss(self, source_uuid: str) -> None:
+        """Mark a source declined, which is the answer that outlives the process."""
+        self._dismissed.add(source_uuid)
+        self.decide(source_uuid)
 
     def findings(self) -> list:
         return list(self._findings.values())
@@ -100,6 +113,7 @@ class _Advice:
         """Drop all state. For tests, which must not inherit another test's probes."""
         self._findings.clear()
         self._decided.clear()
+        self._dismissed.clear()
         self._probes.clear()
 
 
@@ -124,6 +138,10 @@ def record_probe(source_uuid: str, errors: int, clip_name: str, source_name: str
 
 def decide(source_uuid: str) -> None:
     _advice.decide(source_uuid)
+
+
+def dismiss(source_uuid: str) -> None:
+    _advice.dismiss(source_uuid)
 
 
 def findings() -> list:

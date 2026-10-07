@@ -149,7 +149,7 @@ class Manager:
             self._adopt_repair_corruption(source_uuid)
             return "Repair is on for this camera; its damaged clips will be re-encoded."
 
-        clipRepairAdvice.decide(source_uuid)
+        clipRepairAdvice.dismiss(source_uuid)
         settings_api = db_client.SettingsApi(self._db_api_client)
         await self.db_call(
             settings_api.set_setting,

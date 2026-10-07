@@ -94,7 +94,7 @@ class TestTheDeclineSurvivesARestart:
     """
 
     def test_a_decline_round_trips_through_the_settings_store(self):
-        clipRepairAdvice.decide("src-1")
+        clipRepairAdvice.dismiss("src-1")
         stored = clipRepairAdvice.dismissed_json()
 
         clipRepairAdvice.reset()
@@ -102,6 +102,21 @@ class TestTheDeclineSurvivesARestart:
 
         clipRepairAdvice.load_dismissed(stored)
         assert clipRepairAdvice.wants_probe("src-1") is False
+
+    def test_turning_repair_on_is_not_persisted_as_a_decline(self):
+        """ "Yes" is recorded on the source row, which a restart reads back anyway. Writing
+        it into the declined list too would mean a camera whose repair is later switched
+        off is never offered the suggestion again, with nothing on screen to say why.
+        """
+        clipRepairAdvice.decide("src-yes")
+        clipRepairAdvice.dismiss("src-no")
+
+        stored = clipRepairAdvice.dismissed_json()
+        clipRepairAdvice.reset()
+        clipRepairAdvice.load_dismissed(stored)
+
+        assert clipRepairAdvice.wants_probe("src-no") is False
+        assert clipRepairAdvice.wants_probe("src-yes") is True
 
     def test_a_fresh_install_has_nothing_to_load(self):
         clipRepairAdvice.load_dismissed(None)
