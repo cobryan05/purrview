@@ -142,6 +142,11 @@ export function mountNoticesBar(containerId = 'notices-bar') {
         try {
           const res = await fetch(url, { method: 'POST' });
           if (!res.ok) throw new Error(`${res.status}`);
+          // The body decides, not the status code: these handlers answer a failed write
+          // with 200 and `status: "failure"`, so trusting `res.ok` alone leaves the row
+          // looking answered behind a button disabled for good.
+          const data = await res.json().catch(() => null);
+          if (data && data.status === 'failure') throw new Error(data.message || 'failed');
         } catch (err) {
           btn.disabled = false;
           toast(`Could not apply "${btn.textContent}"`, 4000);
