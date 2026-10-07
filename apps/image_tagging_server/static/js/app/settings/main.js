@@ -1144,11 +1144,21 @@ function _generateToken() {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+/**
+ * The two switches are independent, so there are four readings and the operator needs
+ * to be able to tell "open" from "gated" at a glance.
+ */
 function _securityStatusText(config) {
-  if (!config.requireAuth) return 'Open — no credentials required.';
-  return config.passwordEnabled
-    ? 'Token required for the API; password required to sign in.'
-    : 'Token required — it also signs you in.';
+  const token = config.requireAuth;
+  const password = config.passwordEnabled;
+  if (token && password) return 'Token required for the API; password required to sign in.';
+  if (token) return 'Token required — it also signs you in.';
+  if (password) return 'Password required to sign in. No API token set.';
+  return 'Open — no credentials required.';
+}
+
+function _securityStatusState(config) {
+  return config.requireAuth || config.passwordEnabled ? 'info' : 'muted';
 }
 
 async function _buildSecuritySection() {
@@ -1159,15 +1169,16 @@ async function _buildSecuritySection() {
   const warning = document.createElement('p');
   warning.className = 'settings-dedup-warning';
   warning.textContent =
-    'Off by default. Once access control is on, the API token is required for every ' +
-    'request (as an Authorization: Bearer header, or ?token= for things like <video> ' +
-    'tags that cannot send a header) — paste it into the PurrView integration\'s setup ' +
-    'form in Home Assistant. The login password is separate and optional: turn it on ' +
-    'and the sign-in page stops accepting the token, so the integration\'s copy of it ' +
-    'cannot open a browser session. The token is stored unencrypted in the settings ' +
-    'database, the same as the MQTT broker password above; the login password is only ' +
-    'ever stored as a hash — which means a forgotten one cannot be recovered, only ' +
-    'cleared, by running scripts/reset_login_password.py on the host.';
+    'Both off by default, and each works on its own — turning on either one gates the ' +
+    'whole app. The API token is for machines: it is required on every request as an ' +
+    'Authorization: Bearer header, or ?token= for things like <video> tags that cannot ' +
+    'send a header. Paste it into the PurrView integration\'s setup form in Home ' +
+    'Assistant. The login password is for people, and once it is on the sign-in page ' +
+    'stops accepting the token, so the integration\'s copy of it cannot open a browser ' +
+    'session. The token is stored unencrypted in the settings database, the same as the ' +
+    'MQTT broker password above; the login password is only ever stored as a hash — ' +
+    'which means a forgotten one cannot be recovered, only cleared, by running ' +
+    'scripts/reset_login_password.py on the host.';
   body.appendChild(warning);
 
   const requireInput = document.createElement('input');
@@ -1175,7 +1186,7 @@ async function _buildSecuritySection() {
   requireInput.checked = Boolean(config.requireAuth);
   requireInput.dataset.testid = 'settings-security-require';
   const { row: requireRow } = _buildRow({
-    label: 'Require access control',
+    label: 'Require an API token',
     controls: [requireInput],
   });
 
@@ -1239,7 +1250,7 @@ async function _buildSecuritySection() {
   });
   actionRow.dataset.testid = 'settings-security-actions';
 
-  setStatus(_securityStatusText(config), config.requireAuth ? 'info' : 'muted');
+  setStatus(_securityStatusText(config), _securityStatusState(config));
 
   saveBtn.addEventListener('click', async () => {
     const values = {
@@ -1249,7 +1260,7 @@ async function _buildSecuritySection() {
       password: passwordInput.value,
     };
     if (values.requireAuth && !values.token) {
-      setStatus('Enter or generate an API token before requiring access control.', 'error');
+      setStatus('Enter or generate an API token before requiring one.', 'error');
       return;
     }
     if (values.passwordEnabled && !values.password && !config.passwordSet) {
@@ -1275,7 +1286,7 @@ async function _buildSecuritySection() {
         passwordInput.placeholder = config.passwordSet
           ? 'Leave blank to keep the current password'
           : 'Choose a password';
-        setStatus(_securityStatusText(config), config.requireAuth ? 'info' : 'muted');
+        setStatus(_securityStatusText(config), _securityStatusState(config));
       },
       (msg) => setStatus(`✗ ${msg}`, 'error')
     );

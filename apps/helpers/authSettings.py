@@ -47,7 +47,10 @@ class AuthConfig:
     """The Security panel's stored state.
 
     Attributes:
-        require_auth (bool): Whether the gate is enforcing at all.
+        require_auth (bool): Whether the API token is required. Named for its JSON
+            key, which predates the password; it is one of two independent switches,
+            not a master toggle — `Manager.require_auth` is what says whether the
+            gate enforces.
         token (str): API token, presented as a Bearer header or `?token=`.
         password_enabled (bool): Whether interactive login wants a password rather
             than the API token.

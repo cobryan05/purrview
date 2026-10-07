@@ -170,13 +170,16 @@ class Manager:
     def require_auth(self) -> bool:
         """Whether `AuthGate` should be enforcing.
 
-        Deliberately fails open if the toggle is on but no token was ever saved,
-        rather than locking the operator out of their own UI with no recovery path
-        short of editing the SQLite settings row by hand. The Settings → Security
-        panel refuses to save `require_auth=true` with an empty token, so this is
-        only a defense-in-depth backstop, not the normal path.
+        Either credential gates the app on its own: the two switches are independent,
+        so a password with no API token enforces, and a token with no password
+        enforces. Anything else would store "password required" while asking nobody
+        for it.
+
+        A toggle whose credential was never saved does not count, which deliberately
+        fails open rather than locking the operator out of their own UI with no
+        recovery path short of editing the SQLite settings row by hand.
         """
-        return self._auth.require_auth and bool(self._auth.token)
+        return (self._auth.require_auth and bool(self._auth.token)) or self.password_enabled
 
     @property
     def password_enabled(self) -> bool:

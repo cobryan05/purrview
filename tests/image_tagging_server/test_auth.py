@@ -317,6 +317,7 @@ class TestPasswordRecovery:
     def _db(tmp_path, config):
         import sqlite3
 
+        tmp_path.mkdir(parents=True, exist_ok=True)
         path = tmp_path / "db.sqlite"
         conn = sqlite3.connect(path)
         conn.execute("CREATE TABLE user_settings (key TEXT PRIMARY KEY, value TEXT)")
@@ -365,5 +366,76 @@ class TestPasswordRecovery:
         manager._auth = AuthConfig(**self._stored(path))
         assert await manager.check_login(TOKEN) is True
 
+    def test_the_operator_is_warned_only_when_the_reset_leaves_the_app_open(self, tmp_path):
+        """Clearing the password on a token-less install removes the only credential.
+        That is the right trade against a permanent lockout, but it must not be
+        silent — and the warning must not cry wolf on an install that stays gated."""
+        open_install = self._db(
+            tmp_path / "open",
+            {"require_auth": False, "token": "", "password_enabled": True, "password_hash": hash_password("x")},
+        )
+        gated_install = self._db(
+            tmp_path / "gated",
+            {"require_auth": True, "token": "tok", "password_enabled": True, "password_hash": hash_password("x")},
+        )
+
+        assert "open to anyone" in clear_login_password(open_install)
+        assert "open to anyone" not in clear_login_password(gated_install)
+
     def test_no_stored_settings_is_not_an_error(self, tmp_path):
         assert "no password" in clear_login_password(self._db(tmp_path, None)).lower()
+
+
+class TestPasswordOnlyGatesOnItsOwn:
+    """A password with no API token has to enforce by itself.
+
+    The two switches are independent credentials, not a master and a sub-option:
+    someone who wants a login password and has no use for the API should never have
+    to generate a token to make the password take effect, and a stored
+    "password required, gate off" is a password nobody is ever asked for.
+    """
+
+    def _password_only(self, manager, password="hunter2"):
+        manager._auth = AuthConfig(
+            require_auth=False,
+            token="",
+            password_enabled=True,
+            password_hash=hash_password(password),
+        )
+
+    async def test_the_gate_enforces_with_a_password_and_no_token(self, manager):
+        self._password_only(manager)
+        assert manager.require_auth is True
+
+    async def test_a_page_request_is_sent_to_the_login_form(self, http_client, manager):
+        self._password_only(manager)
+        resp = await http_client.get("/", headers={"Accept": "text/html"}, follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"].startswith("/login")
+
+    async def test_the_password_signs_in_and_the_session_works(self, http_client, manager):
+        self._password_only(manager)
+
+        resp = await http_client.post("/login", data={"token": "hunter2"}, follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/"
+
+        cookie = manager.session_cookie_value()
+        assert (
+            await http_client.get("/api/labels/", headers={"Cookie": f"{AUTH_COOKIE_NAME}={cookie}"})
+        ).status_code == 200
+
+    async def test_saving_a_password_without_a_token_is_allowed(self, manager, monkeypatch):
+        """The panel must be able to persist this state — refusing it was the bug."""
+
+        async def fake_put(url, json):
+            class _Res:
+                def raise_for_status(self):
+                    pass
+
+            return _Res()
+
+        monkeypatch.setattr(manager._test_client, "put", fake_put)
+
+        await manager.save_auth_config(require_auth=False, token="", password_enabled=True, password="hunter2")
+        assert manager.require_auth is True

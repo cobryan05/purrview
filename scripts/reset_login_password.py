@@ -10,8 +10,10 @@ leaves no in-band way back if the password is lost, so the way back is out of ba
 shell access to the host, which whoever installed PurrView has by definition.
 
 This only clears `password_enabled` and `password_hash`. `require_auth` and the API
-token are left alone, so the gate stays on and the next sign-in falls back to the
-token; set a new password from Settings → Security.
+token are left alone, so an install that also requires a token stays gated and the
+next sign-in falls back to it. An install whose *only* credential was the password is
+left open — there is nothing else to authenticate against, and leaving the operator
+locked out of their own NVR is worse. The script says so when that is the case.
 
 `image_tagging_server` caches the settings blob, so restart it afterwards (or restart
 the container) for the change to take effect.
@@ -58,11 +60,18 @@ def clear_login_password(db_path: Path) -> str:
         conn.commit()
     finally:
         conn.close()
-    return (
-        "Login password cleared.\n"
-        "Restart image_tagging_server (supervisord UI at :9001, or restart the container),\n"
-        "then sign in with the API token and set a new password in Settings → Security."
-    )
+    message = [
+        "Login password cleared.",
+        "Restart image_tagging_server (supervisord UI at :9001, or restart the container).",
+    ]
+    if config.get("require_auth") and config.get("token"):
+        message.append("Sign in with the API token, then set a new password in Settings → Security.")
+    else:
+        message.append(
+            "WARNING: the password was this install's only credential, so the app is now "
+            "open to anyone who can reach it. Set a new password in Settings → Security."
+        )
+    return "\n".join(message)
 
 
 def main() -> int:
