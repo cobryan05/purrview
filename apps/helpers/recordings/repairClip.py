@@ -98,6 +98,11 @@ def _conceal(src: Path, dest: Path) -> subprocess.CompletedProcess:
             "ffmpeg",
             "-nostdin",
             "-y",
+            # Without this the banner is most of stderr, and the failure path below
+            # keeps only its tail — so a broken invocation reports a list of library
+            # versions where its reason should be.
+            "-v",
+            "error",
             # Decoder options, so they must precede the input they apply to.
             "-err_detect",
             "ignore_err",
@@ -106,15 +111,22 @@ def _conceal(src: Path, dest: Path) -> subprocess.CompletedProcess:
             "-i",
             str(src),
             # Frame timing straight through: a re-encode that resamples the frame rate
-            # would move every box relative to the picture.
-            "-fps_mode",
-            "passthrough",
+            # would move every box relative to the picture. `-vsync 0` and not
+            # `-fps_mode passthrough`, which this image's ffmpeg 4.4 does not have —
+            # it rejects the whole argument list, so the option that reads as the
+            # modern spelling disables concealment for every camera instead.
+            "-vsync",
+            "0",
             "-c:v",
             "libx264",
             "-preset",
             "veryfast",
+            # The input is already-compressed camera footage, so the quantiser is not
+            # what bounds quality here — generation loss from the source's own artifacts
+            # is. A lower crf spends ~30% more storage reproducing those artifacts more
+            # faithfully, for a fraction of a dB.
             "-crf",
-            "20",
+            "23",
             "-pix_fmt",
             "yuv420p",
             # Audio is undamaged by a video slice loss and re-encoding it buys nothing.

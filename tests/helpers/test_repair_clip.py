@@ -51,6 +51,72 @@ def _clip(path: Path, seconds: int = 2) -> Path:
     return path
 
 
+def _damaged_clip(path: Path, seconds: int = 3) -> Path:
+    """A real mp4 whose compressed frame data has been corrupted in place.
+
+    Byte-flipped rather than re-encoded: the container, the timestamps and the duration
+    all stay intact, so what the decoder meets is exactly the shape a lossy camera
+    produces — a frame it cannot reconstruct inside an otherwise sound file. Every other
+    test here patches `_conceal`, so this is the only fixture that reaches the real
+    ffmpeg command.
+
+    The corruption is deterministic: a fixed stride over a fixed window a quarter of the
+    way in, which lands in the mdat and leaves the moov alone.
+    """
+    _clip(path, seconds)
+    data = bytearray(path.read_bytes())
+    start = len(data) // 4
+    for index in range(start, start + 2000, 7):
+        data[index] ^= 0xFF
+    path.write_bytes(bytes(data))
+    return path
+
+
+class TestTheConcealCommandTheInstalledFfmpegActuallyAccepts:
+    """The one path every other test in this file patches out.
+
+    `_conceal` is stubbed by the overlay-invalidation tests and never reached by the
+    leave-well-alone ones, so an option this image's ffmpeg does not have disabled the
+    whole feature for every camera that opted in, and the suite stayed green. These run
+    the real command.
+    """
+
+    async def test_a_damaged_clip_is_actually_repaired(self, tmp_path):
+        clip = _damaged_clip(tmp_path / "damaged.mp4")
+        before = repairClip._count_errors(clip)
+        assert before >= repairClip.MIN_ERRORS_TO_REPAIR, "fixture must be damaged enough to be worth repairing"
+
+        result = await repair_if_corrupt(clip)
+
+        assert result["repaired"] is True, f"reason: {result.get('reason')}"
+        assert result["decodeErrorsAfter"] < before, "a repair that conceals nothing is not a repair"
+
+    def test_a_failed_conceal_reports_ffmpegs_reason_not_its_version_banner(self, tmp_path):
+        """The log keeps only the tail of stderr, so an unsuppressed banner is the
+        difference between "Unrecognized option" and a list of library versions. The
+        real failure read as the latter for two days."""
+        proc = repairClip._conceal(tmp_path / "does-not-exist.mp4", tmp_path / "out.mp4")
+
+        assert proc.returncode != 0
+        tail = proc.stderr[-300:].decode("utf-8", "replace")
+        assert "No such file" in tail
+        assert "libavformat" not in tail, f"the banner is crowding out the reason: {tail!r}"
+
+    async def test_the_repair_keeps_the_clip_the_same_length(self, tmp_path):
+        """The overlay places boxes by offset into the video, so a re-encode that moves
+        the duration slides every box. `repair_if_corrupt` discards such a repair — this
+        asserts the real command does not produce one, which is what makes the feature
+        usable rather than merely safe."""
+        clip = _damaged_clip(tmp_path / "damaged.mp4")
+        before = repairClip._probe_duration(clip)
+
+        result = await repair_if_corrupt(clip)
+
+        assert result["repaired"] is True, f"reason: {result.get('reason')}"
+        after = repairClip._probe_duration(clip)
+        assert abs(after - before) <= repairClip.DURATION_TOLERANCE_S
+
+
 class TestItLeavesWellAloneClipsAlone:
     async def test_a_disabled_camera_is_not_scanned(self, tmp_path):
         """The scan is a full decode pass. A camera that has not asked for this must not
