@@ -58,10 +58,23 @@ class FakeStreamsApi:
         self.state["destroyed"].append(stream_name)
         return {"success": True}
 
+    def list_streams(self):
+        if self.state.get("list_raises"):
+            raise RuntimeError("relay unreachable")
+        return {"success": True, "results": self.state["listed"]}
+
 
 class FakeApiClient:
     def __init__(self, configuration=None):
-        self.state = {"ensured": [], "released": [], "destroyed": [], "renewed": []}
+        self.state = {
+            "ensured": [],
+            "released": [],
+            "destroyed": [],
+            "renewed": [],
+            # What the relay reports as armed, for the start-failure message.
+            "listed": [],
+            "list_raises": False,
+        }
 
 
 @pytest.fixture
@@ -393,3 +406,51 @@ class TestConcurrentStartsDoNotStrandLeases:
 
         assert all(isinstance(r, TimeoutError) for r in results)
         assert sorted(state["released"]) == ["lease-1", "lease-2"]
+
+
+class TestWhyLiveVideoDidNotStart:
+    """The message a failed `start()` leaves on the camera's live view.
+
+    One message used to cover two unrelated faults and named only the path hash, so a
+    relay that had restarted and lost its paths read exactly like a camera that had
+    stopped answering — and the relay restart is the one nobody would guess, because
+    the camera is fine and says so.
+    """
+
+    async def _failure_message(self, provider, monkeypatch):
+        async def never_ready(api, stream_name, timeout, poll_interval=0.5):
+            return False
+
+        monkeypatch.setattr(FfmpegImageProvider, "_wait_for_stream", staticmethod(never_ready))
+        with pytest.raises(TimeoutError) as excinfo:
+            await provider.start()
+        return str(excinfo.value)
+
+    async def test_a_path_the_relay_never_listed_is_reported_as_lost(self, relay_state, monkeypatch):
+        provider, state = relay_state
+        state["listed"] = []
+
+        message = await self._failure_message(provider, monkeypatch)
+
+        assert "no path" in message
+        assert "relay restart" in message
+        assert SOURCE_URL in message, "the message must name the camera, not only the path hash"
+
+    async def test_a_listed_path_that_never_delivers_blames_the_camera(self, relay_state, monkeypatch):
+        """The relay has it armed, so the fault is upstream of the relay."""
+        provider, state = relay_state
+        state["listed"] = [{"name": "relay_master_deadbeef"}]
+
+        message = await self._failure_message(provider, monkeypatch)
+
+        assert "not answering" in message
+        assert "relay restart" not in message, "an armed path must not be reported as lost"
+
+    async def test_a_relay_that_cannot_be_asked_says_so(self, relay_state, monkeypatch):
+        """Guessing between the two is worse than admitting the relay did not answer."""
+        provider, state = relay_state
+        state["list_raises"] = True
+
+        message = await self._failure_message(provider, monkeypatch)
+
+        assert "could not be asked" in message

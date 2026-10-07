@@ -201,7 +201,8 @@ class FfmpegImageProvider(ImageProvider):
             # and get re-armed on every relay restart. Hand it back ourselves.
             try:
                 if not await self._wait_for_stream(api, self._relayed_name, STREAM_START_TIMEOUT):
-                    raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to become ready on the relay")
+                    reason = await self._explain_unready(api, self._relayed_name)
+                    raise TimeoutError(f"Live video for {self._video_path} did not start: {reason}")
                 stream_url = ensured.get("rtspUrl") or (
                     f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:"
                     f"{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
@@ -408,6 +409,30 @@ class FfmpegImageProvider(ImageProvider):
                 break
             await asyncio.sleep(poll_interval)
         return False
+
+    async def _explain_unready(self, api, stream_name: str) -> str:
+        """Why the relay never produced a readable path, in words that point somewhere.
+
+        Two different faults used to share one message naming only the path hash. A
+        path the relay does not list at all has been *lost* — the relay restarts
+        independently of this process and its path table does not survive one — while a
+        path that is listed and never becomes ready is a camera that is not answering.
+        Sending both to "timed out" pointed every relay restart at the cameras.
+        """
+        try:
+            streams = await asyncio.to_thread(api.list_streams)
+        except Exception as exc:
+            return f"the relay could not be asked about {stream_name} ({exc})"
+        for stream in streams.get("results", []):
+            if stream.get("name") == stream_name:
+                return (
+                    f"the relay has {stream_name} armed but it never delivered a frame "
+                    f"— {self._video_path} is not answering"
+                )
+        return (
+            f"the relay has no path {stream_name} for {self._video_path} — it was lost, "
+            "most likely to a relay restart, and should be re-armed within seconds"
+        )
 
     async def stop(self) -> None:
         # Before releasing: a heartbeat still in flight could otherwise resurrect the
