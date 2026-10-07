@@ -37,7 +37,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import mediamtx_client
 from mediamtx_client.api.configuration_api import ConfigurationApi
@@ -375,6 +375,17 @@ class Manager:
         retention = DEFAULT_RETENTION_S if retention_s is None else float(retention_s)
 
         existing = self._source_relays.get(source_url)
+        if existing is not None:
+            # The relay restarts independently of this process, and an entry here is
+            # only a memory of having armed the path once. Trusting it is what let
+            # `ensure` answer success for a path MediaMTX had already forgotten.
+            names = await self._configured_path_names()
+            if names is not None and existing.master_stream_name not in names:
+                logger.warning(f"Relay has no path {existing.master_stream_name} for {source_url}; re-arming")
+                self._source_relays.pop(source_url, None)
+                self._streams.pop(existing.master_stream_name, None)
+                existing = None
+
         if existing is None:
             if record:
                 self._check_commit(bytes_for(DEFAULT_ASSUMED_BITRATE_BPS, retention))
@@ -547,6 +558,65 @@ class Manager:
             except Exception as exc:
                 # One unreachable camera must not stop the rest from coming back.
                 logger.error(f"Failed to reconcile {name} for {source_url}: {exc}")
+
+    async def _configured_path_names(self) -> Optional[Set[str]]:
+        """Names MediaMTX currently has *configured*, or None if it could not be asked.
+
+        Configured rather than active: a path whose camera is unreachable is still
+        configured and is retrying on its own, so treating it as lost would drop the
+        connection attempt and start it over.
+        """
+        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
+        try:
+            configured = await asyncio.to_thread(api.config_paths_list)
+        except Exception as exc:
+            # Nothing is known either way, so the caller must not conclude "lost".
+            logger.warning(f"Could not list configured relay paths: {exc}")
+            return None
+        return {str(item.name) for item in (configured.items or [])}
+
+    async def _rearm_lost_paths(self) -> None:
+        """Re-arm leased paths MediaMTX has forgotten while this process kept running.
+
+        `_reconcile` covers the other direction — this process restarting under a live
+        relay — and the two are not interchangeable. MediaMTX exits on a panic in its
+        own HTTP handler, so it restarts with an empty path table while every lease,
+        refcount and `_source_relays` entry here survives. Nothing re-arms on its own:
+        holders renew, which only bumps `last_seen`, and `ensure_stream` short-circuits
+        on the surviving `_source_relays` entry — so a relay restart that lasts seconds
+        becomes an outage that lasts until someone notices.
+        """
+        if not self._source_relays:
+            return
+        names = await self._configured_path_names()
+        if names is None:
+            return
+
+        for source_url, relay in list(self._source_relays.items()):
+            name = relay.master_stream_name
+            if name in names:
+                continue
+            leases = self.leases_for(source_url)
+            if not leases:
+                # Believed-armed, gone, and unwanted. Dropping the entry is the point:
+                # left behind, it is what makes the next `ensure` claim success for a
+                # path that does not exist.
+                logger.info(f"Dropping stale relay entry {name} for {source_url}; path is gone and unleased")
+                self._source_relays.pop(source_url, None)
+                self._streams.pop(name, None)
+                continue
+            record = any(lease.record for lease in leases)
+            retention = max((lease.retention_s for lease in leases), default=DEFAULT_RETENTION_S)
+            logger.warning(
+                f"Relay lost path {name} for {source_url}; re-arming for {len(leases)} lease(s) "
+                f"(record={record}, retention={retention}s)"
+            )
+            try:
+                await self._create_master_path(source_url, name, retention, record)
+                self._source_relays[source_url].refcount = len(leases)
+            except Exception as exc:
+                # One unreachable camera must not stop the rest from coming back.
+                logger.error(f"Failed to re-arm {name} for {source_url}: {exc}")
 
     # ------------------------------------------------------------------ playback
 
@@ -909,6 +979,10 @@ class Manager:
                     await self.sweep_orphan_buffers()
                 except Exception as exc:
                     logger.error(f"Orphan buffer sweep failed: {exc}")
+                try:
+                    await self._rearm_lost_paths()
+                except Exception as exc:
+                    logger.error(f"Lost-path re-arm failed: {exc}")
         except asyncio.CancelledError:
             logger.debug("Periodic worker cancelled.")
         finally:

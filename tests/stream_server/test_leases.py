@@ -406,3 +406,134 @@ class TestReleasingTheLastLeasePurgesTheBuffer:
         await lease_manager.release_lease("L1")
 
         assert (segments / "seg.mp4").is_file()
+
+
+class TestRearmingPathsTheRelayLost:
+    """The relay restarts independently of this process — it exits on a panic in its
+    own HTTP handler — and comes back with an empty path table.
+
+    Everything here survives that: the leases, the refcounts, and the `_source_relays`
+    entry `ensure_stream` consults. Nothing re-armed, because holders only renew (which
+    bumps `last_seen`) and `ensure_stream` short-circuited on the surviving entry. One
+    relay crash therefore took every camera off the air until someone restarted this
+    service by hand.
+    """
+
+    SOURCE = "rtsp://cam.example:8554/unicast"
+
+    def _armed(self, mgr, source=SOURCE, record=True):
+        """Put `mgr` in the state it is in after a successful ensure."""
+        name = master_path_name(source)
+        mgr._source_relays[source] = Manager.SourceRelayInfo(master_stream_name=name, refcount=1)
+        mgr._streams[name] = Manager.StreamInfo(name=name)
+        lease = Lease(
+            lease_id="lease-1",
+            source_url=source,
+            holder="provider-1",
+            retention_s=45.0,
+            record=record,
+        )
+        mgr._leases[lease.lease_id] = lease
+        return name
+
+    def _relay_lists(self, monkeypatch, mgr, names):
+        """Make the relay report exactly `names` as configured."""
+        listed = MagicMock()
+        listed.items = [MagicMock(name=n) for n in names]
+        # MagicMock(name=...) sets the mock's own name, not an attribute, so set it.
+        for item, n in zip(listed.items, names):
+            item.name = n
+        api = MagicMock()
+        api.config_paths_list = MagicMock(return_value=listed)
+        monkeypatch.setattr("apps.stream_server.manager.ConfigurationApi", MagicMock(return_value=api))
+        return api
+
+    async def test_a_leased_path_the_relay_lost_is_re_armed(self, lease_manager, monkeypatch):
+        name = self._armed(lease_manager)
+        self._relay_lists(monkeypatch, lease_manager, [])
+        created = AsyncMock()
+        monkeypatch.setattr(lease_manager, "_create_master_path", created)
+
+        await lease_manager._rearm_lost_paths()
+
+        assert created.await_count == 1, "a leased path missing from the relay must be re-armed"
+        assert created.await_args.args[0] == self.SOURCE
+        assert created.await_args.args[1] == name
+
+    async def test_a_path_the_relay_still_has_is_left_alone(self, lease_manager, monkeypatch):
+        """Re-arming a live path would drop the camera connection it already has."""
+        name = self._armed(lease_manager)
+        self._relay_lists(monkeypatch, lease_manager, [name])
+        created = AsyncMock()
+        monkeypatch.setattr(lease_manager, "_create_master_path", created)
+
+        await lease_manager._rearm_lost_paths()
+
+        assert created.await_count == 0
+
+    async def test_an_unleased_lost_path_is_forgotten_rather_than_re_armed(self, lease_manager, monkeypatch):
+        """Nobody wants it, so re-arming would reconnect a camera for no one — but the
+        stale entry must still go, because that entry is what makes the next `ensure`
+        answer success for a path the relay does not have."""
+        name = self._armed(lease_manager)
+        lease_manager._leases.clear()
+        self._relay_lists(monkeypatch, lease_manager, [])
+        created = AsyncMock()
+        monkeypatch.setattr(lease_manager, "_create_master_path", created)
+
+        await lease_manager._rearm_lost_paths()
+
+        assert created.await_count == 0
+        assert self.SOURCE not in lease_manager._source_relays
+        assert name not in lease_manager._streams
+
+    async def test_a_relay_that_cannot_be_asked_changes_nothing(self, lease_manager, monkeypatch):
+        """An API call that fails says nothing about whether the path is there. Treating
+        that as "lost" would tear down and rebuild every camera on a blip."""
+        self._armed(lease_manager)
+        api = MagicMock()
+        api.config_paths_list = MagicMock(side_effect=RuntimeError("relay down"))
+        monkeypatch.setattr("apps.stream_server.manager.ConfigurationApi", MagicMock(return_value=api))
+        created = AsyncMock()
+        monkeypatch.setattr(lease_manager, "_create_master_path", created)
+
+        await lease_manager._rearm_lost_paths()
+
+        assert created.await_count == 0
+        assert self.SOURCE in lease_manager._source_relays, "the entry must survive an unanswered relay"
+
+    async def test_one_camera_failing_to_re_arm_does_not_block_the_others(self, lease_manager, monkeypatch):
+        other = "rtsp://cam2.example:8554/unicast"
+        self._armed(lease_manager)
+        name2 = master_path_name(other)
+        lease_manager._source_relays[other] = Manager.SourceRelayInfo(master_stream_name=name2, refcount=1)
+        lease_manager._leases["lease-2"] = Lease(
+            lease_id="lease-2", source_url=other, holder="provider-2", retention_s=45.0, record=True
+        )
+        self._relay_lists(monkeypatch, lease_manager, [])
+
+        attempted = []
+
+        async def _create(source_url, name, retention, record):
+            attempted.append(source_url)
+            if source_url == self.SOURCE:
+                raise RuntimeError("camera unreachable")
+
+        monkeypatch.setattr(lease_manager, "_create_master_path", _create)
+
+        await lease_manager._rearm_lost_paths()
+
+        assert sorted(attempted) == sorted([self.SOURCE, other])
+
+    async def test_ensure_re_arms_instead_of_reporting_a_path_that_is_gone(self, lease_manager, monkeypatch):
+        """The dishonest answer that hid the outage: `ensure` returned success, a path
+        name and a lease id for a path the relay had already forgotten."""
+        self._armed(lease_manager)
+        self._relay_lists(monkeypatch, lease_manager, [])
+        created = AsyncMock()
+        monkeypatch.setattr(lease_manager, "_create_master_path", created)
+        monkeypatch.setattr(lease_manager, "_check_commit", MagicMock())
+
+        await lease_manager.ensure_stream(source_url=self.SOURCE, holder="provider-1")
+
+        assert created.await_count == 1, "ensure must not trust its own memory of having armed the path"
