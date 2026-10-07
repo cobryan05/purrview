@@ -1502,7 +1502,17 @@ export function openEventDetailModal(
     // above it and are never composited in. That is what makes this safe to feed
     // straight into the dataset: a training image with rectangles burnt into it is
     // worse than useless.
-    const frame = await captureVideoFrame(video);
+    let frame = await captureVideoFrame(video);
+    if (!frame) {
+      // A clip whose metadata has just arrived reports `readyState` 4 and its full
+      // dimensions while still compositing nothing, so the first capture off a
+      // just-opened modal is reliably black rather than occasionally so. Same recovery
+      // as the harvest above: wait for a presented frame, then capture once more. The
+      // wait's own timeout is the fallback for a paused clip that presents no further
+      // frame — by the time it expires the first one has been composited.
+      await nextPresentedFrame(video, { timeoutMs: 1500 });
+      frame = await captureVideoFrame(video);
+    }
     if (!frame) {
       toast('The video has not painted a usable frame yet — let it play a moment and try again', 4000, 'error');
       return;
