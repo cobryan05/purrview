@@ -1486,7 +1486,7 @@ class TestCheckpointRequestHoist:
             assert task.is_data_ready()
 
             task.cancel_task()
-            await task.wait_for_task_done(timeout=5.0)
+            await _await_task_done(task)
 
 
 # ─── Long-run hygiene: max_images / max_duration stop conditions ──────────────
@@ -1614,7 +1614,7 @@ class TestLiveProgress:
             assert task.get_progress() is None
 
             task.cancel_task()
-            await task.wait_for_task_done(timeout=5.0)
+            await _await_task_done(task)
 
     async def test_max_images_stop_condition_reports_determinate_progress(self, tmp_path):
         # Large enough that the task is still running (not yet stopped) once we
@@ -1657,7 +1657,7 @@ class TestLiveProgress:
             assert 0.0 < progress < 100.0
 
             task.cancel_task()
-            await task.wait_for_task_done(timeout=5.0)
+            await _await_task_done(task)
 
 
 # ─── Long-run hygiene: model pin renewal ───────────────────────────────────────
@@ -1729,7 +1729,7 @@ class TestPinRenewal:
             assert (_MODEL_NAME, "pin-1") in unpin_calls, "the stale pin_id must be released after renewal"
 
             task.cancel_task()
-            await task.wait_for_task_done(timeout=5.0)
+            await _await_task_done(task)
 
     async def test_renewal_failure_does_not_kill_task(self, tmp_path):
         """A renewal HTTP failure must be logged and skipped, never raised — it
@@ -1773,7 +1773,7 @@ class TestPinRenewal:
             ), "failed renewal must leave the old pin in place"
 
             task.cancel_task()
-            await task.wait_for_task_done(timeout=5.0)
+            await _await_task_done(task)
             assert task.get_status() == TaskStatus.COMPLETED
 
 
