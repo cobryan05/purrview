@@ -65,7 +65,7 @@ The short version of what it gives you:
   the more interesting question: clips of a dog with no person present, or images
   where a label has never been confirmed either way.
 
-![Live view — one card per camera, boxes drawn as the watcher sees them](docs/screenshots/screen2.png)
+![Live view — one card per camera, boxes drawn as the watcher sees them](docs/screenshots/screen2.webp)
 
 *Watch → Live: every camera in a running watcher, with what it is tracking right
 now.*
@@ -94,12 +94,12 @@ This is the part that matters, and the rest of the app is arranged around it.
    **train**.
 7. The new model goes back into the watcher.
 
-![The label-correction dialog for an event](docs/screenshots/screen5.png)
+![The label-correction dialog for an event](docs/screenshots/screen5.webp)
 
 *Step 4 — correcting an event label by label, and the frames that correction will
 harvest.*
 
-![An event clip with detection boxes and its tracking problems listed](docs/screenshots/screen1.png)
+![An event clip with detection boxes and its tracking problems listed](docs/screenshots/screen1.webp)
 
 *Steps 3 and 5 — the clip with its boxes, and the tracking problems found in it.*
 
@@ -204,7 +204,39 @@ a paste works across images of different sizes, and pasting a box that is alread
 there is a no-op rather than a duplicate. The clipboard is shared by every canvas
 on the page, so you can copy on one and paste inside a modal three levels down.
 
-![The Review grid, filtered, with per-box labels and bulk actions](docs/screenshots/screen4.png)
+![Annotating one image, with the label panel showing per-label state and counts](docs/screenshots/screen11.webp)
+
+*One image open over the grid it came from. The label list on the right is doing
+most of the work.*
+
+That panel is where an image gets finished, and it is worth reading closely:
+
+- **Every label carries a mark for this image** — present, absent, or nothing
+  yet. Absent is a real answer and nothing is not, which is the distinction the
+  [new-class section](#adding-a-new-class-without-ruining-your-old-data) is about.
+  A run that requires verification skips any image still holding unreviewed
+  labels, so the marks are what make an image usable rather than merely
+  annotated.
+- **Two counts sit beside each label**, scoped to the active training run: how
+  many verified examples it has, and how many are still unverified. Only the
+  first number is real — training draws on verified boxes, so an unverified one
+  is invisible to a dataset no matter how good it looks on screen. Watching the
+  verified count climb is how you tell a class is actually getting trainable.
+- **Apply-to-all says how many labels it will touch.** The caption reads "Apply
+  to N targeted", and *Mark absent*, *Reset* and *Verify all* act on exactly that
+  set — the 🎯 beside it chooses what the set is. When it is narrowed to a subset
+  rather than everything, a **focus** badge appears in the bottom bar, so a
+  button that is quietly acting on eleven labels instead of fifty says so.
+- **Inference can fill the image in for you.** The Inference tab runs a model on
+  the open image and leaves its detections as unverified boxes. Confirming good
+  ones and fixing the rest is far faster than drawing from scratch, and the
+  verified/unverified split means a model's guesses can never leak into training
+  unseen.
+- **All of it is hotkeyed**, including mark-absent, reset and verify-all. The
+  tooltips name the key from your own bindings rather than the default, so they
+  stay honest after a rebind.
+
+![The Review grid, filtered, with per-box labels and bulk actions](docs/screenshots/screen4.webp)
 
 *Annotate → Review: filter chips across the top, bulk actions beneath, images and
 boxes as cards.*
@@ -214,7 +246,7 @@ or absent across the whole result set, add or remove tags, settle verification, 
 delete. The dialog shows the range it is about to touch first. This is the tool
 that makes backfilling a new class across an existing dataset bearable.
 
-![The bulk-apply dialog over a filtered result set](docs/screenshots/screen6.png)
+![The bulk-apply dialog over a filtered result set](docs/screenshots/screen6.webp)
 
 *"Apply to all" — the first and last images of the range, the operations, and a
 label picker that badges whatever is in the active training run.*
@@ -229,7 +261,7 @@ label picker that badges whatever is in the active training run.*
 | **Pipelines** | Training definitions, filter chains, collectors, saved task definitions |
 | **Watching** | Watch Rules — what a camera watches for, and what happens when it sees it |
 
-![The Configuration overview, with live counts per section](docs/screenshots/screen8.png)
+![The Configuration overview, with live counts per section](docs/screenshots/screen8.webp)
 
 *Configuration → Overview. The two shortcuts at the left skip the setup grind:
 import an existing YOLO, COCO or Pascal VOC dataset, or point a collector at a
@@ -249,7 +281,7 @@ and negative training images have been added since that model last trained. A
 model sitting at "no new images since last run" has nothing to gain from
 retraining. One showing a few hundred new examples probably does.
 
-![The job launcher, with training recipes showing new data since their last run](docs/screenshots/screen10.png)
+![The job launcher, with training recipes showing new data since their last run](docs/screenshots/screen10.webp)
 
 *Jobs → Start a job. Each card is one model and one click; the counts underneath
 are how much new annotated data has arrived since it last trained. Collectors,
@@ -314,7 +346,7 @@ geometry describes the camera's view rather than any one watcher's opinion of it
 - A **mask** acts on everything. Any detection whose centre falls inside it is
   suppressed.
 
-![Drawing a zone on a camera frame](docs/screenshots/screen7.png)
+![Drawing a zone on a camera frame](docs/screenshots/screen7.webp)
 
 *The region editor, grabbing a frame from the running watcher. Coordinates are
 stored relative to the frame, so they survive a camera resolution change.*
@@ -370,7 +402,7 @@ Output paths and MQTT topics are templated — `{source}`, `{rule}`, `{subject}`
 template against example values as you type, so a typo shows up there rather than
 on the broker.
 
-![The watcher editor: sources, tracking, rules and actions](docs/screenshots/screen3.png)
+![The watcher editor: sources, tracking, rules and actions](docs/screenshots/screen3.webp)
 
 *Configuration → Watch Rules. Each rule row is the sentence; each action row below
 says what happens and when.*
@@ -428,7 +460,7 @@ entities fed by `publish_mqtt_image` actions.
 Flagging goes the other way. Home Assistant can mark an event's labels as wrong,
 and it shows up in the Events pane as something to fix.
 
-![PurrView entities and an events browser inside Home Assistant](docs/screenshots/screen9.png)
+![PurrView entities and an events browser inside Home Assistant](docs/screenshots/screen9.webp)
 
 *Maple can't keep it in the box. Last-seen sensors and pre-filtered events browser on a page in
  Home Assistant let us know when it's been too long since the last time Maple used the litter.*
