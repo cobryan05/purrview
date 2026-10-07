@@ -361,8 +361,32 @@ class WebApp:
             form = await request.form()
             secret = str(form.get("token", ""))
             next_path = self._safe_next(str(form.get("next", "/")))
+            client = request.client.host if request.client else ""
 
-            if not await self._manager.check_login(secret):
+            # Checked before the credential, which is the point: refusing here is what
+            # keeps a guesser from spending an scrypt hash per request on the one path
+            # AuthGate exempts.
+            retry_after = self._manager.login_retry_after(client)
+            if retry_after:
+                # Rendered rather than redirected. A 303 to the form would answer 200
+                # and tell the browser nothing, and `Retry-After` is the only part of
+                # this a non-browser caller can act on.
+                response = self._templates.TemplateResponse(
+                    request=request,
+                    name="login.html",
+                    context={
+                        "next": next_path,
+                        "error": "rate",
+                        "password_mode": self._manager.password_enabled,
+                    },
+                    status_code=429,
+                )
+                response.headers["Retry-After"] = str(max(1, int(retry_after) + 1))
+                return response
+
+            ok = await self._manager.check_login(secret)
+            self._manager.note_login_result(client, ok)
+            if not ok:
                 return RedirectResponse(url=f"/login?next={quote(next_path, safe='')}&error=1", status_code=303)
 
             response = RedirectResponse(url=next_path, status_code=303)

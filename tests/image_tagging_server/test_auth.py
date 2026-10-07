@@ -16,6 +16,7 @@ import json
 import pytest
 
 from apps.helpers.authSettings import AUTH_SETTING_KEY, AuthConfig, hash_password, verify_password
+from apps.image_tagging_server.manager import LoginRateLimiter
 from apps.image_tagging_server.web import AUTH_COOKIE_NAME
 from scripts.reset_login_password import clear_login_password
 
@@ -306,6 +307,168 @@ class TestAuthConfigEndpoint:
         with pytest.raises(RuntimeError):
             await manager.save_auth_config(require_auth=True, token=TOKEN, password_enabled=False, password=None)
         assert manager.require_auth is False
+
+
+class TestLoginRateLimiter:
+    """The failed-login counter behind POST /login.
+
+    Driven by an injected clock rather than by sleeping: the window is 60s, and a test
+    that waited it out would be a minute of nothing.
+    """
+
+    def _limiter(self, **kwargs):
+        self.now = 1000.0
+        return LoginRateLimiter(clock=lambda: self.now, **kwargs)
+
+    def test_failures_up_to_the_limit_are_allowed(self):
+        limiter = self._limiter(max_failures=3)
+
+        for _ in range(2):
+            assert limiter.retry_after("1.2.3.4") == 0.0
+            limiter.note_failure("1.2.3.4")
+
+        assert limiter.retry_after("1.2.3.4") == 0.0, "the third attempt is still within the limit"
+
+    def test_the_client_is_turned_away_once_the_limit_is_reached(self):
+        limiter = self._limiter(max_failures=3, window_s=60.0)
+
+        for _ in range(3):
+            limiter.note_failure("1.2.3.4")
+
+        assert limiter.retry_after("1.2.3.4") > 0
+
+    def test_the_window_reopens(self):
+        """The failure that would matter most: a window that never expires is a
+        permanent lockout, and the only way back would be restarting the service."""
+        limiter = self._limiter(max_failures=2, window_s=60.0)
+        limiter.note_failure("1.2.3.4")
+        limiter.note_failure("1.2.3.4")
+        assert limiter.retry_after("1.2.3.4") > 0
+
+        self.now += 60.1
+
+        assert limiter.retry_after("1.2.3.4") == 0.0
+
+    def test_the_wait_shrinks_as_the_oldest_failure_ages(self):
+        limiter = self._limiter(max_failures=2, window_s=60.0)
+        limiter.note_failure("1.2.3.4")
+        limiter.note_failure("1.2.3.4")
+        first = limiter.retry_after("1.2.3.4")
+
+        self.now += 30.0
+
+        assert limiter.retry_after("1.2.3.4") < first
+
+    def test_a_success_forgets_the_failures(self):
+        """The anti-lockout property. The key can only be the connecting address, so
+        behind a proxy every browser shares one — whoever knows the password has to get
+        in on the attempt they make."""
+        limiter = self._limiter(max_failures=2)
+        limiter.note_failure("1.2.3.4")
+        limiter.note_failure("1.2.3.4")
+        assert limiter.retry_after("1.2.3.4") > 0
+
+        limiter.note_success("1.2.3.4")
+
+        assert limiter.retry_after("1.2.3.4") == 0.0
+
+    def test_clients_are_counted_separately(self):
+        limiter = self._limiter(max_failures=2)
+        limiter.note_failure("1.2.3.4")
+        limiter.note_failure("1.2.3.4")
+
+        assert limiter.retry_after("1.2.3.4") > 0
+        assert limiter.retry_after("5.6.7.8") == 0.0, "one client's guesses must not block another"
+
+    def test_the_table_does_not_grow_without_bound(self):
+        """The key is whatever address connected, so the table is caller-driven."""
+        limiter = self._limiter(max_failures=2, client_limit=10)
+
+        for i in range(200):
+            limiter.note_failure(f"10.0.0.{i}")
+
+        assert len(limiter._failures) <= 10
+
+    def test_expired_clients_are_dropped_entirely(self):
+        limiter = self._limiter(max_failures=5, window_s=60.0)
+        limiter.note_failure("1.2.3.4")
+
+        self.now += 61.0
+        limiter.note_failure("5.6.7.8")
+
+        assert "1.2.3.4" not in limiter._failures
+
+
+class TestLoginIsRateLimited:
+    """POST /login, the one path AuthGate exempts and so the only one an
+    unauthenticated caller can spend scrypt time on."""
+
+    async def test_repeated_wrong_guesses_are_eventually_refused(self, http_client, manager):
+        _enable(manager)
+
+        last = None
+        for _ in range(11):
+            last = await http_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+
+        assert last.status_code == 429
+        assert int(last.headers["Retry-After"]) > 0
+
+    async def test_the_credential_is_not_even_checked_once_refused(self, http_client, manager, monkeypatch):
+        """The whole point: a refused caller must not reach the hash."""
+        _enable(manager)
+        for _ in range(11):
+            await http_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+
+        checked = []
+        original = manager.check_login
+
+        async def _spy(candidate):
+            checked.append(candidate)
+            return await original(candidate)
+
+        monkeypatch.setattr(manager, "check_login", _spy)
+        resp = await http_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+
+        assert resp.status_code == 429
+        assert checked == [], "a rate-limited attempt must not cost a credential check"
+
+    async def test_the_right_credential_still_signs_in_after_some_failures(self, http_client, manager):
+        """A limit that locked out the person who knows the password would be worse
+        than no limit — behind a proxy every browser shares one key."""
+        _enable(manager)
+        for _ in range(9):
+            await http_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+
+        resp = await http_client.post("/login", data={"token": TOKEN}, follow_redirects=False)
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/"
+
+    async def test_signing_in_clears_the_count_for_the_next_attempt(self, http_client, manager):
+        """Nine typos, a sign-in, then nine more typos must still be nine — not
+        eighteen. Without the reset the tenth failure overall is refused, and a long
+        session of occasional fumbles would eventually block itself."""
+        _enable(manager)
+        for _ in range(9):
+            await http_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+        await http_client.post("/login", data={"token": TOKEN}, follow_redirects=False)
+
+        last = None
+        for _ in range(9):
+            last = await http_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+
+        assert last.status_code == 303, "a successful sign-in must forget the earlier failures"
+
+    async def test_the_form_is_still_served_while_refused(self, http_client, manager):
+        """GET /login costs nothing and must stay reachable, or a rate-limited client
+        cannot even see why it was turned away."""
+        _enable(manager)
+        for _ in range(11):
+            await http_client.post("/login", data={"token": "wrong"}, follow_redirects=False)
+
+        resp = await http_client.get("/login")
+
+        assert resp.status_code == 200
 
 
 class TestPasswordRecovery:

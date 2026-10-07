@@ -37,6 +37,87 @@ logger.setLevel(LOG_LEVEL)
 
 __all__ = ["Manager", "INFERENCE_URL_SETTING_KEY", "TRAINING_URL_SETTING_KEY"]
 
+#: Failed logins one client may make inside `LOGIN_WINDOW_S` before it is turned away.
+#: Generous on purpose: this is here to make guessing a password impractical, not to
+#: punish typos, and a limit a household can hit by being clumsy is one that will be
+#: raised rather than trusted.
+LOGIN_MAX_FAILURES = 10
+
+#: How long failures are remembered, and therefore the longest a blocked client waits.
+LOGIN_WINDOW_S = 60.0
+
+#: Clients counted at once. A bound rather than a tuning knob: the key is whatever
+#: address connected, so an unbounded table is a memory leak any scan can drive.
+LOGIN_CLIENT_LIMIT = 2048
+
+
+class LoginRateLimiter:
+    """Failed-login counter, per client, over a fixed window.
+
+    Only *failures* are counted, and a success forgets the client — so ordinary typos
+    never accumulate into a block, and a client under the limit is cleared the moment
+    someone signs in from it.
+
+    It is still a lockout once the limit is reached, and deliberately so: the refusal
+    happens before `check_login`, because not spending an scrypt hash on a guess is the
+    reason this exists. A legitimate person sharing the blocked address waits too. What
+    bounds that is the window — at most `LOGIN_WINDOW_S` — and it matters because the
+    key can only be the address that connected: put a reverse proxy in front of this app
+    and every browser collapses onto one key.
+
+    `X-Forwarded-For` is deliberately not consulted. Nothing here can tell a header a
+    trusted proxy set from one the caller invented, and a key the caller chooses is no
+    key at all — a guesser would simply send a new one per request.
+    """
+
+    def __init__(
+        self,
+        max_failures: int = LOGIN_MAX_FAILURES,
+        window_s: float = LOGIN_WINDOW_S,
+        client_limit: int = LOGIN_CLIENT_LIMIT,
+        clock=time.monotonic,
+    ) -> None:
+        self._max_failures = max_failures
+        self._window_s = window_s
+        self._client_limit = client_limit
+        # Monotonic: a window measured against the wall clock reopens early, or never,
+        # when the host's time is stepped — and this container's clock is not UTC.
+        self._clock = clock
+        self._failures: Dict[str, List[float]] = {}
+
+    def retry_after(self, client: str) -> float:
+        """Seconds this client must wait, or 0.0 when it may try now."""
+        recent = self._recent(client)
+        if len(recent) < self._max_failures:
+            return 0.0
+        # The oldest failure still in the window is the one whose expiry frees a slot.
+        return max(0.0, self._window_s - (self._clock() - recent[0]))
+
+    def note_failure(self, client: str) -> None:
+        recent = self._recent(client)
+        recent.append(self._clock())
+        self._failures[client] = recent
+        self._prune()
+
+    def note_success(self, client: str) -> None:
+        self._failures.pop(client, None)
+
+    def _recent(self, client: str) -> List[float]:
+        """This client's failures still inside the window, oldest first."""
+        cutoff = self._clock() - self._window_s
+        return [at for at in self._failures.get(client, ()) if at > cutoff]
+
+    def _prune(self) -> None:
+        cutoff = self._clock() - self._window_s
+        self._failures = {client: recent for client, recent in self._failures.items() if recent and recent[-1] > cutoff}
+        if len(self._failures) <= self._client_limit:
+            return
+        # Over the cap, the clients closest to expiring go first: they are the ones
+        # whose counts are about to stop meaning anything anyway.
+        ordered = sorted(self._failures.items(), key=lambda item: item[1][-1], reverse=True)
+        self._failures = dict(ordered[: self._client_limit])
+
+
 # Service /status probes: a service that's simply busy (e.g. mid-inference or
 # mid-training-step) can take a while to answer its own health check. Rather
 # than flagging it "not responding" the moment the old short timeout elapses,
@@ -108,6 +189,10 @@ class Manager:
         # an unauthenticated caller is enough to starve the thread pool every proxied
         # request shares. Two at a time is more than a human ever needs.
         self._login_gate: asyncio.Semaphore = asyncio.Semaphore(2)
+        # `/login` is the one path AuthGate exempts, so it is also the only place an
+        # unauthenticated caller can spend this app's CPU. The semaphore bounds what one
+        # burst costs; this bounds how long a guesser gets to keep spending it.
+        self._login_limiter: LoginRateLimiter = LoginRateLimiter()
 
     async def start(self) -> None:
         """Load URL overrides and auth settings from DB on startup."""
@@ -261,6 +346,25 @@ class Manager:
         # keep the number running at once bounded — see `_login_gate`.
         async with self._login_gate:
             return await asyncio.to_thread(verify_password, candidate, self._auth.password_hash)
+
+    def login_retry_after(self, client: Optional[str]) -> float:
+        """Seconds before this client may attempt a login, or 0.0 to let it through.
+
+        Args:
+            client (Optional[str]): The connecting address. An unknown peer shares one
+                bucket rather than bypassing the limit.
+
+        Returns:
+            float: 0.0 when the attempt is allowed.
+        """
+        return self._login_limiter.retry_after(client or "")
+
+    def note_login_result(self, client: Optional[str], ok: bool) -> None:
+        """Record what a login attempt did, so repeated failures can be turned away."""
+        if ok:
+            self._login_limiter.note_success(client or "")
+        else:
+            self._login_limiter.note_failure(client or "")
 
     async def save_auth_config(
         self,
