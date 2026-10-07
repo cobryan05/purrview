@@ -25,6 +25,7 @@ import { prefs } from '/app-static/js/shared/prefs.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { verifyAllBboxes } from '../app/image-tagging/canvas/image.js';
 import { registerCanvasAction } from '../app/image-tagging/canvasActions.js';
+import { combosForAction, comboLabel } from '../app/image-tagging/hotkeyBindings.js';
 import { toast, actionNotice, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { previewSuppressionGroups, applySuppressionGroups } from '/app-static/js/shared/api/models.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
@@ -1139,7 +1140,9 @@ async function mountEditMode(container, { filter, onRerender }) {
    */
   function addDynamicSection() {
     const emptyByParent = new Map();
-    inner.appendChild(makeSectionHeader('Dynamic Labels', dynamicMap.size));
+    const dynamicHeader = makeSectionHeader('Dynamic Labels', dynamicMap.size);
+    dynamicHeader.dataset.tour = 'config.labels.dynamic';
+    inner.appendChild(dynamicHeader);
 
     if (dynamicMap.size === 0) {
       const empty = document.createElement('div');
@@ -1191,25 +1194,31 @@ async function mountEditMode(container, { filter, onRerender }) {
 
       const acts = document.createElement('div');
       acts.className = 'lt-acts';
-      const promoteBtn = iconAction('promote', 'Promote into the label hierarchy', {
-        onClick: () => togglePromotePicker(row, {
-          label,
-          standardMap: labelsMap,
-          onPromote: async ({ parentUuid, scope }) => {
-            await updateLabel(uuid, name, color, {
-              labelType: 'standard',
-              scope,
-              parentUuid,
-              // Matches what creating the label under that parent would have given it:
-              // a group root by default only when it has no parent to defer to.
-              ...(parentUuid ? { exclusiveVariants: false } : {}),
-            });
-            onRerender();
-            notifyHierarchyMoveImpact(name);
-          },
-        }),
-      });
+      const promoteBtn = iconAction(
+        'promote',
+        'Promote into the label hierarchy \u2014 pick a parent and a scope and it becomes a '
+        + 'standard label, keeping every box already annotated with it',
+        {
+          onClick: () => togglePromotePicker(row, {
+            label,
+            standardMap: labelsMap,
+            onPromote: async ({ parentUuid, scope }) => {
+              await updateLabel(uuid, name, color, {
+                labelType: 'standard',
+                scope,
+                parentUuid,
+                // Matches what creating the label under that parent would have given it:
+                // a group root by default only when it has no parent to defer to.
+                ...(parentUuid ? { exclusiveVariants: false } : {}),
+              });
+              onRerender();
+              notifyHierarchyMoveImpact(name);
+            },
+          }),
+        },
+      );
       promoteBtn.dataset.testid = 'label-promote';
+      promoteBtn.dataset.tour = 'config.labels.promote';
 
       acts.append(
         promoteBtn,
@@ -1387,7 +1396,7 @@ async function mountSelectMode(container, { runtime, filter }) {
     ));
   header.appendChild(visBtn);
 
-  const tgtBtn = _makeMenuButton('🎯', 'Apply-to-all target', () =>
+  const tgtBtn = _makeMenuButton('🎯', 'Apply-to-all target \u2014 which labels Mark absent and Reset act on', () =>
     buildPresetMenu(
       'Apply-to-all target',
       // 'custom' only appears once the user has hand-picked a selection.
@@ -1395,6 +1404,7 @@ async function mountSelectMode(container, { runtime, filter }) {
       targetPreset,
       (v) => { closeMenu(); activeTrainingConfig.setTargetPreset(v); },
     ));
+  tgtBtn.dataset.tour = 'annotate.labels.target';
   header.appendChild(tgtBtn);
 
   const refreshBtn = document.createElement('button');
@@ -1429,13 +1439,31 @@ async function mountSelectMode(container, { runtime, filter }) {
   const bulkButtonsRow = document.createElement('div');
   Object.assign(bulkButtonsRow.style, { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' });
 
+  // Tooltips name the key from the user's own bindings rather than the default,
+  // which a rebind would turn into a confident lie.
+  const describeKey = (action, text) => {
+    const combo = combosForAction(action)[0];
+    return combo ? `${text} (${comboLabel(combo)})` : text;
+  };
+
   const markAbsentBtn = document.createElement('button');
   markAbsentBtn.textContent = 'Mark absent';
-  markAbsentBtn.title = 'Mark every targeted label absent for this image';
+  markAbsentBtn.dataset.tour = 'annotate.labels.markAbsent';
+  markAbsentBtn.title = describeKey(
+    'action:markAbsent',
+    'Mark every targeted label absent for this image. Absent is an answer, '
+    + 'unreviewed is not: a run that requires verification skips images that '
+    + 'still have unreviewed labels',
+  );
   Object.assign(markAbsentBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
   const resetAllBtn = document.createElement('button');
   resetAllBtn.textContent = 'Reset';
-  resetAllBtn.title = 'Reset every targeted label to unreviewed for this image';
+  resetAllBtn.dataset.tour = 'annotate.labels.reset';
+  resetAllBtn.title = describeKey(
+    'action:resetLabels',
+    'Reset every targeted label to unreviewed for this image \u2014 undoes present '
+    + 'and absent marks alike',
+  );
   Object.assign(resetAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
 
   // Visual separator: Verify All acts on bbox tags (canvas state), not label
@@ -1446,7 +1474,12 @@ async function mountSelectMode(container, { runtime, filter }) {
 
   const verifyAllBtn = document.createElement('button');
   verifyAllBtn.textContent = 'Verify all';
-  verifyAllBtn.title = 'Mark every bbox on this image as verified';
+  verifyAllBtn.dataset.tour = 'annotate.labels.verifyAll';
+  verifyAllBtn.title = describeKey(
+    'action:verifyAll',
+    'Mark every bbox on this image as verified \u2014 training draws on verified '
+    + 'boxes, so an unverified box is invisible to a dataset',
+  );
   Object.assign(verifyAllBtn.style, { fontSize: '0.75em', padding: '2px 6px' });
   verifyAllBtn.addEventListener('click', () => {
     if (!runtime) return;

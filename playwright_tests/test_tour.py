@@ -787,3 +787,136 @@ class TestTheTourPointsOutKeyboardShortcuts:
         expect(_progress(page)).to_have_text("Settings · 1 of 3")
         _advance(page)
         expect(page.locator("[data-testid='tour-body']")).to_contain_text("labels exist")
+
+
+class TestTheAnnotateTourExplainsAbsenceAndVerification:
+    """The two controls that decide whether an annotated image reaches a dataset at
+    all — Mark absent and Verify all — and the keys they sit on.
+
+    What is conditional here is the key tokens: a step naming `{key:action:...}` for an
+    action id that does not exist renders the literal word "unbound", which looks like
+    deliberate copy and silently stops telling the reader which key to press.
+    """
+
+    def _run_annotate_tour(self, page: Page, base_url: str, bindings: dict | None = None):
+        # The key tokens read the live bindings, so the workspace's stored map would
+        # otherwise decide what this asserts. 404 on the DB key sends the app to
+        # localStorage, which is seeded here or left empty for the defaults.
+        page.route(
+            re.compile(r"/api/settings/hotkey_bindings$"),
+            lambda route: (
+                route.fulfill(status=200, content_type="application/json", body='{"status":"success"}')
+                if route.request.method == "PUT"
+                else route.fulfill(status=404, content_type="application/json", body='{"detail":"not found"}')
+            ),
+        )
+        if bindings:
+            page.add_init_script(
+                f"window.localStorage.setItem('ww_hotkey_bindings', {json.dumps(json.dumps(bindings))})"
+            )
+        else:
+            page.add_init_script("window.localStorage.removeItem('ww_hotkey_bindings')")
+        _route_tour_state(page, _stored(completed=["overview"]))
+        _boot(page, base_url)
+        page.wait_for_timeout(800)
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.locator("[data-testid='tour-help-fab']").click()
+        page.locator("[data-testid='tour-help-run-annotate']").click()
+        expect(page.locator("[data-testid='tour-title']")).to_have_text("Files browses the image folder")
+
+    def _advance_to(self, page: Page, title: str, limit: int = 8):
+        """Next until `title` lands. The count is not fixed: the steps before it are
+        `requireTarget`, so how many there are depends on what rendered."""
+        titles = []
+        for _ in range(limit):
+            seen = page.locator("[data-testid='tour-title']").text_content()
+            titles.append(seen)
+            if seen == title:
+                return
+            _advance(page)
+        raise AssertionError(f"never reached {title!r}; saw {titles}")
+
+    def test_mark_absent_is_explained_with_its_key_and_its_effect_on_datasets(self, page: Page, base_url: str):
+        self._run_annotate_tour(page, base_url)
+        self._advance_to(page, "Saying a label is NOT here is also an answer")
+
+        body = page.locator("[data-testid='tour-body']")
+        expect(body).to_contain_text("Mark absent")
+        # The reason the reader came looking: annotated images that never reach a dataset.
+        expect(body).to_contain_text("dataset")
+        # Default bindings: A marks absent, R resets.
+        expect(body).to_contain_text("(A)")
+        expect(body).to_contain_text("(R)")
+        expect(body).not_to_contain_text("unbound")
+
+    def test_verify_all_is_explained_with_its_key(self, page: Page, base_url: str):
+        self._run_annotate_tour(page, base_url)
+        self._advance_to(page, "Verify all confirms the boxes themselves")
+
+        body = page.locator("[data-testid='tour-body']")
+        expect(body).to_contain_text("(V)")
+        expect(body).not_to_contain_text("unbound")
+
+    def test_a_rebound_key_is_named_as_the_user_bound_it(self, page: Page, base_url: str):
+        """The whole point of the token: copy that hard-codes A is wrong the moment
+        someone rebinds it."""
+        self._run_annotate_tour(page, base_url, bindings={"shift+x": "action:markAbsent", "v": "action:verifyAll"})
+        self._advance_to(page, "Saying a label is NOT here is also an answer")
+
+        body = page.locator("[data-testid='tour-body']")
+        expect(body).to_contain_text("(Shift+X)")
+        expect(body).not_to_contain_text("(A)")
+
+
+class TestTheToursExplainDynamicLabels:
+    """Dynamic labels are the one part of the vocabulary that is created by accident —
+    typed into the annotation picker rather than planned on the Labels screen — so
+    both ends of that path need saying: that typing an unknown name makes one, and
+    that promoting it puts it in the tree without losing the boxes.
+    """
+
+    def _advance_to(self, page: Page, title: str, limit: int = 10):
+        titles = []
+        for _ in range(limit):
+            seen = page.locator("[data-testid='tour-title']").text_content()
+            titles.append(seen)
+            if seen == title:
+                return
+            _advance(page)
+        raise AssertionError(f"never reached {title!r}; saw {titles}")
+
+    def test_the_labels_tour_explains_promotion_with_no_dynamic_labels_present(self, page: Page, base_url: str):
+        """The step points at a row's ▲ button, which does not exist until a dynamic
+        label does. It has to fall back to the section header rather than render with
+        no spotlight — an empty workspace is exactly who needs telling this."""
+        _route_tour_state(page, _stored(completed=["overview"]))
+        _route_labels(page, [])
+        _boot(page, base_url)
+        page.wait_for_timeout(800)
+        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+        page.locator("#tab-configuration [data-tab='tab-tag-management']").click()
+        page.wait_for_timeout(400)
+        page.locator("[data-testid='tour-help-fab']").click()
+        page.locator("[data-testid='tour-help-run-labels']").click()
+
+        self._advance_to(page, "Dynamic labels are the ones you did not plan")
+
+        # No dynamic label exists, so the spotlight can only have come from the fallback.
+        expect(page.locator("[data-tour='config.labels.promote']")).to_have_count(0)
+        expect(page.locator("[data-testid='tour-spotlight']")).to_be_visible()
+        body = page.locator("[data-testid='tour-body']")
+        # The two facts a reader cannot get from the UI itself.
+        expect(body).to_contain_text("While annotating")
+        expect(body).to_contain_text("comes along")
+
+    def test_the_annotate_tour_says_an_unknown_name_creates_a_label(self, page: Page, base_url: str):
+        _route_tour_state(page, _stored(completed=["overview"]))
+        _boot(page, base_url)
+        page.wait_for_timeout(800)
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.locator("[data-testid='tour-help-fab']").click()
+        page.locator("[data-testid='tour-help-run-annotate']").click()
+        expect(page.locator("[data-testid='tour-title']")).to_have_text("Files browses the image folder")
+
+        self._advance_to(page, "A missing label is not a reason to stop")
+        expect(page.locator("[data-testid='tour-body']")).to_contain_text("dynamic label")

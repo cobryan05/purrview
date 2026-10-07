@@ -95,6 +95,21 @@ export const LABELS = {
         + 'become a wall of devices — turn it on for the few you automate against.',
     },
     {
+      id: 'dynamic',
+      target: ['config.labels.promote', 'config.labels.dynamic'],
+      navigate: [CONFIG, 'tab-tag-management'],
+      title: 'Dynamic labels are the ones you did not plan',
+      body: 'You do not have to come here first. While annotating, typing a name the '
+        + 'vocabulary has never heard of creates it on the spot as a dynamic label \u2014 so a '
+        + 'washing machine you did not expect to care about gets boxed now and sorted out '
+        + 'later. They land in this flat section rather than the tree above, because nothing '
+        + 'has said where they belong yet. Promote one (\u25b2 on its row) by picking a parent '
+        + 'and whether it is an object or a whole-image label, and it becomes an ordinary '
+        + 'label in the hierarchy \u2014 every box already annotated with it comes along, so '
+        + 'nothing is re-annotated. The reverse exists too, and is refused while the label '
+        + 'still has children.',
+    },
+    {
       id: 'classMap',
       target: 'config.labels.classMap',
       navigate: [CONFIG, 'tab-tag-management'],
@@ -583,6 +598,43 @@ export const ANNOTATE = {
         + 'before you draw and every new box gets it; pick one with a box selected to change it.',
     },
     {
+      id: 'absent',
+      target: ['annotate.labels.markAbsent', 'annotate.sidebar.labels'],
+      navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-labels-tool'],
+      title: 'Saying a label is NOT here is also an answer',
+      body: 'An empty image is not the same as an unreviewed one. A label nobody has said '
+        + 'anything about is unreviewed, and a training run that requires verification skips '
+        + 'every image that still has one \u2014 which is the usual reason images you annotated '
+        + 'never turn up in a dataset. "Mark absent" ({key:action:markAbsent}) is the positive '
+        + 'statement "none of these are in this frame", and it is what turns a frame with no cat '
+        + 'in it into a usable negative example. "Reset" ({key:action:resetLabels}) puts the '
+        + 'targeted labels back to unreviewed.',
+    },
+    {
+      id: 'absentTarget',
+      target: ['annotate.labels.target', 'annotate.sidebar.labels'],
+      navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-labels-tool'],
+      title: 'Mark absent acts on the targeted labels',
+      body: 'Both bulk buttons act on a set you choose, not on everything blindly. The \u{1F3AF} '
+        + 'menu picks that set \u2014 every label, only the ones in the active training run, only '
+        + 'object or only image-classification labels, or a hand-picked few by toggling rows. The '
+        + 'caption above the buttons always says how many labels they will hit, and the count '
+        + 'underneath says how many this image still owes the active run. Per label, the row\'s '
+        + 'own control marks just that one present or absent.',
+    },
+    {
+      id: 'verifyAll',
+      target: ['annotate.labels.verifyAll', 'annotate.sidebar.labels'],
+      navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-labels-tool'],
+      title: 'Verify all confirms the boxes themselves',
+      body: 'A box starts out Unverified \u2014 a claim, not a fact \u2014 and training draws on '
+        + 'verified boxes only, so an unverified box is invisible to a dataset no matter how right '
+        + 'it looks. "Verify all" ({key:action:verifyAll}) marks every box on this image verified in '
+        + 'one go, which is the fast path after a model\'s first pass: fix the few boxes that are '
+        + 'wrong, then verify the rest. It is a separate question from absence \u2014 Verify all is '
+        + 'about boxes that exist, Mark absent about labels that have none.',
+    },
+    {
       id: 'contextMenu',
       target: 'annotate.canvasStage',
       navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-canvas'],
@@ -593,6 +645,18 @@ export const ANNOTATE = {
         + 'workspace for boxes that look like it. With several boxes selected the menu acts on all '
         + 'of them at once. Right-clicking empty canvas is a different gesture — it toggles '
         + 'between Select and BBox, so you can keep drawing without going back to the toolbar.',
+    },
+    {
+      id: 'labelOnTheFly',
+      target: 'annotate.canvasStage',
+      navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-canvas'],
+      requireTarget: true,
+      title: 'A missing label is not a reason to stop',
+      body: 'The label picker in that menu also creates. Type a name nothing matches and it '
+        + 'offers to make it there and then, as a dynamic label \u2014 no trip to Configure, no '
+        + 'decision about where it belongs in the hierarchy. Box the thing while you are '
+        + 'looking at it; Labels & Tags is where you later rename it, give it a parent and '
+        + 'promote it into the tree, keeping the boxes you already drew.',
     },
     {
       id: 'inference',
