@@ -68,6 +68,7 @@ function _settingsRailGroups() {
         { tab: 'tab-settings-dedup', label: 'Deduplication', build: () => _buildDedupSection() },
         { tab: 'tab-settings-interface', label: 'Interface', build: () => _buildUiSettingsSection() },
         { tab: 'tab-settings-hotkeys', label: 'Keyboard Shortcuts', build: () => _buildHotkeySection() },
+        { tab: 'tab-settings-about', label: 'About', build: () => _buildAboutSection() },
       ],
     },
   ];
@@ -1618,5 +1619,54 @@ async function _buildHotkeySection() {
   const handle = await renderHotkeyPanel(hotkeyInner);
   resetBtn.addEventListener('click', () => handle?.reset());
 
+  return section;
+}
+
+/* ── About ────────────────────────────────────────────────────────────────── */
+
+/** Where the Corresponding Source for an unmodified build is published. */
+const SOURCE_URL = 'https://github.com/cobryan05/purrview';
+
+/**
+ * AGPL-3.0 section 13 obliges anyone who lets users interact with the program
+ * over a network to offer those users its Corresponding Source. This app is only
+ * ever reached that way, so the offer has to be reachable from the interface —
+ * a LICENSE file in the repository never reaches the person using a deployment.
+ */
+function _buildAboutSection() {
+  const { section, body } = _panel('About', { id: 'settings-section-about' });
+
+  const intro = document.createElement('p');
+  intro.className = 'settings-server-desc';
+  intro.textContent =
+    'PurrView — event-driven camera watching, object tracking and annotation. ' +
+    'Copyright (C) 2025–2026 Chris OBryan.';
+
+  const licence = document.createElement('p');
+  licence.className = 'settings-server-desc';
+  licence.textContent =
+    'Free software under the GNU Affero General Public License, version 3 or (at ' +
+    'your option) any later version. Distributed in the hope that it will be ' +
+    'useful, but with NO WARRANTY — not even for merchantability or fitness for a ' +
+    'particular purpose.';
+
+  const link = document.createElement('a');
+  link.href = SOURCE_URL;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = SOURCE_URL;
+  link.dataset.testid = 'settings-about-source';
+
+  const { row: sourceRow } = _buildRow({
+    label: 'Source code',
+    description:
+      'The complete source for this program, including the licence text. A ' +
+      'deployment running modified code owes its own users that modified source ' +
+      'as well, not this link.',
+    controls: [link],
+    stacked: true,
+  });
+
+  body.append(intro, licence, sourceRow);
   return section;
 }

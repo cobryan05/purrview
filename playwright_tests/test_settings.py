@@ -317,6 +317,7 @@ SETTINGS_RAIL_SECTIONS = [
     "tab-settings-dedup",
     "tab-settings-interface",
     "tab-settings-hotkeys",
+    "tab-settings-about",
 ]
 
 
@@ -477,7 +478,11 @@ class TestMqttSettings:
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
         # Every other section still built fine — a hand-edited row must not break the
         # whole tab's render. All panes build up front regardless of which is visible.
-        expect(page.locator("#tab-settings .config-rail-body .panel-box.settings-panel")).to_have_count(10)
+        # Service Status builds its own markup, so it is the one rail destination
+        # that is not a `.settings-panel`.
+        expect(page.locator("#tab-settings .config-rail-body .panel-box.settings-panel")).to_have_count(
+            len(SETTINGS_RAIL_SECTIONS) - 1
+        )
 
     @pytest.mark.quarantine("a concurrent settings PUT landed first; 1 of 1 sighting")
     def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
@@ -626,6 +631,32 @@ class TestHotkeysPanel:
 
         expect(page.locator("#tab-settings-hotkeys")).to_be_visible()
         expect(page.locator("#tab-settings-hotkeys .hotkey-grid").first).to_be_visible()
+
+
+class TestAboutSection:
+    """AGPL-3.0 section 13 obliges a network-served program to offer its users the
+    Corresponding Source. This app is only ever reached over the network, so the
+    offer lives in the UI — a link that goes missing or goes dead is a licence
+    violation, not a cosmetic regression."""
+
+    def test_source_link_offers_an_absolute_offsite_url(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        expect(page.locator("#tab-settings-about")).to_be_hidden()
+        _open_settings_section(page, "tab-settings-about")
+
+        link = page.locator("#tab-settings-about [data-testid='settings-about-source']")
+        href = link.get_attribute("href")
+
+        # A relative, empty or same-origin href satisfies "a link is present" while
+        # offering nothing — the whole point is that it leaves this deployment and
+        # reaches the source.
+        assert href and href.startswith("https://"), f"source href is not absolute: {href!r}"
+        assert not href.startswith(base_url), f"source link must leave this deployment: {href!r}"
+        # It opens in a new tab, so it must not hand the opener window to the target.
+        assert "noopener" in (link.get_attribute("rel") or "")
 
 
 # ---------------------------------------------------------------------------
