@@ -412,9 +412,13 @@ main thing PurrView has that Yolo2Mqtt did not. A collector is a standing
 instruction about which frames are worth saving, and a watcher can run one
 continuously in the background:
 
-- A **confidence band** per label, not just a floor. "Save this one between 0.3
-  and 0.7" is the uncertain middle where there is something to learn, rather than
-  the confident frames that are already right.
+- **Two thresholds per label, not one.** *Tag from* is the confidence at which a
+  detection is worth labelling at all; *Review up to* is the confidence above
+  which it is no longer worth a human's time. A label set to 0.15 and 0.7 tags
+  everything it is reasonably sure of but only queues the uncertain middle for
+  review, which is where there is something to learn. Either can be set to 0 to
+  switch off that half — 0 in the first column disables the label entirely, 0 in
+  the second keeps tagging it while never queueing it.
 - **Ambiguity**: save a detection whose runner-up label came too close to the
   winner. This is how you catch one subject being mistaken for another, which is
   the whole problem in a multi-cat house.
@@ -429,14 +433,30 @@ continuously in the background:
 > data a collector will keep, not a pause. Review what you want to keep, or raise
 > the cap.
 
+Those thresholds are set per label *per model*, and one collector can carry
+several models — a general detector alongside the narrow ones trained to catch
+specific mistakes:
+
+![A collector's configuration: several models, each with per-label thresholds](docs/screenshots/screen12.webp)
+
+*Configuration → Collectors. Each block is one model; each row is one label with
+its own tag and review thresholds.*
+
+The four buttons at the top are the point of the whole thing. A collector's output
+is not one undifferentiated pile — it is browsable by *why* each frame was kept:
+everything it saved, the frames still unverified, the ones where two labels came
+too close to call, and the ones where the detector missed something it should have
+found. Those are different problems with different fixes, and sorting them is most
+of the work of acting on them.
+
 A collector running as a watcher action stays reachable while it works. The
 **Collector…** button on the watcher's card in Watch → Live opens its tuning
 surface: live dedup statistics and the sweep tables for picking a threshold, how
 close the confusable detections actually were, counts of detector misses and
-novel frames — and, in the same place, a button that browses the unverified
-frames it has kept. Seeing what a knob did and looking at the images it produced
-are one click apart rather than two tabs apart. The queue it opens is the same
-Review surface as everywhere else, so you can label from it directly.
+novel frames — and, in the same place, the same browse buttons. Seeing what a knob
+did and looking at the frames it produced are one click apart rather than two tabs
+apart, and what opens is the ordinary Review surface, so you can label from it
+directly.
 
 **Trackers** are plugins; ByteTrack and an IoU/SORT-lite tracker ship. The
 detection confidence floor is deliberately low, because a tracker needs the weak
