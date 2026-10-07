@@ -149,9 +149,11 @@ async def repair_if_corrupt(path: Path, *, enabled: bool = True) -> dict:
     if errors < MIN_ERRORS_TO_REPAIR:
         return {"repaired": False, "reason": "clean", "decodeErrors": errors}
 
-    before = await asyncio.to_thread(_probe_duration, path)
     partial = path.with_suffix(path.suffix + ".repair")
     try:
+        # Inside the try, like every other subprocess here: ffprobe can time out or be
+        # missing, and this function's contract is that it never raises.
+        before = await asyncio.to_thread(_probe_duration, path)
         proc = await asyncio.to_thread(_conceal, path, partial)
         if proc.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
             tail = proc.stderr[-300:].decode("utf-8", "replace")
