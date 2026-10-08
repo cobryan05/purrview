@@ -954,7 +954,15 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
           + 'It leaves the hierarchy and moves to the Dynamic Labels list. '
           + 'Its annotations are kept.',
         )) return;
-        await updateLabel(uuid, name, color, { labelType: 'dynamic' });
+        // `hasKids` is read off the rows on screen, which an active filter can have
+        // narrowed — so the server's own check is the one that decides, and its
+        // refusal has to reach the user rather than becoming a silent rejection.
+        try {
+          await updateLabel(uuid, name, color, { labelType: 'dynamic' });
+        } catch (err) {
+          toast(err.message, 5000, 'error');
+          return;
+        }
         onRerender();
         notifyHierarchyMoveImpact(name);
       },
