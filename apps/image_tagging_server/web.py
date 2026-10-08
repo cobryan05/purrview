@@ -571,15 +571,16 @@ class WebApp:
 
         @self._app.api_route(
             "/api/recordings/{path:path}",
-            methods=["GET", "DELETE"],
+            methods=["GET", "HEAD", "DELETE"],
         )
         async def proxy_recordings(request: Request, path: str):
             # Clip *files* go through here too, and must: the SPA talks only to this
             # port. That was once untrue — ReverseProxy buffered whole responses, so a
             # video was read into memory and lost range support — but it streams now and
             # forwards Range up and 206/Content-Range back, which is what makes the
-            # event modal's scrubber work. See TestRangeRequests in
-            # tests/helpers/test_reverse_proxy.py, which pins that.
+            # event modal's scrubber work. HEAD is here for the same reason: Firefox
+            # asks the clip its length with one before playing it. See
+            # TestRangeRequests in tests/helpers/test_reverse_proxy.py, which pins that.
             return await RECORDINGS_PROXY.handle_request(path, request)
 
         @self._app.api_route("/api/settings/{path:path}", methods=["GET", "PUT"])

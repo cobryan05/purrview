@@ -1573,6 +1573,35 @@ class TestWatchEventsAndRecordings:
         assert r.status_code == 206
         assert r.content == b"2345"
 
+    async def test_a_head_tells_the_player_the_clip_length_without_sending_it(self, http_client, db_client, tmp_path):
+        """Firefox HEADs the clip before it will play it; a 405 drops it onto un-ranged
+        full GETs its media cache cannot resume, so the picture advances one frame and
+        stops while the scrubber goes on working."""
+        from apps.helpers.db.types import Recording
+
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"0123456789")
+        rec = await db_client.create_recording(Recording(file_path=str(clip), status="complete"))
+
+        r = await http_client.head(f"/api/recordings/{rec.uuid}/file")
+
+        assert r.status_code == 200
+        assert r.headers["content-length"] == "10"
+        assert r.headers["accept-ranges"] == "bytes"
+        assert r.content == b""
+
+    async def test_the_clip_is_offered_for_playing_rather_than_downloading(self, http_client, db_client, tmp_path):
+        """This URL is a <video> src — /export is the download route."""
+        from apps.helpers.db.types import Recording
+
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"0123456789")
+        rec = await db_client.create_recording(Recording(file_path=str(clip), status="complete"))
+
+        r = await http_client.get(f"/api/recordings/{rec.uuid}/file")
+
+        assert "attachment" not in r.headers.get("content-disposition", "")
+
     async def test_overlay_is_served_when_the_clip_has_one(self, http_client, db_client, tmp_path):
         from apps.helpers.db.types import Recording
 

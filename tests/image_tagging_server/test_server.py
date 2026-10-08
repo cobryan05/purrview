@@ -181,3 +181,28 @@ class TestTheEventBlipsProxyForwardsBothMethods:
 
         assert r.status_code == 200, r.text
         assert proxied == [("POST", "states")]
+
+
+async def test_a_head_for_a_clip_reaches_db_server_instead_of_405ing(http_client, monkeypatch):
+    """The SPA talks only to this port, so a clip's HEAD has to be proxied like its GET.
+
+    Firefox asks a clip its length with a HEAD before it will play it; answering 405
+    drops it onto un-ranged full GETs its media cache cannot resume, and the clip plays
+    one frame and stops while the scrubber carries on working.
+    """
+    from fastapi.responses import Response
+
+    import apps.image_tagging_server.web as web_module
+
+    seen = {}
+
+    async def fake_handle(path, request):
+        seen["method"] = request.method
+        return Response(status_code=200, headers={"content-length": "4096"})
+
+    monkeypatch.setattr(web_module.RECORDINGS_PROXY, "handle_request", fake_handle)
+
+    resp = await http_client.head("/api/recordings/abc/file")
+
+    assert resp.status_code == 200
+    assert seen["method"] == "HEAD"

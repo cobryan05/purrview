@@ -5757,13 +5757,20 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.get(
+        @self._app.api_route(
             "/api/recordings/{uuid}/file",
+            methods=["GET", "HEAD"],
             tags=[ApiTags.RECORDINGS],
             operation_id="get_recording_file",
         )
         async def get_recording_file(uuid: str, request: Request):
-            """Serve a clip with HTTP range support so a <video> element can seek."""
+            """Serve a clip with HTTP range support so a <video> element can seek.
+
+            HEAD is part of the contract, not a courtesy: Firefox asks for the clip's
+            length and type with one before it will play it, and a 405 there drops it
+            onto un-ranged full GETs that its media cache cannot resume — the picture
+            advances one frame and stops while seeking carries on working.
+            """
             recording = await self._manager.get_recording(uuid)
             if recording is None or not recording.file_path:
                 raise HTTPException(status_code=404, detail="Recording not found")
@@ -5771,9 +5778,15 @@ class WebApp:
             if not path.is_file():
                 raise HTTPException(status_code=404, detail="Recording file is missing on disk")
             # FileResponse handles Range requests itself, which is what makes seeking
-            # work; note this must NOT be fetched through ReverseProxy, which buffers
-            # whole responses.
-            return FileResponse(path, media_type="video/mp4", filename=path.name)
+            # work. `inline` because this URL is a <video> src; the download route is
+            # /export, and an attachment disposition here invites a browser to offer
+            # the file instead of playing it.
+            return FileResponse(
+                path,
+                media_type="video/mp4",
+                filename=path.name,
+                content_disposition_type="inline",
+            )
 
         @self._app.get(
             "/api/recordings/{uuid}/overlay",

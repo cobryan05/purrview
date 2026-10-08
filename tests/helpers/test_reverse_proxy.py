@@ -287,3 +287,61 @@ class TestTimeouts:
         assert timeout.pool is not None, "an unbounded pool timeout hangs forever once the pool saturates"
         assert timeout.connect is not None, "an unbounded connect timeout hangs on an unreachable upstream"
         assert timeout.write is not None
+
+
+class TestResponseFraming:
+    """What a proxied response says about its own size.
+
+    Dropping upstream's `Content-Length` left every response chunked and of unknown
+    length. A `<video>` with `preload="metadata"` suspends its load once metadata is in
+    and resumes on play, and Firefox will not resume a stream whose length it never
+    learned — so a clip advanced one frame and stopped, while seeking, which issues a
+    fresh ranged request each time, went on working and hid it.
+    """
+
+    @staticmethod
+    def _sized_upstream(payload: bytes):
+        async def handler(path: str):
+            from fastapi.responses import Response
+
+            return Response(content=payload, media_type="video/mp4")
+
+        return handler
+
+    async def test_a_proxied_body_declares_its_length(self):
+        payload = b"\x00\x01\x02" * 700
+        proxy = _proxy_to(_upstream_app(self._sized_upstream(payload)))
+
+        async with _client_for(proxy) as client:
+            res = await client.get("/clip.mp4")
+
+        assert res.headers.get("content-length") == str(len(payload))
+        assert "transfer-encoding" not in res.headers
+        assert res.content == payload
+
+    async def test_a_chunked_upstream_stays_chunked_rather_than_claiming_a_length(self):
+        async def handler(path: str):
+            from fastapi.responses import StreamingResponse
+
+            async def body():
+                yield b"a" * 10
+                yield b"b" * 10
+
+            return StreamingResponse(body(), media_type="video/mp4")
+
+        proxy = _proxy_to(_upstream_app(handler))
+        async with _client_for(proxy) as client:
+            res = await client.get("/clip.mp4")
+
+        assert "content-length" not in res.headers
+        assert res.content == b"a" * 10 + b"b" * 10
+
+    async def test_a_partial_response_declares_the_length_of_the_part(self):
+        payload = bytes(range(256)) * 20
+        proxy = _proxy_to(_upstream_app(TestRangeRequests._range_upstream(payload)))
+
+        async with _client_for(proxy) as client:
+            res = await client.get("/clip.mp4", headers={"Range": "bytes=100-199"})
+
+        assert res.status_code == 206
+        assert res.headers.get("content-length") == "100"

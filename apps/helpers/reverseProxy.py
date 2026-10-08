@@ -2,14 +2,18 @@ import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 
-# Hop-by-hop headers are connection-scoped and must not be forwarded to the client:
-# passing upstream's Content-Length/Transfer-Encoding through alongside a re-chunked
-# StreamingResponse produces a response whose framing contradicts its own body.
+# Hop-by-hop headers are connection-scoped and describe one link, so forwarding them
+# would describe this connection with the framing of the upstream one.
+#
+# `content-length` and `content-encoding` are deliberately NOT in here. The body is
+# forwarded byte-for-byte off `aiter_raw()`, so upstream's length and encoding both
+# still describe it exactly — and dropping the length is what turned every clip
+# response into a chunked one of unknown size. Firefox will not resume a suspended
+# `preload="metadata"` load without a length, so a clip played one frame and stalled
+# while seeking, which re-requests a fresh range each time, kept working.
 _HOP_BY_HOP_HEADERS = frozenset(
     {
         "connection",
-        "content-encoding",
-        "content-length",
         "keep-alive",
         "proxy-authenticate",
         "proxy-authorization",
