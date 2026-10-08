@@ -904,7 +904,14 @@ export function openEventDetailModal(
     // The modal can be closed, navigated, or re-rendered while this is in flight. The
     // `isConnected` check alone does not cover navigation: the next event's <video> is
     // connected too, and these boxes would be drawn over the wrong clip.
-    if (seq !== loadSeq || !doc || !video || !video.isConnected) return;
+    //
+    // `currentRecording` covers the case `loadSeq` cannot: switching the Clip/Timelapse
+    // tab stays on the same event, so it moves neither the sequence nor the connected
+    // flag — it just builds a new <video> and new frame tools. Without this the clip's
+    // sidecar paints its boxes over the timelapse and plants its export checkbox in
+    // that tab's tools.
+    if (seq !== loadSeq || currentRecording?.uuid !== recording.uuid) return;
+    if (!doc || !video || !video.isConnected) return;
     overlay = attachClipOverlay(video, doc);
     overlayDoc = doc;
     // The relabel is only offered once there is a sidecar to drive it — see relabelEvent.
