@@ -649,21 +649,39 @@ class Manager:
                 f"(buffer covers {oldest.isoformat()}..{newest_end.isoformat()})"
             )
 
-        truncated = actual_start > requested_start
         # One cut per advertised range, not one cut spanning them all. A window that
         # covers several ranges can come back short with the shortfall anywhere inside
         # it, and nothing downstream can then place a box: the hole has no position.
         # Cut per range and every piece is contiguous by construction, so measuring it
         # is enough to say exactly which wallclock it holds.
         pieces = piece_windows(ranges, actual_start, end)
+        # The clamp above is to the oldest range's start, which is not the same as the
+        # first *surviving* one: `/list` advertises ranges that leave holes, so a window
+        # opening inside one is served from later video than it asked for. Taking the
+        # start from the first piece is what keeps `startedAt` and `coveredRanges`
+        # describing the file — report the clamp instead and every box lands early by
+        # the length of the head hole.
+        if pieces and pieces[0][0] > actual_start:
+            actual_start = pieces[0][0]
+            actual_duration = max(0.0, (end - actual_start).total_seconds())
+
+        truncated = actual_start > requested_start
         if len(pieces) > 1:
             size, covered = await self._write_clip_in_pieces(client, path, pieces, dest)
+            # A piece the server would not serve is dropped in there, so the file can
+            # begin later than even the first piece promised. The cursor still lands on
+            # `end` because the span is re-derived, and the head loss is then reported as
+            # the clamp it is rather than hidden inside a window that claims to cover it.
+            actual_start = covered[0][0]
+            actual_duration = max(0.0, (end - actual_start).total_seconds())
+            truncated = actual_start > requested_start
         else:
             size = await client.write_clip(path, actual_start, actual_duration, dest)
             held = await probe_duration_s(dest)
-            # Measured, not advertised. A single range is contiguous, so the video it
-            # delivered starts where it was asked to and runs for as long as the file
-            # says — which makes this window exact even when the cut came back short.
+            # Measured, not advertised. One range is contiguous, so the video starts at
+            # the window's own start — corrected above where that fell in a hole — and
+            # runs for as long as the file says, which makes this exact even when the
+            # cut came back short.
             covered = [(actual_start, actual_duration if held is None else held)]
 
         # Measured off the file, never taken from the requested window: `/list` describes
