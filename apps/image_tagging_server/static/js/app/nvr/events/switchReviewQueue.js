@@ -247,22 +247,33 @@ export function openSwitchReviewQueue({
     ].filter(Boolean).join(' · ');
   }
 
+  // One decision at a time. The write is awaited and the buttons stay live across it,
+  // so a held `1` or a double click lands two `settle` calls on the same blip: both
+  // decide it, both advance the index, and the item between them is passed over
+  // without ever being shown.
+  let settling = false;
+
   async function settle(state) {
     const blip = current();
-    if (!blip) return;
-    if (state) {
-      try {
-        await setEventBlipStates([blip.uuid], state);
-      } catch (err) {
-        Logger.error(err);
-        toast('Could not update that finding', 4000, 'error');
-        return;
+    if (!blip || settling) return;
+    settling = true;
+    try {
+      if (state) {
+        try {
+          await setEventBlipStates([blip.uuid], state);
+        } catch (err) {
+          Logger.error(err);
+          toast('Could not update that finding', 4000, 'error');
+          return;
+        }
       }
+      if (state === 'dismissed') dismissed += 1;
+      else if (state === 'confirmed') needsCorrection.add(blip.eventUuid);
+      else skipped += 1;
+      index += 1;
+    } finally {
+      settling = false;
     }
-    if (state === 'dismissed') dismissed += 1;
-    else if (state === 'confirmed') needsCorrection.add(blip.eventUuid);
-    else skipped += 1;
-    index += 1;
     await render();
   }
 
