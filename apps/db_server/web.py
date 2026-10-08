@@ -5757,9 +5757,16 @@ class WebApp:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
-        @self._app.api_route(
+        # Two decorators rather than one `methods=["GET", "HEAD"]` route: a single route
+        # puts the one explicit operation_id on both methods, and a repeated operationId
+        # fails openapi-generator's spec validation, which runs in the docker build.
+        @self._app.head(
             "/api/recordings/{uuid}/file",
-            methods=["GET", "HEAD"],
+            tags=[ApiTags.RECORDINGS],
+            operation_id="head_recording_file",
+        )
+        @self._app.get(
+            "/api/recordings/{uuid}/file",
             tags=[ApiTags.RECORDINGS],
             operation_id="get_recording_file",
         )
