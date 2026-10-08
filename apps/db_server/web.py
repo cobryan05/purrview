@@ -5853,7 +5853,12 @@ class WebApp:
             work = Path(tempfile.mkdtemp(prefix="recording-export-"))
             dest = work / f"{clip.stem}_annotated.mp4"
             try:
-                await burn_overlay_async(clip, doc, dest)
+                # Bounded: the render holds a default-executor thread for minutes and
+                # that executor is also what serves thumbnails and image decodes. See
+                # `Manager._overlay_burn_sem`. Queued rather than refused — a download
+                # that waits its turn is what the caller asked for.
+                async with self._manager.overlay_burn_slot():
+                    await burn_overlay_async(clip, doc, dest)
             except Exception as e:
                 shutil.rmtree(work, ignore_errors=True)
                 logger.error(e, exc_info=True)

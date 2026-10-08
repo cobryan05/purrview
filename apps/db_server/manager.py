@@ -390,6 +390,12 @@ class Manager:
         # min(32, cpu+4) full-res decodes in memory simultaneously — hundreds of
         # MB of spike for 4K sources. Cap the concurrent decodes instead.
         self._thumb_decode_sem = asyncio.Semaphore(int(os.environ.get("THUMB_DECODE_CONCURRENCY", "4")))
+        # Same argument as the thumbnails above, further along: an annotated export is a
+        # full re-encode that holds one default-executor thread for minutes, and the
+        # endpoint is a plain GET anyone can fire repeatedly. Unbounded, enough of them
+        # occupy every thread the thumbnails, image decodes and sidecar writes also
+        # dispatch onto, and db_server stops answering while the renders finish.
+        self._overlay_burn_sem = asyncio.Semaphore(int(os.environ.get("OVERLAY_BURN_CONCURRENCY", "2")))
         # Held reference to the in-flight cache-trim task: asyncio only keeps weak
         # references to tasks, so a bare create_task() can be garbage-collected
         # mid-run. Doubles as a coalescing flag — one trim at a time is plenty.
@@ -4896,6 +4902,14 @@ class Manager:
 
     async def get_recording(self, uuid: str) -> Optional[RecordingRead]:
         return await self._db_client.get_recording(uuid)
+
+    def overlay_burn_slot(self) -> asyncio.Semaphore:
+        """A slot for one annotated-clip render. Hold it across the whole burn.
+
+        Exposed rather than inlined in the route so the bound lives beside the
+        thumbnail decode bound it shares an executor with — see `_overlay_burn_sem`.
+        """
+        return self._overlay_burn_sem
 
     async def create_recording(self, recording: Recording) -> RecordingRead:
         return await self._db_client.create_recording(recording)
