@@ -19,6 +19,8 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 
 import jstyleson
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from alembic.util.exc import CommandError as AlembicCommandError
 from pydantic import TypeAdapter
 from sqlalchemy import Select, and_, case, delete, distinct, event, exists, func, or_, text, true, union
 from sqlalchemy import update as sa_update
@@ -231,6 +233,20 @@ logger = logging.getLogger(__file__)
 # is the only service that writes sidecars.
 _SIDECAR_LOCKS = tuple(threading.Lock() for _ in range(64))
 logger.setLevel(LOG_LEVEL)
+
+
+def _known_revisions(alembic_cfg: AlembicConfig) -> Optional[Set[str]]:
+    """Every revision id this tree ships, or None if the script directory can't be read.
+
+    None means "no opinion": the caller must then take the ordinary upgrade path rather
+    than conclude the database's stamp is unknown and re-stamp over a real migration.
+    """
+    try:
+        script = ScriptDirectory.from_config(alembic_cfg)
+        return {rev.revision for rev in script.walk_revisions()}
+    except (AlembicCommandError, OSError) as e:
+        logger.warning("Could not enumerate alembic revisions: %s", e)
+        return None
 
 
 # ── Write epoch ───────────────────────────────────────────────────────────────
@@ -956,7 +972,9 @@ class DbClient:
           - In-memory DB  — always fresh; create_all only (alembic CLI can't reach
                             a :memory: engine, and migration history is irrelevant).
           - Fresh file DB — create_all + alembic stamp (fast, no migration replay).
-          - Existing DB   — alembic upgrade head (incremental migrations).
+          - Existing DB   — alembic upgrade head (incremental migrations), or a
+                            re-stamp when its recorded revision is one this build no
+                            longer ships.
         """
         self._db_dir.mkdir(parents=True, exist_ok=True)
 
@@ -982,10 +1000,31 @@ class DbClient:
                 # Use alembic's own MigrationContext to check: an empty heads tuple
                 # means the DB is unstamped; stamp now so upgrade head can proceed.
                 async with self._engine.connect() as conn:
-                    is_stamped = await conn.run_sync(
-                        lambda sync_conn: bool(MigrationContext.configure(sync_conn).get_current_heads())
+                    heads = await conn.run_sync(
+                        lambda sync_conn: tuple(MigrationContext.configure(sync_conn).get_current_heads())
                     )
-                if not is_stamped:
+                # A stamp naming a revision this tree no longer ships. `upgrade head`
+                # resolves the stored revision before it does anything, so it raises
+                # `Can't locate revision identified by '<rev>'` and takes init_db — and
+                # with it every non-status request db_server serves — down with it. The
+                # baseline squash is how a database gets into this state: its history
+                # was collapsed into one revision and the 73 it replaced were deleted.
+                # Re-stamping is sound precisely because the baseline describes the
+                # schema such a database already has.
+                known = await loop.run_in_executor(None, lambda: _known_revisions(alembic_cfg))
+                unknown = [head for head in heads if known is not None and head not in known]
+                if unknown:
+                    logger.warning(
+                        "Database is stamped at %s, which this build no longer ships; "
+                        "re-stamping to head rather than failing to start.",
+                        ", ".join(unknown),
+                    )
+                    # `purge` is what makes this work at all: a plain stamp resolves the
+                    # *stored* revision to compute the step and so raises the same
+                    # "Can't locate revision" the upgrade would. Purge clears the version
+                    # table first and writes head outright.
+                    await loop.run_in_executor(None, lambda: alembic_command.stamp(alembic_cfg, "head", purge=True))
+                elif not heads:
                     await loop.run_in_executor(None, lambda: alembic_command.stamp(alembic_cfg, "head"))
                 else:
                     await loop.run_in_executor(None, lambda: alembic_command.upgrade(alembic_cfg, "head"))
