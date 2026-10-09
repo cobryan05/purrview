@@ -134,7 +134,7 @@ def _make_training_collectors_mock():
 
 def _make_preview_runs_mock():
     async def handle(path: str, request):
-        # The review toolbar's "Model Run Results" count fetches this on mount.
+        # The review toolbar's "Previous Model Results" count fetches this on mount.
         # Tests that need actual runs override the route with page.route().
         return JSONResponse(content={"status": "success", "runs": []})
 

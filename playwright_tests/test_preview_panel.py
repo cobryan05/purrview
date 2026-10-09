@@ -1,6 +1,6 @@
 """
 Tests for app/review/previewPanel.js — the persisted preview-run triage panel
-(`createPreviewPanel`, `openPreviewRunModal`, `openModelRunResultsModal`), the
+(`createPreviewPanel`, `openPreviewRunModal`, `openPreviousModelResultsModal`), the
 candidate-card variant in cardGrid.js (`buildCandidateCard`), and the "Saved
 Previews" toolbar button in review/main.js.
 
@@ -1056,13 +1056,13 @@ class TestModalNotClippedByNoticesBar:
 
 
 # ---------------------------------------------------------------------------
-# 9. Model Run Results list
+# 9. Previous Model Results list
 # ---------------------------------------------------------------------------
 
 
-class TestModelRunResultsList:
+class TestPreviousModelResultsList:
     def _run_results_btn(self, page: Page):
-        return page.get_by_test_id("review-model-run-results")
+        return page.get_by_test_id("review-previous-model-results")
 
     def test_lists_one_row_per_run_with_decision_counts(self, page: Page, base_url: str):
         _setup_common(page, base_url)
@@ -1129,8 +1129,13 @@ class TestModelRunResultsList:
             _make_run(
                 uuid="run-9",
                 name="Verify: yolo9-detector",
-                params={"report": True, "display_label": "yolo9-detector", "crop_mode": "image", "conf_thresh": 0.25},
-                stats={"state": "completed", "no_op_count": 9, "candidate_count": 1, "no_detection_count": 0},
+                params={
+                    "report": True,
+                    "crop_mode": "image",
+                    "conf_thresh": 0.25,
+                    "configs": [{"slot": "A", "display_label": "A · yolo9-detector", "model_name": "yolo9-detector"}],
+                },
+                stats={"A": {"state": "completed", "no_op_count": 9, "candidate_count": 1, "no_detection_count": 0}},
             ),
             [],
         )
@@ -1155,8 +1160,8 @@ class TestModelRunResultsList:
             _make_run(
                 uuid="run-9",
                 name="Verify: yolo9-detector",
-                params={"report": True},
-                stats={"state": "running", "task_uuid": "task-1", "no_op_count": 0, "candidate_count": 0},
+                params={"report": True, "configs": [{"slot": "A", "display_label": "A · yolo9-detector"}]},
+                stats={"A": {"state": "running", "task_uuid": "task-1", "no_op_count": 0, "candidate_count": 0}},
             ),
             [],
         )

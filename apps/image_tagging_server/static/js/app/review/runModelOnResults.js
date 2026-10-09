@@ -1266,7 +1266,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     const isClassifier = selectedClassifier !== null;
     saveNote.textContent = isClassifier
       ? 'Results are held in this session only — triage them when the run finishes.'
-      : 'Every result is saved as the run goes, under the “Model Run Results” button on '
+      : 'Every result is saved as the run goes, under the “Previous Model Results” button on '
         + 'the Review toolbar. Closing this window or cancelling part way through keeps '
         + 'what has been found so far. Saved runs are swept automatically after a week — '
         + 'or a day once everything in one has been triaged — so pin a run there to keep it.';
@@ -1665,13 +1665,13 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     if (previewRun) {
       const runUuid = previewRun.uuid;
       previewRun = null;
-      toast('Run cancelled — the candidates found so far are under “Model Run Results”.', 4000);
+      toast('Run cancelled — the candidates found so far are under “Previous Model Results”.', 4000);
       try {
         const { openPreviewRunModal } = await import('/app-static/js/app/review/previewPanel.js');
         await openPreviewRunModal({ runUuid, labels: ctx.labels, onApplied: ctx.refresh });
       } catch (err) {
         Logger.error('Failed to open the cancelled run for triage:', err);
-        toast('The partial results were saved; open them from “Model Run Results”.', 5000, 'warning');
+        toast('The partial results were saved; open them from “Previous Model Results”.', 5000, 'warning');
       }
     }
   });

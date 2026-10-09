@@ -33,7 +33,7 @@ CONFUSABLE_TAG_UUID = "00000000-0000-0000-0000-000000000006"
 # attach to.
 #
 # It exists because the preview run is not a permanent address. Applying a run,
-# or deleting it, takes the harvested frames out of Model Run Results and leaves
+# or deleting it, takes the harvested frames out of Previous Model Results and leaves
 # them indistinguishable from any other image in the dataset — which is exactly
 # the "I harvest frames and then lose them" complaint. This tag survives all of
 # that, so "show me everything I have ever harvested" stays answerable.

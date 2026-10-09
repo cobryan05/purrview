@@ -826,8 +826,8 @@ export const REVIEW = {
         + 'ones — far faster than drawing from scratch on every image.',
     },
     {
-      id: 'modelRunResults',
-      target: 'review.modelRunResults',
+      id: 'previousModelResults',
+      target: 'review.previousModelResults',
       title: 'A big triage does not have to finish today',
       body: 'Everything a model run leaves behind lands here \u2014 proposals to work through, and '
         + 'accuracy reports from Verify Model. A run over ten thousand images can be picked up '

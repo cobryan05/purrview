@@ -334,7 +334,7 @@ class HarvestBlipFramesTask(Task):
         """Mark the image as harvested, so it stays findable after the run is gone.
 
         A preview run is a temporary address: applying it or deleting it takes these
-        frames out of Model Run Results, and what is left is an image in `blip_harvest`
+        frames out of Previous Model Results, and what is left is an image in `blip_harvest`
         that looks like any other. The tag is the durable answer to "where did the
         frames I harvested go?" — Review can filter on it forever.
 
@@ -427,7 +427,7 @@ class HarvestBlipFramesTask(Task):
 
         Without these the harvest ended with a toast and a preview run whose uuid
         appears nowhere a person can click. The frames were three levels down —
-        Review → Model Run Results → find the right run — which is close enough to
+        Review → Previous Model Results → find the right run — which is close enough to
         "lost" that it was reported as lost.
 
         Shared by the live status card and the completion result so the two cannot

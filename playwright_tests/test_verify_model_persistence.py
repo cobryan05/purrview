@@ -109,25 +109,43 @@ class TestReportIsRegistered:
         assert params["persist_stats"] is True
         assert params["persist_candidates"] is False
 
-    def test_a_second_model_is_registered_in_the_same_comparison(self, page: Page, base_url: str):
-        runs, _, _ = _setup(page, base_url)
+    def test_a_comparison_is_one_run_with_a_slot_per_model(self, page: Page, base_url: str):
+        # Two rows would be two halves of a comparison that nothing puts back
+        # together; the comparison is the result, so it is one saved run.
+        runs, task, _ = _setup(page, base_url)
         _pick_model(page, "fresh")
         page.get_by_test_id("compare-models-primary-b").select_option("aged")
         page.get_by_test_id("compare-models-run").click()
 
         expect(page.get_by_test_id("compare-models-saved-note")).to_be_visible()
-        assert len(runs["created"]) == 2, runs["created"]
-        groups = {r["params"]["comparison_group"] for r in runs["created"]}
-        slots = sorted(r["params"]["slot"] for r in runs["created"])
-        # One group, two slots: that pairing is what lets a saved report be
-        # re-opened as a side-by-side rather than two unrelated numbers.
-        assert len(groups) == 1
-        assert slots == ["A", "B"]
+        assert len(runs["created"]) == 1, runs["created"]
+        configs = runs["created"][0]["params"]["configs"]
+        assert [c["slot"] for c in configs] == ["A", "B"]
+        assert [c["model_name"] for c in configs] == ["fresh", "aged"]
+        # Each config's task writes into its own slot of the one run's stats.
+        assert task.create_bodies[0]["params"]["stats_key"] == "A"
 
-    def test_the_note_says_to_wait_when_an_archived_version_is_in_play(self, page: Page, base_url: str):
-        # Closing the dialog deletes the materialised copy of a version, which
-        # the still-running task needs — so this is the one case where the run
-        # does not survive walking away, and the note has to say so.
+    def test_both_sides_are_told_apart_when_they_share_a_model_name(self, page: Page, base_url: str):
+        # Comparing a model with its own archived generation is the common case,
+        # and a verdict naming only "aged" would identify neither side.
+        runs, _, _ = _setup(page, base_url)
+        _pick_model(page, "aged")
+        page.get_by_test_id("compare-models-primary-b").select_option("aged")
+        _version_select(page, "b").select_option("20260901T101500Z")
+        page.get_by_test_id("compare-models-run").click()
+
+        expect(page.get_by_test_id("compare-models-saved-note")).to_be_visible()
+        labels = [c["display_label"] for c in runs["created"][0]["params"]["configs"]]
+        assert labels[0].startswith("A \u00b7 ") and labels[1].startswith("B \u00b7 ")
+        assert labels[0] != labels[1]
+        # The live side says so; the archived side carries its own trained-on date.
+        assert "(current)" in labels[0]
+        assert "(current)" not in labels[1]
+
+    def test_the_note_promises_a_closable_window_even_for_an_archived_version(self, page: Page, base_url: str):
+        # The materialised copy used to be deleted when the dialog closed, which
+        # killed the run. It is now held for the task and reclaimed server-side,
+        # so this is no longer the one case you had to sit and watch.
         _setup(page, base_url)
         _pick_model(page, "aged")
         _version_select(page).select_option("20260901T101500Z")
@@ -135,8 +153,27 @@ class TestReportIsRegistered:
         page.get_by_test_id("compare-models-run").click()
 
         note = page.get_by_test_id("compare-models-saved-note")
-        expect(note).to_contain_text("keep this window open")
-        assert "you can close this window" not in note.text_content()
+        expect(note).to_contain_text("you can close this window")
+        assert "keep this window open" not in note.text_content()
+
+    def test_an_in_flight_version_copy_is_not_deleted_when_the_dialog_closes(self, page: Page, base_url: str):
+        # The task loads the version by name; deleting the copy under it is the
+        # bug this guards.
+        _, _, deleted = _setup(page, base_url)
+        _pick_model(page, "aged")
+        _version_select(page).select_option("20260901T101500Z")
+        page.get_by_test_id("compare-models-run").click()
+        expect(page.get_by_test_id("compare-models-saved-note")).to_be_visible()
+
+        # Close has to stay usable mid-run for any of this to mean anything.
+        close_btn = page.get_by_test_id("modal-shell-dialog").last.get_by_role("button", name="Close")
+        expect(close_btn).to_be_enabled()
+        close_btn.click()
+
+        # Closing with no run started still deletes the copy (covered in
+        # test_compare_model_versions); with a run in flight it must not.
+        page.wait_for_timeout(500)
+        assert deleted == [], deleted
 
     def test_the_note_says_you_can_leave_for_a_live_model(self, page: Page, base_url: str):
         _setup(page, base_url)

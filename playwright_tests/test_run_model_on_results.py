@@ -178,14 +178,23 @@ def _mock_preview_runs(page: Page, run_uuid="run-1"):
 
     def handle_collection(route: Route):
         if route.request.method == "POST":
-            calls["created"].append(json.loads(route.request.post_data or "{}"))
+            posted = json.loads(route.request.post_data or "{}")
+            calls["created"].append(posted)
             route.fulfill(
                 status=200,
                 content_type="application/json",
                 body=json.dumps(
                     {
                         "status": "success",
-                        "run": {"uuid": run_uuid, "name": None, "modelName": "", "pinned": False, "stats": {}},
+                        # Echo the posted name: the server derives one when it is
+                        # null, and callers put it in front of the user.
+                        "run": {
+                            "uuid": run_uuid,
+                            "name": posted.get("name") or "Run",
+                            "modelName": posted.get("modelName") or "",
+                            "pinned": False,
+                            "stats": {},
+                        },
                     }
                 ),
             )
@@ -879,7 +888,7 @@ class TestRunModelFullFlow:
         """A task that errors out (e.g. exceeding the server-side sanity cap) must
         both reset the dialog's own controls AND delete the persisted preview run
         it created up front — otherwise a failed run lingers as an indistinguishable
-        empty/ghost entry in the Model Run Results list for up to 24h."""
+        empty/ghost entry in the Previous Model Results list for up to 24h."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [UNVERIFIED_TAG])

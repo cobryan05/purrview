@@ -1209,9 +1209,14 @@ class TestReportPersistence:
     """
 
     @staticmethod
-    def _fake_api(monkeypatch):
-        """Captures both preview-run writes without an HTTP round-trip."""
+    def _fake_api(monkeypatch, existing_stats=None):
+        """Captures both preview-run writes without an HTTP round-trip.
+
+        `existing_stats` stands in for what another slot already wrote, which is
+        what a keyed write has to preserve.
+        """
         calls = {"candidates": [], "stats": []}
+        stored = dict(existing_stats or {})
 
         class _FakeApi:
             def __init__(self, _client):
@@ -1220,8 +1225,13 @@ class TestReportPersistence:
             def add_preview_candidates(self, run_uuid, payload):
                 calls["candidates"].append((run_uuid, payload))
 
+            def get_preview_run(self, _run_uuid):
+                return SimpleNamespace(run=SimpleNamespace(stats=dict(stored)))
+
             def update_preview_run(self, run_uuid, payload):
                 calls["stats"].append((run_uuid, payload))
+                stored.clear()
+                stored.update(payload.stats or {})
 
         monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.PreviewRunsApi", _FakeApi)
         return calls
@@ -1280,6 +1290,34 @@ class TestReportPersistence:
         await task._deinit()
 
         assert [p.stats["state"] for _, p in calls["stats"]] == ["completed"]
+
+    async def test_a_keyed_write_keeps_the_other_slot_of_a_comparison(self, monkeypatch):
+        # A comparison is one run with a slot per config. Replacing the whole
+        # stats dict would delete the side that finished first, leaving a
+        # "comparison" with one number in it.
+        calls = self._fake_api(monkeypatch, existing_stats={"A": {"state": "completed", "no_op_count": 7}})
+        task = _make_task(self._report_params(stats_key="B"))
+        await task._init(task._params, None)
+        task._no_op_count = 2
+
+        await task._persist_run_stats("completed")
+
+        _, payload = calls["stats"][0]
+        assert payload.stats["A"]["no_op_count"] == 7
+        assert payload.stats["B"]["no_op_count"] == 2
+        assert payload.stats["B"]["state"] == "completed"
+
+    async def test_without_a_key_the_summary_is_the_whole_stats(self, monkeypatch):
+        # The single-config case: no slot, so no nesting to read through.
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(self._report_params())
+        await task._init(task._params, None)
+        task._no_op_count = 4
+
+        await task._persist_run_stats("completed")
+
+        _, payload = calls["stats"][0]
+        assert payload.stats["no_op_count"] == 4
 
     async def test_a_failed_stats_write_does_not_raise(self, monkeypatch):
         class _BoomApi:

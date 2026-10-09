@@ -437,7 +437,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
   });
 
-  // Model Run Results — what every model run over the queue leaves behind: a
+  // Previous Model Results — what every model run over the queue leaves behind: a
   // "Run Model on Results" proposal set waiting to be triaged, or a Verify
   // Model accuracy report. Either way the point is that it outlives the dialog
   // that started it, so a big job need not finish in one sitting.
@@ -449,12 +449,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // button in the toolbar the pagination controls live in.
   const runResultsBtn = document.createElement('button');
   runResultsBtn.className = 'review-toolbar__btn';
-  runResultsBtn.dataset.testid = 'review-model-run-results';
-  runResultsBtn.dataset.tour = 'review.modelRunResults';
-  runResultsBtn.textContent = 'Model Run Results';
+  runResultsBtn.dataset.testid = 'review-previous-model-results';
+  runResultsBtn.dataset.tour = 'review.previousModelResults';
+  runResultsBtn.textContent = 'Previous Model Results';
   runResultsBtn.addEventListener('click', async () => {
-    const { openModelRunResultsModal } = await import('/app-static/js/app/review/previewPanel.js');
-    await openModelRunResultsModal({
+    const { openPreviousModelResultsModal } = await import('/app-static/js/app/review/previewPanel.js');
+    await openPreviousModelResultsModal({
       labels,
       onApplied: () => render(),
       onClose: () => _refreshRunResultsCount(),
@@ -465,11 +465,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     try {
       const { fetchPreviewRuns } = await import('/app-static/js/shared/api/previewRuns.js');
       const runs = await fetchPreviewRuns();
-      runResultsBtn.textContent = runs.length > 0 ? `Model Run Results (${runs.length})` : 'Model Run Results';
+      runResultsBtn.textContent = runs.length > 0 ? `Previous Model Results (${runs.length})` : 'Previous Model Results';
     } catch {
       // A count nobody asked for is not worth a toast; the button still opens
       // the list, which reports the failure properly.
-      runResultsBtn.textContent = 'Model Run Results';
+      runResultsBtn.textContent = 'Previous Model Results';
     }
   }
   if (!fetchImages) _refreshRunResultsCount();

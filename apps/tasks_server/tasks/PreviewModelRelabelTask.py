@@ -236,6 +236,10 @@ class PreviewModelRelabelTask(Task):
         # the browser after polling is lost exactly when the page is.
         self._persist_candidates: bool = bool(params.get("persist_candidates", True))
         self._persist_stats: bool = bool(params.get("persist_stats", False))
+        # Which slot of a multi-config report this run fills. A comparison is one
+        # report, not two, so both configs write into one preview run under their
+        # own key instead of each replacing the other's summary.
+        self._stats_key: Optional[str] = params.get("stats_key") or None
         self._stats_state: Optional[str] = None
         # Clamped to >= 1: asyncio.Semaphore(0) would block the batch loop forever.
         self._concurrency: int = max(1, int(params.get("concurrency", _DEFAULT_CONCURRENCY)))
@@ -899,12 +903,21 @@ class PreviewModelRelabelTask(Task):
         """
         if not self._preview_run_uuid or not self._persist_stats:
             return
-        stats = self._build_result()
-        stats.pop("candidates", None)
-        stats["state"] = state
-        stats["task_uuid"] = self._instance_uuid
+        summary = self._build_result()
+        summary.pop("candidates", None)
+        summary["state"] = state
+        summary["task_uuid"] = self._instance_uuid
         api = PreviewRunsApi(self._manager.get_db_api_client())
         try:
+            stats = summary
+            if self._stats_key:
+                # Read-modify-write, which is safe here and only here: the configs of
+                # one comparison run strictly one after another, so the other slot is
+                # never mid-write. Do not reuse this for anything concurrent.
+                existing = await asyncio.to_thread(api.get_preview_run, self._preview_run_uuid)
+                run = getattr(existing, "run", None)
+                stats = dict(getattr(run, "stats", None) or {})
+                stats[self._stats_key] = summary
             await asyncio.to_thread(api.update_preview_run, self._preview_run_uuid, PreviewRunUpdate(stats=stats))
             self._stats_state = state
         except Exception:
@@ -983,6 +996,7 @@ class PreviewModelRelabelTask(Task):
                     "conflict_policy",
                     "persist_candidates",
                     "persist_stats",
+                    "stats_key",
                 ],
             },
             "model_name": {
@@ -1080,6 +1094,16 @@ class PreviewModelRelabelTask(Task):
                     "Write candidates into the preview run. Turn off for a measurement run, "
                     "whose 'candidates' are disagreements with ground truth and must never be "
                     "offered as relabels of it. Only meaningful with preview_run_uuid set."
+                ),
+            },
+            "stats_key": {
+                "type": "str",
+                "label": "Stats Key",
+                "required": False,
+                "description": (
+                    "Write this run's summary under this key of the preview run's stats "
+                    "rather than as the whole of it, so several configs can report into one "
+                    "run. Only meaningful with persist_stats set."
                 ),
             },
             "persist_stats": {

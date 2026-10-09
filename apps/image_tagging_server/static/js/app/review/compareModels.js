@@ -67,7 +67,6 @@ import {
 import {
   createPreviewRun,
   fetchPreviewRun,
-  fetchPreviewRuns,
   REPORT_PARAM,
 } from '/app-static/js/shared/api/previewRuns.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
@@ -412,8 +411,22 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
   // of the same model share one materialised copy (the server is idempotent), so
   // this is a refcount, not a set: whoever lets go last does the deleting.
   const livePreviews = new Map();
+  // Previews a started run still needs. Closing the dialog must not delete these:
+  // the task loads the model by name and would fail on a model that vanished. If
+  // this page never comes back, the server's own stale-preview sweep reclaims them
+  // (see materialize_model_version) — age is the only signal left once the browser
+  // is gone, which is exactly the case this set exists for.
+  const inFlightPreviews = new Set();
   const _releasePreview = (name) => {
     deleteModelPreview(name).catch(err => Logger.warn('Preview cleanup failed:', err));
+  };
+  const _releaseInFlightPreviews = () => {
+    for (const name of inFlightPreviews) {
+      // Only ours to delete once no panel is holding it either — a second
+      // comparison may already have picked the same version back up.
+      if (!livePreviews.has(name)) _releasePreview(name);
+    }
+    inFlightPreviews.clear();
   };
   const _trackPreview = (name, action) => {
     const held = livePreviews.get(name) ?? 0;
@@ -431,7 +444,9 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
 
   const { dialog, open, close } = createModalShell({
     onClose: () => {
-      for (const name of livePreviews.keys()) _releasePreview(name);
+      for (const name of livePreviews.keys()) {
+        if (!inFlightPreviews.has(name)) _releasePreview(name);
+      }
       livePreviews.clear();
     },
   });
@@ -566,35 +581,42 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
     }
 
     runBtn.disabled = true;
-    cancelBtn.disabled = true;
+    // Close stays enabled: the run is saved server-side and survives this dialog,
+    // so disabling the only visible way out would contradict the note below it.
     progressArea.style.display = 'block';
     resultsArea.innerHTML = '';
 
     try {
       const confThresh = Math.min(1, Math.max(0, parseFloat(threshInput.value) || 0.25));
       const iouThresh = Math.min(1, Math.max(0, parseFloat(iouInput.value) || 0.5));
-      const labelA = _configLabel(a);
-      const labelB = b.modelName ? _configLabel(b) : null;
+      const cfgs = b.modelName ? [a, b] : [a];
+      const [labelA, labelB] = _sideLabels(cfgs);
 
-      // Both runs are created before either starts, so the second one is already
-      // on record if the page goes away while the first is still running.
-      const group = `verify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const scope = { bbox_uuid_count: bboxUuids.length, image_uuid_count: imageUuids.length };
-      const runA = await _createReportRun({ label: labelA, cfg: a, cropMode, confThresh, iouThresh, scope, group, slot: 'A' });
-      const runB = labelB
-        ? await _createReportRun({ label: labelB, cfg: b, cropMode, confThresh, iouThresh, scope, group, slot: 'B' })
-        : null;
-      _showSavedNote(savedNote, [runA, runB].filter(Boolean), livePreviews.size > 0);
+      // One run for the whole verification, even when two configs are being
+      // compared: the comparison is the result, and two rows in the saved list
+      // would be two halves of it that nothing puts back together.
+      const run = await _createReportRun({
+        labels: [labelA, labelB].filter(Boolean),
+        cfgs,
+        cropMode,
+        confThresh,
+        iouThresh,
+        scope: { bbox_uuid_count: bboxUuids.length, image_uuid_count: imageUuids.length },
+      });
+      _showSavedNote(savedNote, run);
+      // A materialised version must outlive this dialog for as long as its task
+      // needs it; releasing on close would delete the model mid-run.
+      if (run) for (const name of livePreviews.keys()) inFlightPreviews.add(name);
 
       progressLabel.textContent = `Running ${labelA}…`;
       progressBar.value = 0;
-      const resultA = await _runOneConfig({ ...a, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid: runA?.uuid ?? null, onProgress: p => { progressBar.value = p; } });
+      const resultA = await _runOneConfig({ ...a, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid: run?.uuid ?? null, statsKey: 'A', onProgress: p => { progressBar.value = p; } });
 
       let resultB = null;
       if (labelB) {
         progressLabel.textContent = `Running ${labelB}…`;
         progressBar.value = 0;
-        resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid: runB?.uuid ?? null, onProgress: p => { progressBar.value = p; } });
+        resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid: run?.uuid ?? null, statsKey: 'B', onProgress: p => { progressBar.value = p; } });
       }
 
       progressArea.style.display = 'none';
@@ -606,8 +628,8 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
       toast(`Verification failed: ${err.message}`, 6000, 'error');
       progressArea.style.display = 'none';
     } finally {
+      _releaseInFlightPreviews();
       runBtn.disabled = false;
-      cancelBtn.disabled = false;
     }
   });
 
@@ -620,30 +642,59 @@ function _configLabel(cfg) {
 }
 
 /**
- * Register one configuration's report before its task starts.
+ * Names for the two sides, guaranteed to tell them apart.
  *
- * The run is what makes the result outlive this dialog: the task writes its
- * summary into `stats` as it finishes, so a verification survives closing the
- * page that started it. Returns null if the run could not be created — the
- * comparison still runs, it just won't be saved.
+ * Comparing a model against its own archived generation is the most common
+ * comparison there is, and both sides then start from the same model name — so a
+ * verdict naming only that name ("primary_model is 1.3 points more accurate")
+ * identifies nothing. Each side carries its slot letter, and a live model facing
+ * a version of itself is marked as the current one.
  */
-async function _createReportRun({ label, cfg, cropMode, confThresh, iouThresh, scope, group, slot }) {
+function _sideLabels(cfgs) {
+  const base = cfgs.map(c => c.modelName.split('@')[0]);
+  const collides = cfgs.length === 2 && base[0] === base[1];
+  return ['A', 'B'].map((slot, i) => {
+    const cfg = cfgs[i];
+    if (!cfg) return null;
+    const isVersion = cfg.modelName.includes('@');
+    return `${slot} · ${_configLabel(cfg)}${collides && !isVersion ? ' (current)' : ''}`;
+  });
+}
+
+/** The slot letter prefix is for reading the report, not for naming the run. */
+function _unprefixed(label) {
+  return label.replace(/^[AB] · /, '');
+}
+
+/**
+ * Register the report before any task starts.
+ *
+ * One run per verification, a two-config comparison included: the comparison
+ * *is* the result, so both configs report into this one run under their own
+ * stats key rather than becoming two unrelated rows. The run is also what makes
+ * the result outlive this dialog — the task writes its summary into `stats` as it
+ * finishes, so a verification survives closing the page that started it. Returns
+ * null if the run could not be created; the comparison still runs unsaved.
+ */
+async function _createReportRun({ labels, cfgs, cropMode, confThresh, iouThresh, scope }) {
   try {
     return await createPreviewRun({
-      name: `Verify: ${label}`,
-      modelName: cfg.modelName,
+      name: `Verify: ${labels.map(_unprefixed).join(' vs ')}`,
+      modelName: cfgs.map(c => c.modelName).join(' vs '),
       taskTypename: 'PreviewModelRelabelTask',
       params: {
         [REPORT_PARAM]: true,
-        display_label: label,
         crop_mode: cropMode,
         conf_thresh: confThresh,
         iou_thresh: iouThresh,
-        sub_model_names: cfg.subModelNames,
-        // Array, not the Set the dialog carries: this round-trips through JSON.
-        supported_label_uuids: [...(cfg.supportedLabelUuids ?? [])],
-        comparison_group: group,
-        slot,
+        configs: cfgs.map((cfg, i) => ({
+          slot: ['A', 'B'][i],
+          display_label: labels[i],
+          model_name: cfg.modelName,
+          sub_model_names: cfg.subModelNames,
+          // Array, not the Set the dialog carries: this round-trips through JSON.
+          supported_label_uuids: [...(cfg.supportedLabelUuids ?? [])],
+        })),
       },
       scope,
     });
@@ -654,25 +705,16 @@ async function _createReportRun({ label, cfg, cropMode, confThresh, iouThresh, s
   }
 }
 
-/** Tell the user whether they still have to sit here while the run finishes. */
-function _showSavedNote(noteEl, runs, holdsVersionPreview) {
+/** Say whether walking away now is safe, and where the result will be. */
+function _showSavedNote(noteEl, run) {
   noteEl.style.display = 'block';
-  if (runs.length === 0) {
-    noteEl.textContent = '⚠ This run is not being saved — keep this window open or the results are lost.';
-    return;
-  }
-  const names = runs.map(r => `“${r.name}”`).join(' and ');
-  if (holdsVersionPreview) {
-    // Closing the dialog releases the materialised version copy, and the task
-    // then fails on a model that no longer exists.
-    noteEl.textContent = `Saving as ${names}. This run uses an archived version, so keep this window open until it finishes — closing it deletes the temporary copy the run needs.`;
-    return;
-  }
-  noteEl.textContent = `✓ Saving as ${names} — you can close this window. The run keeps going and the report is waiting under “Model Run Results” in the review toolbar.`;
+  noteEl.textContent = run
+    ? `✓ Saving as “${run.name}” — you can close this window, or let the browser close the tab. The run keeps going and the report waits under “Previous Model Results” in the review toolbar.`
+    : '⚠ This run is not being saved — keep this window open or the results are lost.';
 }
 
 /** Launches one PreviewModelRelabelTask run and returns its parsed stats. */
-async function _runOneConfig({ modelName, subModelNames, supportedLabelUuids, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid, onProgress }) {
+async function _runOneConfig({ modelName, subModelNames, supportedLabelUuids, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid, statsKey, onProgress }) {
   const params = {
     model_name: modelName,
     crop_mode: cropMode,
@@ -685,7 +727,7 @@ async function _runOneConfig({ modelName, subModelNames, supportedLabelUuids, cr
     // A verification's "candidates" are its disagreements with ground truth, so
     // they are counted and never persisted: offered as triagable relabels they
     // would propose overwriting the very labels being measured against.
-    ...(previewRunUuid ? { preview_run_uuid: previewRunUuid, persist_candidates: false, persist_stats: true } : {}),
+    ...(previewRunUuid ? { preview_run_uuid: previewRunUuid, persist_candidates: false, persist_stats: true, stats_key: statsKey } : {}),
     // Only meaningful (and only accepted by the task) in image mode — see
     // the module docstring on why bbox mode never chains a sub-model.
     ...(cropMode === 'image' && subModelNames.length ? { sub_model_names: subModelNames } : {}),
@@ -1056,36 +1098,79 @@ function _renderComparison({ labelA, labelB, resultA, resultB, labels }) {
   return container;
 }
 
-// ── Saved reports ──────────────────────────────────────────────────────────
+// ── Saved reports ──────────────────────────────────────────────
 //
 // A verification is a measurement, not a proposal: it has no candidates to
 // triage, so a saved run carries its whole result in `stats` and the triage
-// panel has nothing to show for it. These two exports are what the Saved
-// Previews list uses instead — a one-line summary for the row, and this
-// read-only rebuild of the same report the dialog rendered live.
+// panel has nothing to show for it. These two exports are what the Previous
+// Model Results list uses instead — a one-line summary for the row, and this
+// read-only rebuild of the report the dialog rendered live.
+//
+// `stats` is keyed by slot ("A"/"B"), each slot written by its own task as that
+// task exits, so a comparison reads back as the comparison rather than as two
+// unrelated numbers.
 
 const _REPORT_POLL_MS = 2000;
 
-/** One line for a saved report's row in the Model Run Results list. */
+/** The configs a saved report covers, oldest shape tolerated. */
+function _reportConfigs(run) {
+  return run?.params?.configs ?? [];
+}
+
+function _slotStats(run, slot) {
+  return run?.stats?.[slot] ?? null;
+}
+
+/**
+ * The state of the report as a whole: a comparison is unfinished while either
+ * side is, and "interrupted" outranks "completed" so a half-measured comparison
+ * never presents as a finished one.
+ */
+function _reportState(run) {
+  const states = _reportConfigs(run).map(c => _slotStats(run, c.slot)?.state ?? null);
+  if (states.length === 0 || states.some(st => st === null)) return states.some(Boolean) ? 'running' : null;
+  if (states.includes('running')) return 'running';
+  if (states.includes('interrupted')) return 'interrupted';
+  if (states.includes('cancelled')) return 'cancelled';
+  return 'completed';
+}
+
+function _slotResult(run, cfg) {
+  const supported = cfg.supported_label_uuids;
+  return _resultFromStats(_slotStats(run, cfg.slot) ?? {}, Array.isArray(supported) ? new Set(supported) : null);
+}
+
+function _pct(result) {
+  return result.accuracy == null ? 'n/a' : `${(result.accuracy * 100).toFixed(1)}%`;
+}
+
+/** One line for a saved report's row in the Previous Model Results list. */
 export function reportRowSummary(run) {
-  const stats = run?.stats ?? {};
-  if (!stats.state) return 'never started';
-  if (stats.state === 'running') return 'still running…';
-  const result = _resultFromStats(stats);
-  const pct = result.accuracy == null ? 'no scorable boxes' : `${(result.accuracy * 100).toFixed(1)}% accurate`;
-  const detail = `${result.correct}/${result.total}`;
-  if (stats.state === 'completed') return `${pct} (${detail})`;
-  // cancelled / interrupted: the numbers are real but cover only part of the scope.
-  return `${stats.state} — ${pct} so far (${detail})`;
+  const state = _reportState(run);
+  if (!state) return 'never started';
+  if (state === 'running') return 'still running…';
+  const cfgs = _reportConfigs(run);
+  const results = cfgs.map(c => _slotResult(run, c));
+  const prefix = state === 'completed' ? '' : `${state} — `;
+  if (results.length === 2 && results[0].accuracy != null && results[1].accuracy != null) {
+    const delta = (results[1].accuracy - results[0].accuracy) * 100;
+    const verdict = Math.abs(delta) < 0.05
+      ? 'level'
+      : `${cfgs[delta > 0 ? 1 : 0].slot} by ${Math.abs(delta).toFixed(1)} pts`;
+    return `${prefix}A ${_pct(results[0])} vs B ${_pct(results[1])} — ${verdict}`;
+  }
+  const only = results[0];
+  if (!only) return `${prefix}no result`;
+  return `${prefix}${_pct(only)} accurate (${only.correct}/${only.total})`;
 }
 
-function _reportResult(run) {
-  const supported = run.params?.supported_label_uuids;
-  return _resultFromStats(run.stats ?? {}, Array.isArray(supported) ? new Set(supported) : null);
-}
-
-function _reportLabel(run) {
-  return run.params?.display_label || run.modelName || run.name;
+/** The task that is (or was) filling the unfinished slot, for progress polling. */
+function _activeTaskUuid(run) {
+  for (const cfg of _reportConfigs(run)) {
+    const st = _slotStats(run, cfg.slot);
+    if (st?.state === 'running') return st.task_uuid ?? null;
+  }
+  return null;
 }
 
 /**
@@ -1133,58 +1218,47 @@ export async function openSavedVerifyReport({ run, labels = null }) {
   open();
 
   let current = run;
-  if (current.stats?.state === 'running') {
+  if (_reportState(current) === 'running') {
     current = await _awaitReport(current, body, () => closed);
     if (closed) return;
   }
 
   body.innerHTML = '';
-  if (!current.stats?.state) {
+  const state = _reportState(current);
+  if (!state) {
     body.textContent = 'This verification never started, so there is nothing to show.';
     return;
   }
-  if (current.stats.state === 'interrupted') {
+  if (state === 'interrupted' || state === 'cancelled') {
     const warn = document.createElement('p');
     warn.textContent = '⚠ This run stopped before it finished — the numbers below cover only the boxes it got through.';
     body.appendChild(warn);
   }
 
-  // A two-model comparison is two runs sharing a `comparison_group`; rendering
-  // the pair reproduces the side-by-side verdict the dialog showed live.
-  const sibling = await _findSibling(current);
-  const labelA = _reportLabel(current);
-  if (sibling && sibling.stats?.state === 'completed' && current.stats.state === 'completed') {
-    const [first, second] = current.params?.slot === 'B' ? [sibling, current] : [current, sibling];
+  const cfgs = _reportConfigs(current);
+  if (cfgs.length === 2) {
     body.appendChild(_renderComparison({
-      labelA: _reportLabel(first),
-      labelB: _reportLabel(second),
-      resultA: _reportResult(first),
-      resultB: _reportResult(second),
+      labelA: cfgs[0].display_label,
+      labelB: cfgs[1].display_label,
+      resultA: _slotResult(current, cfgs[0]),
+      resultB: _slotResult(current, cfgs[1]),
       labels,
     }));
     return;
   }
-  body.appendChild(_renderSingleResult({ labelA, resultA: _reportResult(current), labels }));
-}
-
-/** The other half of a two-model comparison, if it is saved and readable. */
-async function _findSibling(run) {
-  const group = run.params?.comparison_group;
-  if (!group) return null;
-  try {
-    const runs = await fetchPreviewRuns();
-    return runs.find(r => r.uuid !== run.uuid && r.params?.comparison_group === group) ?? null;
-  } catch (err) {
-    Logger.error('Failed to look up the other half of this comparison:', err);
-    return null;
-  }
+  body.appendChild(_renderSingleResult({
+    labelA: cfgs[0]?.display_label ?? run.name,
+    resultA: _slotResult(current, cfgs[0] ?? { slot: 'A' }),
+    labels,
+  }));
 }
 
 /**
- * Watch a run that is still in flight. The run's own `stats.state` is the only
- * authority on being finished — the task writes it as it exits — so a task that
- * vanished (tasks_server restarted under it) is detected by its absence from
- * the status map rather than by waiting for a terminal status it will never get.
+ * Watch a run that is still in flight. The run's own slot states are the only
+ * authority on being finished — each task writes its own as it exits — so a task
+ * that vanished (tasks_server restarted under it) is detected by its absence
+ * from the status map rather than by waiting for a terminal state it will never
+ * reach.
  */
 async function _awaitReport(run, body, isClosed) {
   body.innerHTML = '';
@@ -1195,10 +1269,10 @@ async function _awaitReport(run, body, isClosed) {
   bar.style.width = '100%';
   body.append(label, bar);
 
-  const taskUuid = run.stats?.task_uuid;
   let missingPolls = 0;
   let current = run;
   while (!isClosed()) {
+    const taskUuid = _activeTaskUuid(current);
     if (taskUuid) {
       try {
         const { tasks } = await fetchTasksStatus({ taskUuids: [taskUuid] });
@@ -1221,10 +1295,9 @@ async function _awaitReport(run, body, isClosed) {
       Logger.error('Failed to re-read the verification run:', err);
       break;
     }
-    if (current.stats?.state !== 'running') break;
+    if (_reportState(current) !== 'running') break;
     if (missingPolls > MAX_MISSING_POLLS) {
-      // The task is gone and nothing will ever update the run again.
-      current = { ...current, stats: { ...current.stats, state: 'interrupted' } };
+      // The task is gone and nothing will ever update this slot again.
       break;
     }
   }
