@@ -303,6 +303,10 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
       nodeSel.appendChild(o);
     }
     nodeSel.disabled = nodes.length === 0;
+    // The options — and so `nodeSel.value` — only exist once the targets fetch above has
+    // resolved, which is after the form is built and fires no `change`. Anything keyed on
+    // the selected node's architecture has to be told here or it never learns it.
+    _refreshHyperparamsArchitecture();
   }
 
   refreshNodeSel();

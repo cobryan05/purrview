@@ -559,6 +559,52 @@ class TestVramHyperparamsSelect:
 
         expect(self._vram_select(page)).to_be_visible()
 
+    def test_opening_a_saved_detector_config_shows_the_tiers(self, page: Page, base_url: str):
+        """Nothing picks the node by hand here, and that is the point.
+
+        The node select is painted from an async targets fetch, so opening a saved config
+        sets its value without firing a `change` — the only thing that used to resolve the
+        architecture. The row was built against an empty select and stayed hidden for the
+        whole life of the form, so a config that had always offered the tiers silently
+        stopped.
+        """
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(page, "tc-1")
+        _mock_label_stats(page, "tc-1")
+
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+
+        expect(self._vram_select(page)).to_be_visible()
+
+    def test_opening_a_saved_classifier_config_does_not(self, page: Page, base_url: str):
+        """The conditional half: the row is shown because the node is a detector, not
+        because a config was opened. A classifier has no tier table, and guessing one
+        would prefill an imgsz its trainer does not read."""
+        classifier_node = {
+            "uuid": "node-clf",
+            "labelUuid": None,
+            "modelType": "crop_classifier",
+            "architecture": "efficientnet_b0",
+        }
+        classifier_cfg = {"uuid": "mc-clf", "name": "Classifier Shape", "description": "", "nodes": [classifier_node]}
+        tc_clf = {**EXISTING_TC, "modelConfigNodeUuid": "node-clf"}
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [classifier_cfg])
+        _mock_training_configs_list(page, [tc_clf])
+        _mock_training_config_get(page, tc_clf)
+        _mock_readiness(page, "tc-1")
+        _mock_label_stats(page, "tc-1")
+
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+        expect(_editor_body(page).locator("select").nth(1)).to_have_value("node-clf")
+
+        expect(self._vram_select(page)).to_be_hidden()
+
     def test_selecting_vram_tier_prefills_batch_size_and_imgsz_and_stays_editable(self, page: Page, base_url: str):
         """Picking a VRAM tier prefills batch_size/imgsz from the per-architecture
         table (yolo_v9_c @ 8GB -> batch_size=8, imgsz=640 per vramHyperparams.js),
