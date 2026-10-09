@@ -668,7 +668,7 @@ function _showSavedNote(noteEl, runs, holdsVersionPreview) {
     noteEl.textContent = `Saving as ${names}. This run uses an archived version, so keep this window open until it finishes — closing it deletes the temporary copy the run needs.`;
     return;
   }
-  noteEl.textContent = `✓ Saving as ${names} — you can close this window. The run keeps going and the report is waiting under “Saved Previews” in the review toolbar.`;
+  noteEl.textContent = `✓ Saving as ${names} — you can close this window. The run keeps going and the report is waiting under “Model Run Results” in the review toolbar.`;
 }
 
 /** Launches one PreviewModelRelabelTask run and returns its parsed stats. */
@@ -1066,7 +1066,7 @@ function _renderComparison({ labelA, labelB, resultA, resultB, labels }) {
 
 const _REPORT_POLL_MS = 2000;
 
-/** One line for a saved report's row in the Saved Previews list. */
+/** One line for a saved report's row in the Model Run Results list. */
 export function reportRowSummary(run) {
   const stats = run?.stats ?? {};
   if (!stats.state) return 'never started';

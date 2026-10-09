@@ -1028,12 +1028,12 @@ export async function openPreviewRunModal({ runUuid, labels = null, onApplied = 
 
   try {
     panel = await createPreviewPanel(dialog, { runUuid, labels, onApplied });
-    title.textContent = panel.run?.name ?? 'Preview run';
+    title.textContent = panel.run?.name ?? 'Model run';
     subtitle.textContent = panel.run?.modelName ?? '';
   } catch (err) {
-    Logger.error('Failed to open preview run:', err);
-    title.textContent = 'Failed to load preview run';
-    toast(`Failed to open preview run: ${err.message}`, 5000, 'error');
+    Logger.error('Failed to open model run:', err);
+    title.textContent = 'Failed to load this run';
+    toast(`Failed to open this run: ${err.message}`, 5000, 'error');
   }
 
   return { close };
@@ -1046,12 +1046,12 @@ export async function openPreviewRunModal({ runUuid, labels = null, onApplied = 
  * Panels, cards and list editors: four near-identical list editors already
  * exist; this is not becoming the fifth).
  */
-export async function openSavedPreviewsModal({ labels = null, onApplied = null, onClose = null } = {}) {
+export async function openModelRunResultsModal({ labels = null, onApplied = null, onClose = null } = {}) {
   // onClose (not the awaited return of this function) is when the caller's run
   // count is actually stale: this resolves as soon as the list has rendered,
   // while the modal is still open and still being edited.
   const { dialog, open, close } = createModalShell({ onClose: () => onClose?.() });
-  dialog.classList.add('app-modal-dialog--md', 'saved-previews-modal');
+  dialog.classList.add('app-modal-dialog--md', 'model-run-results-modal');
 
   const panelBox = document.createElement('div');
   panelBox.className = 'panel-box';
@@ -1059,11 +1059,11 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
   bar.className = 'panel-box__bar';
   const barTitle = document.createElement('div');
   barTitle.className = 'panel-box__title';
-  barTitle.textContent = 'Saved Previews';
+  barTitle.textContent = 'Model Run Results';
   bar.appendChild(barTitle);
   const listBody = document.createElement('div');
   listBody.className = 'panel-box__body';
-  listBody.dataset.testid = 'saved-previews-list';
+  listBody.dataset.testid = 'model-run-results-list';
   listBody.style.cssText = 'max-height:60vh;overflow-y:auto;';
   panelBox.append(bar, listBody);
   dialog.appendChild(panelBox);
@@ -1085,7 +1085,7 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
       runs = await fetchPreviewRuns();
     } catch (err) {
       Logger.error('Failed to list preview runs:', err);
-      listBody.textContent = `Failed to load saved previews: ${err.message}`;
+      listBody.textContent = `Failed to load model run results: ${err.message}`;
       return;
     }
     // Scoring a report's stats lives with the verification dialog that produced
@@ -1097,7 +1097,7 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
     if (runs.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'relabel-modal-empty';
-      empty.textContent = 'No saved previews. Previews are kept for 7 days unless you pin them.';
+      empty.textContent = 'No model run results yet. A run\u2019s results are kept for 7 days unless you pin them.';
       listBody.appendChild(empty);
       return;
     }
@@ -1164,10 +1164,10 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
     delBtn.className = 'secondary';
     delBtn.dataset.testid = 'preview-run-delete';
     delBtn.textContent = '🗑';
-    delBtn.title = 'Delete this preview run';
+    delBtn.title = isReport ? 'Delete this report' : 'Delete this run';
     delBtn.addEventListener('click', async () => {
       const confirmed = await showConfirmModal({
-        title: 'Delete preview run',
+        title: isReport ? 'Delete report' : 'Delete model run',
         message: isReport
           ? `Delete "${run.name}"? Its accuracy report is not recoverable — the run would have to be re-run.`
           : `Delete "${run.name}" and all of its candidates? Applied changes are not undone.`,

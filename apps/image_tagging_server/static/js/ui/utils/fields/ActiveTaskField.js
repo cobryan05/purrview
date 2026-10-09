@@ -569,7 +569,7 @@ export class ActiveTaskField extends Field {
     if (action.type === 'open_preview_run') {
       // Straight into the run's triage panel. A task whose whole output is a set
       // of proposals has nowhere useful to send you *except* the run — routing via
-      // Review and "now find it in Saved Previews" is what made harvested frames
+      // Review and "now find it in Model Run Results" is what made harvested frames
       // feel lost. Imported on demand: this is Review's modal and most task cards
       // never need it.
       const runUuid = action.payload?.run_uuid ?? action.payload?.runUuid;

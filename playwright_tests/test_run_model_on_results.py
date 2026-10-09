@@ -879,7 +879,7 @@ class TestRunModelFullFlow:
         """A task that errors out (e.g. exceeding the server-side sanity cap) must
         both reset the dialog's own controls AND delete the persisted preview run
         it created up front — otherwise a failed run lingers as an indistinguishable
-        empty/ghost entry in the Saved Previews list for up to 24h."""
+        empty/ghost entry in the Model Run Results list for up to 24h."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [UNVERIFIED_TAG])

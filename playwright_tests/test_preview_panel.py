@@ -1,6 +1,6 @@
 """
 Tests for app/review/previewPanel.js — the persisted preview-run triage panel
-(`createPreviewPanel`, `openPreviewRunModal`, `openSavedPreviewsModal`), the
+(`createPreviewPanel`, `openPreviewRunModal`, `openModelRunResultsModal`), the
 candidate-card variant in cardGrid.js (`buildCandidateCard`), and the "Saved
 Previews" toolbar button in review/main.js.
 
@@ -1056,13 +1056,13 @@ class TestModalNotClippedByNoticesBar:
 
 
 # ---------------------------------------------------------------------------
-# 9. Saved previews list
+# 9. Model Run Results list
 # ---------------------------------------------------------------------------
 
 
-class TestSavedPreviewsList:
-    def _saved_previews_btn(self, page: Page):
-        return page.get_by_test_id("review-saved-previews")
+class TestModelRunResultsList:
+    def _run_results_btn(self, page: Page):
+        return page.get_by_test_id("review-model-run-results")
 
     def test_lists_one_row_per_run_with_decision_counts(self, page: Page, base_url: str):
         _setup_common(page, base_url)
@@ -1077,7 +1077,7 @@ class TestSavedPreviewsList:
         )
         api.install(page)
 
-        self._saved_previews_btn(page).click()
+        self._run_results_btn(page).click()
 
         rows = page.get_by_test_id("preview-run-row")
         expect(rows).to_have_count(2)
@@ -1092,7 +1092,7 @@ class TestSavedPreviewsList:
         api.add_run(_make_run(uuid="run-1", name="First run", pinned=False), [_make_candidate("c1")])
         api.install(page)
 
-        self._saved_previews_btn(page).click()
+        self._run_results_btn(page).click()
         row = page.locator('[data-testid="preview-run-row"][data-run-uuid="run-1"]')
         row.get_by_test_id("preview-run-pin").click()
 
@@ -1108,7 +1108,7 @@ class TestSavedPreviewsList:
         api.add_run(_make_run(uuid="run-1", name="First run"), [_make_candidate("c1")])
         api.install(page)
 
-        self._saved_previews_btn(page).click()
+        self._run_results_btn(page).click()
         row = page.locator('[data-testid="preview-run-row"][data-run-uuid="run-1"]')
         row.get_by_test_id("preview-run-delete").click()
 
@@ -1136,7 +1136,7 @@ class TestSavedPreviewsList:
         )
         api.install(page)
 
-        self._saved_previews_btn(page).click()
+        self._run_results_btn(page).click()
         row = page.locator('[data-testid="preview-run-row"][data-run-uuid="run-9"]')
         expect(row).to_contain_text("90.0% accurate (9/10)")
         expect(row).not_to_contain_text("unreviewed")
@@ -1162,7 +1162,7 @@ class TestSavedPreviewsList:
         )
         api.install(page)
 
-        self._saved_previews_btn(page).click()
+        self._run_results_btn(page).click()
         row = page.locator('[data-testid="preview-run-row"][data-run-uuid="run-9"]')
         expect(row).to_contain_text("still running")
         expect(row).not_to_contain_text("accurate")
@@ -1173,7 +1173,7 @@ class TestSavedPreviewsList:
         api.add_run(_make_run(uuid="run-1", name="First run"), [_make_candidate("c1")])
         api.install(page)
 
-        self._saved_previews_btn(page).click()
+        self._run_results_btn(page).click()
         row = page.locator('[data-testid="preview-run-row"][data-run-uuid="run-1"]')
         row.get_by_test_id("preview-run-open").click()
 

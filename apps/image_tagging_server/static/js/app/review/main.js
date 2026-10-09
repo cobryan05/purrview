@@ -437,40 +437,42 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
   });
 
-  // Saved Previews — every persisted "Run Model on Results" run, so a large
-  // triage can be picked up later instead of having to finish in one sitting.
+  // Model Run Results — what every model run over the queue leaves behind: a
+  // "Run Model on Results" proposal set waiting to be triaged, or a Verify
+  // Model accuracy report. Either way the point is that it outlives the dialog
+  // that started it, so a big job need not finish in one sitting.
   //
   // Review tab only (`!fetchImages`): saved runs are a property of the whole
   // project, not of the transient candidate set a similarity/search modal is
   // showing, and the run-model flow inside a modal opens its own run's panel
-  // directly anyway. Building it in modal mode would put a second
-  // "Saved **Prev**iews" button in the toolbar the pagination controls live in.
-  const savedPreviewsBtn = document.createElement('button');
-  savedPreviewsBtn.className = 'review-toolbar__btn';
-  savedPreviewsBtn.dataset.testid = 'review-saved-previews';
-  savedPreviewsBtn.dataset.tour = 'review.savedPreviews';
-  savedPreviewsBtn.textContent = 'Saved Previews';
-  savedPreviewsBtn.addEventListener('click', async () => {
-    const { openSavedPreviewsModal } = await import('/app-static/js/app/review/previewPanel.js');
-    await openSavedPreviewsModal({
+  // directly anyway. Building it in modal mode would put a second copy of this
+  // button in the toolbar the pagination controls live in.
+  const runResultsBtn = document.createElement('button');
+  runResultsBtn.className = 'review-toolbar__btn';
+  runResultsBtn.dataset.testid = 'review-model-run-results';
+  runResultsBtn.dataset.tour = 'review.modelRunResults';
+  runResultsBtn.textContent = 'Model Run Results';
+  runResultsBtn.addEventListener('click', async () => {
+    const { openModelRunResultsModal } = await import('/app-static/js/app/review/previewPanel.js');
+    await openModelRunResultsModal({
       labels,
       onApplied: () => render(),
-      onClose: () => _refreshSavedPreviewCount(),
+      onClose: () => _refreshRunResultsCount(),
     });
   });
 
-  async function _refreshSavedPreviewCount() {
+  async function _refreshRunResultsCount() {
     try {
       const { fetchPreviewRuns } = await import('/app-static/js/shared/api/previewRuns.js');
       const runs = await fetchPreviewRuns();
-      savedPreviewsBtn.textContent = runs.length > 0 ? `Saved Previews (${runs.length})` : 'Saved Previews';
+      runResultsBtn.textContent = runs.length > 0 ? `Model Run Results (${runs.length})` : 'Model Run Results';
     } catch {
       // A count nobody asked for is not worth a toast; the button still opens
       // the list, which reports the failure properly.
-      savedPreviewsBtn.textContent = 'Saved Previews';
+      runResultsBtn.textContent = 'Model Run Results';
     }
   }
-  if (!fetchImages) _refreshSavedPreviewCount();
+  if (!fetchImages) _refreshRunResultsCount();
 
   // Run Filter Chain on Results — runs a stored FilterChain (relabel/tag/add-box
   // steps) over the images behind the current selection/filter. Same scope
@@ -673,7 +675,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   filterScopedActionsBar.className = 'review-filter-scoped-actions';
   filterScopedActionsBar.dataset.testid = 'review-filter-scoped-actions';
   filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, verifyModelBtn, runChainBtn);
-  if (!fetchImages) filterScopedActionsBar.insertBefore(savedPreviewsBtn, runChainBtn);
+  if (!fetchImages) filterScopedActionsBar.insertBefore(runResultsBtn, runChainBtn);
 
   // ── Contextual action bar ────────────────────────────────────────
   // Appears only with an active selection — hidden the rest of the time.
