@@ -2092,6 +2092,22 @@ class MqttBridge:
         # in-memory truth republished unconditionally, while these are seeded only where
         # the broker holds nothing — see `_seed_rule_globals`.
         self._seed_rule_globals(profiles)
+        self._seed_blank_source_presence()
+
+    def _seed_blank_source_presence(self) -> None:
+        """Fill per-camera presence topics that discovery created after their camera's
+        first report — a label ticked for `publish_per_source`, or newly published to HA,
+        while the watcher runs. The first-report seed in `_publish_changed_presence` has
+        already run for that camera and will not run again, so without this the new
+        entities stay `unknown` until the subject next arrives, and that arrival reads as
+        `unknown -> on`, which a `from: off` trigger never matches.
+
+        Only cameras in `_presence_by_source`: they have a current answer to publish. One
+        that has not reported is `unavailable`, and gets seeded on its first report.
+        """
+        for source_uuid in list(self._presence_by_source):
+            for subject_uuid in self._unpublished_subjects(source_uuid):
+                self._publish_subject_source_presence(subject_uuid, source_uuid)
 
     # ---------------------------------------------------------------- rule arming
 
@@ -2867,6 +2883,11 @@ class MqttBridge:
             return set()
         blanks = set()
         for subject_uuid, slug in self._subject_slugs.items():
+            # A label without the per-camera opt-in publishes nothing here, so recording
+            # its topic as filled would stop it ever being seeded once the flag is ticked.
+            view = self._label_views.get(subject_uuid)
+            if view is None or not view.publish_per_source:
+                continue
             topic = f"{subject_base_topic(slug)}/source/{source_slug}/state"
             if topic not in self._published_source_states:
                 blanks.add(subject_uuid)

@@ -2368,6 +2368,64 @@ class TestPerCameraPresenceIsSeeded:
         assert _payloads(fake, "subject/luna/source/kitchen/state") == []
 
 
+class TestPerCameraPresenceIsSeededWhenTickedLive:
+    """Ticking `publish_per_source` while the watcher runs creates the entities on the
+    next discovery pass, after every camera's first-report seed has already run. They
+    must still get each camera's current answer, or they sit `unknown` until the subject
+    next arrives — and `unknown -> on` never matches a `from: off` automation trigger.
+    """
+
+    async def _tick_per_source(self, bridge):
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Garage")),
+            rules=(),
+        )
+
+        async def _profiles():
+            bridge._label_views = {
+                "subj-a": SubjectView(uuid="subj-a", name="Luna", publish_to_ha=True, publish_per_source=True)
+            }
+            return [profile]
+
+        bridge._load_profiles = _profiles
+        await bridge.publish_all_discovery()
+
+    def _running_bridge(self):
+        bridge, _ = _presence_bridge(per_source=False)
+        fake = _ArmingPublisher()
+        bridge._publisher = fake
+        # Non-empty so the restores short-circuit; they need a real broker read.
+        bridge._armed = {"rule-1": True}
+        bridge._watching = {"src-1": True}
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-2", label_uuids=[], source_name="Garage", at="T1")
+        return bridge, fake
+
+    async def test_each_running_camera_publishes_its_current_answer(self):
+        bridge, fake = self._running_bridge()
+
+        await self._tick_per_source(bridge)
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON"]
+        assert _payloads(fake, "subject/luna/source/garage/state") == ["OFF"]
+
+    async def test_later_passes_do_not_republish_the_seed(self):
+        bridge, fake = self._running_bridge()
+
+        await self._tick_per_source(bridge)
+        await self._tick_per_source(bridge)
+
+        assert _payloads(fake, "subject/luna/source/garage/state") == ["OFF"]
+
+    async def test_a_retained_value_is_left_alone(self):
+        bridge, fake = self._running_bridge()
+        _adopt_retained(bridge, ["subject/luna/source/garage/state"])
+
+        await self._tick_per_source(bridge)
+
+        assert _payloads(fake, "subject/luna/source/garage/state") == []
+
+
 class TestPerCameraPresencePublishing:
     def test_an_arrival_publishes_that_cameras_own_answer_and_the_union(self):
         bridge, fake = _presence_bridge()
