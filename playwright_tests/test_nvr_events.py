@@ -2919,6 +2919,60 @@ def _one_rule_two_actors() -> list:
     ]
 
 
+#: The two-camera fixture's uuid → name, as `_route_two_cameras` serves them.
+TWO_CAMERA_NAMES = {"src-1": "Litter cam", "src-2": "Door cam"}
+
+
+def _one_identity_two_cameras() -> list:
+    """One identity split across two cameras, two events each.
+
+    Every other grain gives one row for this, which is what makes it the fixture for the
+    camera grain and the split toggle alike: a fold that ignored the camera would be
+    indistinguishable from one that honoured it on a single-camera fixture.
+    """
+    return [
+        _event(
+            uuid=f"drink-{i:04d}",
+            ruleUuid="rule-water",
+            ruleName="cat drinking water",
+            subjectRef="label-cat",
+            subjectName="Tabby",
+            targetRef="zone-bowl",
+            targetName="water bowl",
+            sourceUuid=source,
+            startedAt=f"2026-08-18T09:{10 + i:02d}:00",
+            endedAt=f"2026-08-18T09:{10 + i:02d}:20",
+            recordings=[],
+        )
+        for i, source in enumerate(["src-1", "src-1", "src-2", "src-2"])
+    ]
+
+
+def _route_two_cameras(page: Page):
+    """Name both cameras of `_one_identity_two_cameras`.
+
+    ⚠️ Register **after** `_mock`, so this is matched first — Playwright tries the most
+    recently added route first, and `_mock`'s own single-camera source list would
+    otherwise answer, leaving one of the two cameras unnamed.
+    """
+    page.route(
+        re.compile(r"/api/sources/get"),
+        lambda r: r.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "sources": {
+                        uuid: {"uuid": uuid, "name": name, "typename": "F", "params": {}}
+                        for uuid, name in TWO_CAMERA_NAMES.items()
+                    },
+                }
+            ),
+        ),
+    )
+
+
 class TestTheGroupingGrainIsSelectable:
     """The finest grain is the unit an event happened at; it is the wrong unit for
     "how much is each cat drinking", where one rule splits across several vessels and
@@ -2986,6 +3040,104 @@ class TestTheGroupingGrainIsSelectable:
         assert _query_values(queries[-1], "target_refs") == [], "the folded dimension must not narrow the drill-down"
 
 
+class TestGroupingByCameraOrByWhatWasActedOn:
+    """Two grains the actor-shaped ones cannot express: "which camera sees the most" and
+    "which bowl gets used", both summed across everything else. Each assertion compares
+    the new grain against another grain of the same fixture — a count read at one grain
+    alone would prove nothing about the fold."""
+
+    def test_grouping_by_camera_gives_one_card_per_camera(self, page: Page, base_url: str):
+        _mock(page, events=_one_identity_two_cameras())
+        _route_two_cameras(page)
+        _open_events_pane(page, base_url, view="groups")
+        # One identity, so every actor-shaped grain folds it to a single card.
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(1)
+
+        page.locator("[data-testid='event-group-by']").select_option("camera")
+
+        headlines = page.locator("[data-testid='event-group-card-headline']")
+        expect(headlines).to_have_count(2)
+        assert sorted(h.strip() for h in headlines.all_text_contents()) == ["Door cam", "Litter cam"]
+        counts = page.locator("[data-testid='event-group-card-count']")
+        assert sorted(int(c) for c in counts.all_text_contents()) == [2, 2]
+
+    def test_a_camera_card_names_the_camera_once(self, page: Page, base_url: str):
+        """The card's meta line names the camera at every other grain, where the headline
+        does not. With the camera *as* the headline that line is the same fact twice."""
+        _mock(page, events=_one_identity_two_cameras())
+        _route_two_cameras(page)
+        _open_events_pane(page, base_url, view="groups")
+        page.locator("[data-testid='event-group-by']").select_option("camera")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+        card = page.locator("[data-testid='event-group-card']").first
+        name = card.locator("[data-testid='event-group-card-headline']").text_content().strip()
+        assert card.text_content().count(name) == 1, card.text_content()
+
+    def test_a_camera_card_drills_down_to_that_camera_alone(self, page: Page, base_url: str):
+        """A camera row covers every actor and target on it, so sending either as a filter
+        would open onto a fraction of what the card counted."""
+        queries = _mock(page, events=_one_identity_two_cameras())
+        _route_two_cameras(page)
+        _open_events_pane(page, base_url, view="groups")
+        page.locator("[data-testid='event-group-by']").select_option("camera")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+        card = page.locator("[data-testid='event-group-card']").first
+        # Read off the card rather than assumed: the two cameras hold two events each, so
+        # which one sorts first is a tie broken by recency, not something to hard-code.
+        name = card.locator("[data-testid='event-group-card-headline']").text_content().strip()
+        expected = [uuid for uuid, named in TWO_CAMERA_NAMES.items() if named == name]
+        card.locator("[data-testid='event-group-card-drill']").click()
+
+        wait_until(page, lambda: _query_values(queries[-1], "source_uuids") == expected)
+        assert _query_values(queries[-1], "subject_refs") == [], "the folded dimension must not narrow the drill-down"
+        assert _query_values(queries[-1], "target_refs") == []
+        assert _query_values(queries[-1], "rule_uuids") == []
+
+    def test_the_split_toggle_goes_away_once_the_camera_is_the_grain(self, page: Page, base_url: str):
+        """The split subdivides the chosen grain by camera; the camera grain is already
+        one row per camera, so the control could only ever change nothing."""
+        _mock(page, events=_one_identity_two_cameras())
+        _route_two_cameras(page)
+        _open_events_pane(page, base_url, view="groups")
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+        expect(page.locator("[data-testid='event-split-by-camera']")).to_be_visible()
+
+        page.locator("[data-testid='event-group-by']").select_option("camera")
+
+        expect(page.locator("[data-testid='event-split-by-camera']")).not_to_be_visible()
+
+    def test_grouping_by_what_was_acted_on_sums_every_actor(self, page: Page, base_url: str):
+        """Three of the four events are at bowl A, by two different cats. A per-target row
+        has to hold all three; captioning it with either cat would be a wrong answer about
+        a row whose number includes the other."""
+        _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="groups")
+        expect(page.locator("[data-testid='event-group-card-headline']").first).to_contain_text("Tabby")
+
+        page.locator("[data-testid='event-group-by']").select_option("target")
+
+        headlines = page.locator("[data-testid='event-group-card-headline']")
+        expect(headlines).to_have_count(2)
+        assert sorted(h.strip() for h in headlines.all_text_contents()) == ["bowl A", "bowl B"]
+        assert not any("Tabby" in h or "Clover" in h for h in headlines.all_text_contents())
+        counts = page.locator("[data-testid='event-group-card-count']")
+        assert sorted(int(c) for c in counts.all_text_contents()) == [1, 3]
+
+    def test_a_per_target_row_drills_down_without_the_actor(self, page: Page, base_url: str):
+        queries = _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="groups")
+        page.locator("[data-testid='event-group-by']").select_option("target")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+        page.locator("[data-testid='event-group-card-drill']").first.click()
+
+        wait_until(page, lambda: _query_values(queries[-1], "target_refs") == ["zone-a"])
+        assert _query_values(queries[-1], "subject_refs") == [], "the folded dimension must not narrow the drill-down"
+        assert _query_values(queries[-1], "rule_uuids") == []
+
+
 class TestTimelineLanesFollowTheGrain:
     def test_grouping_per_actor_gives_one_lane_per_cat(self, page: Page, base_url: str):
         """The side-by-side comparison: one lane per cat for a single event type, rather
@@ -3019,41 +3171,8 @@ class TestTimelineLanesFollowTheGrain:
         camera on the lane the toggle looks like it duplicated the row rather than split
         it, and there is no way to tell which lane is which camera.
         """
-        one_identity_two_cameras = [
-            _event(
-                uuid=f"drink-{i:04d}",
-                ruleUuid="rule-water",
-                ruleName="cat drinking water",
-                subjectRef="label-cat",
-                subjectName="Tabby",
-                targetRef="zone-bowl",
-                targetName="water bowl",
-                sourceUuid=source,
-                startedAt=f"2026-08-18T09:{10 + i:02d}:00",
-                endedAt=f"2026-08-18T09:{10 + i:02d}:20",
-                recordings=[],
-            )
-            for i, source in enumerate(["src-1", "src-1", "src-2", "src-2"])
-        ]
-        _mock(page, events=one_identity_two_cameras)
-        # Registered after _mock's own, and so matched first: two cameras, because a
-        # single-camera fixture cannot show a split at all.
-        page.route(
-            re.compile(r"/api/sources/get"),
-            lambda r: r.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps(
-                    {
-                        "status": "success",
-                        "sources": {
-                            "src-1": {"uuid": "src-1", "name": "Litter cam", "typename": "F", "params": {}},
-                            "src-2": {"uuid": "src-2", "name": "Door cam", "typename": "F", "params": {}},
-                        },
-                    }
-                ),
-            ),
-        )
+        _mock(page, events=_one_identity_two_cameras())
+        _route_two_cameras(page)
         _open_events_pane(page, base_url, view="timeline")
         lanes = page.locator("[data-testid='event-timeline-lane']")
         expect(lanes).to_have_count(1)

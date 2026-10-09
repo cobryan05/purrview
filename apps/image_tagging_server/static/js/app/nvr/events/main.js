@@ -45,6 +45,7 @@ import {
   createFocusController,
   dimensionsFor,
   foldGroups,
+  grainSplitsCameras,
   groupDrilldownFilters,
   groupFacetSeeds,
   groupHeadline,
@@ -210,6 +211,21 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
   const sourceNames = await loadSourceNames();
 
+  /**
+   * A camera's display name, falling back to a truncated uuid.
+   *
+   * An unnamed camera — or one deleted since the events it recorded — is still a
+   * distinct one, so it has to caption as *something*: an empty headline would read as
+   * a broken row rather than as a camera the source list no longer knows.
+   *
+   * @param {?string} uuid
+   * @returns {?string}
+   */
+  function cameraName(uuid) {
+    if (!uuid) return null;
+    return sourceNames.get(uuid) || `Camera ${uuid.slice(0, 8)}…`;
+  }
+
   const toolbar = el('div', 'event-search__toolbar');
   const summary = el('div', 'event-search__summary');
   summary.dataset.testid = 'event-search-summary';
@@ -328,7 +344,10 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       btn.classList.toggle('event-search__view--active', on);
       btn.setAttribute('aria-selected', String(on));
     }
-    splitLabel.hidden = view === 'all';
+    // Hidden where it could do nothing: the split subdivides the chosen grain by camera,
+    // and the camera grain is already one row per camera. Left on screen it would be a
+    // control that visibly changes nothing, which reads as broken.
+    splitLabel.hidden = view === 'all' || grainSplitsCameras(groupBy);
     // Grain only means anything where rows are folded; the chronological view
     // shows events, which are already at the finest grain there is.
     groupByLabel.hidden = view === 'all';
@@ -401,6 +420,9 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     selectedGroups.clear();
     selectedSessions.clear();
     focus.clear();
+    // The grain decides whether the split toggle can mean anything, so the toolbar has
+    // to be resynced here and not only when the view changes.
+    syncViewUi();
     refoldAggregate();
   });
 
@@ -1342,11 +1364,17 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
    */
   async function searchAggregate(seq) {
     const state = queryState();
-    const [{ groups: raw, total: groupTotal }, histogram] = await Promise.all([
+    const [{ groups: rawGroups, total: groupTotal }, histogram] = await Promise.all([
       fetchWatchEventGroups(state),
       fetchWatchEventHistogram({ ...state, bucket: 'hour' }),
     ]);
     if (seq !== requestSeq) return;
+
+    // The camera's *name* resolved once, here, rather than wherever a row is captioned:
+    // a group row carries only `sourceUuid`, and the camera grain needs the name as its
+    // headline. Resolved against the same map the cards and lanes use, so a row and its
+    // drill-down cannot disagree about which camera they mean.
+    const raw = rawGroups.map(g => ({ ...g, sourceName: cameraName(g.sourceUuid) }));
 
     // Kept so the grain/sort/split toggles can re-fold without asking again — see
     // `refoldAggregate`. Held at the finest grain the server returns, which is the input

@@ -122,7 +122,8 @@ export function buildGroupCard(group, {
 
   // Captioned for the grain the row is actually grouped at — see `groupHeadline`. A
   // per-actor card must not claim a target it only partly covers.
-  const { primary: headline, secondary: ruleLine } = groupHeadline(group, group.dimensions ?? ['rule', 'subject', 'target']);
+  const dimensions = group.dimensions ?? ['rule', 'subject', 'target'];
+  const { primary: headline, secondary: ruleLine } = groupHeadline(group, dimensions);
   card.setAttribute('aria-label', `${headline}, ${group.count} events`);
 
   const media = el('div', 'event-group-card__media');
@@ -185,13 +186,17 @@ export function buildGroupCard(group, {
   if (since) meta.appendChild(el('span', 'event-group-card__meta-item', since));
   const total = formatTotalDuration(group.totalDurationS);
   if (total) meta.appendChild(el('span', 'event-group-card__meta-item', total));
-  // Only when it is actually plural: "1 camera" on every card is noise, and naming the
-  // single camera is what the split-by-camera toggle is for.
+  // Skipped entirely when the camera is part of the grain: `groupHeadline` has already
+  // captioned the row with it, and "Garage" under a card headlined "Garage" is the same
+  // fact twice. Otherwise only when it is actually plural — "1 camera" on every card is
+  // noise, and naming the single camera is what the split-by-camera toggle is for.
   const cameras = group.sourceUuids ?? [];
-  if (cameras.length > 1) {
-    meta.appendChild(el('span', 'event-group-card__meta-item', `${cameras.length} cameras`));
-  } else if (group.sourceUuid && sourceNames.get(group.sourceUuid)) {
-    meta.appendChild(el('span', 'event-group-card__meta-item', sourceNames.get(group.sourceUuid)));
+  if (!dimensions.includes('source')) {
+    if (cameras.length > 1) {
+      meta.appendChild(el('span', 'event-group-card__meta-item', `${cameras.length} cameras`));
+    } else if (group.sourceUuid && sourceNames.get(group.sourceUuid)) {
+      meta.appendChild(el('span', 'event-group-card__meta-item', sourceNames.get(group.sourceUuid)));
+    }
   }
   if (meta.childElementCount) body.appendChild(meta);
 

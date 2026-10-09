@@ -42,7 +42,18 @@ export const GROUP_BY_MODES = [
   ['actor', ['rule', 'subject'], 'Actor', 'One row per actor per event type — cats side by side'],
   ['event', ['rule'], 'Event type', 'One row per event type, every actor summed'],
   ['subject', ['subject'], 'Actor only', 'One row per actor, across every kind of event'],
+  ['target', ['target'], 'Acted on', 'One row per thing acted on, across every kind of event'],
+  ['event-target', ['rule', 'target'], 'Event type & acted on', 'One row per target per event type — which bowl, every cat summed'],
+  // The one grain the "split by camera" toggle cannot express: that toggle *subdivides*
+  // whichever grain is chosen, so with the camera as the sole dimension there would be
+  // nothing left to subdivide. "Which camera sees the most" is its own question.
+  ['camera', ['source'], 'Camera', 'One row per camera, every event on it summed'],
 ];
+
+/** Whether a grain already distinguishes cameras, which makes the split toggle a no-op. */
+export function grainSplitsCameras(id) {
+  return dimensionsFor(id).includes('source');
+}
 
 /** @param {string} id @returns {string[]} the dimensions for a mode id, defaulting to detail */
 export function dimensionsFor(id) {
@@ -132,11 +143,18 @@ export function groupHeadline(group, dimensions) {
   const parts = [];
   if (dimensions.includes('subject') && group.subjectName) parts.push(group.subjectName);
   if (dimensions.includes('target') && group.targetName) parts.push(group.targetName);
-  const primary = parts.join(' → ') || (dimensions.includes('rule') ? group.ruleName : '') || 'Event';
-  const secondary = dimensions.includes('rule') && group.ruleName && group.ruleName !== primary
-    ? group.ruleName
-    : '';
-  return { primary, secondary };
+  // Never joined into the arrow: a camera is not an actor slot, so "Luna → Tupperware →
+  // Garage" would read as a third thing in the chain. It is a headline only when it is
+  // the whole grain, and a caption line otherwise.
+  const camera = dimensions.includes('source') ? group.sourceName || '' : '';
+  const primary = parts.join(' → ')
+    || (dimensions.includes('rule') ? group.ruleName : '')
+    || camera
+    || 'Event';
+  const lines = [];
+  if (dimensions.includes('rule') && group.ruleName && group.ruleName !== primary) lines.push(group.ruleName);
+  if (camera && camera !== primary) lines.push(camera);
+  return { primary, secondary: lines.join(' · ') };
 }
 
 /**
@@ -171,7 +189,11 @@ export function foldGroups(groups, { dimensions = ['rule', 'subject', 'target'],
         // Which cameras this row covers, so a folded row can say "2 cameras" rather
         // than silently picking one of them.
         sourceUuids: group.sourceUuid ? [group.sourceUuid] : [],
-        sourceUuid: splitByCamera ? group.sourceUuid : null,
+        // Kept whenever the row is actually per-camera — either because the grain says
+        // so or because the split asked for it. Cleared otherwise, for the same reason
+        // the actor fields are: a row covering four cameras must not name one of them.
+        sourceUuid: splitByCamera || dimensions.includes('source') ? group.sourceUuid : null,
+        sourceName: splitByCamera || dimensions.includes('source') ? group.sourceName ?? null : null,
       });
       continue;
     }
@@ -233,6 +255,7 @@ export function groupDrilldownFilters(group, { dimensions = null, splitByCamera 
   put('ruleUuids', 'rule', group.ruleUuid);
   put('subjectRefs', 'subject', group.subjectRef);
   put('targetRefs', 'target', group.targetRef);
+  put('sourceUuids', 'source', group.sourceUuid);
   if (splitByCamera && group.sourceUuid) out.sourceUuids = [group.sourceUuid];
   return out;
 }
@@ -255,7 +278,7 @@ export function groupFacetSeeds(group) {
     rules: group.ruleUuid ? [{ ref: group.ruleUuid, name: group.ruleName || group.ruleUuid }] : [],
     subjects: group.subjectRef ? [{ ref: group.subjectRef, name: group.subjectName || group.subjectRef }] : [],
     targets: group.targetRef ? [{ ref: group.targetRef, name: group.targetName || group.targetRef }] : [],
-    sources: group.sourceUuid ? [{ ref: group.sourceUuid, name: group.sourceUuid }] : [],
+    sources: group.sourceUuid ? [{ ref: group.sourceUuid, name: group.sourceName || group.sourceUuid }] : [],
   };
 }
 
