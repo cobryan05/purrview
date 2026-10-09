@@ -55,6 +55,7 @@ from db_client.api.preview_runs_api import PreviewRunsApi
 from db_client.models.add_preview_candidates_payload import AddPreviewCandidatesPayload
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 from db_client.models.preview_candidate_create import PreviewCandidateCreate
+from db_client.models.preview_run_update import PreviewRunUpdate
 from inference_client.api.models_api import ModelsApi as InferenceModelsApi
 from inference_client.models.pin_model_payload import PinModelPayload
 
@@ -228,6 +229,14 @@ class PreviewModelRelabelTask(Task):
         # docstring for why this does not violate the "never writes to the DB"
         # invariant.
         self._preview_run_uuid: Optional[str] = params.get("preview_run_uuid") or None
+        # Verify Model turns both of these around: its proposals are *mistakes*
+        # measured against verified ground truth, so persisting them as triagable
+        # candidates would offer to relabel the ground truth itself. It wants the
+        # summary instead, and it wants the task to write it — a report PATCHed by
+        # the browser after polling is lost exactly when the page is.
+        self._persist_candidates: bool = bool(params.get("persist_candidates", True))
+        self._persist_stats: bool = bool(params.get("persist_stats", False))
+        self._stats_state: Optional[str] = None
         # Clamped to >= 1: asyncio.Semaphore(0) would block the batch loop forever.
         self._concurrency: int = max(1, int(params.get("concurrency", _DEFAULT_CONCURRENCY)))
 
@@ -286,6 +295,7 @@ class PreviewModelRelabelTask(Task):
                 f"Model {self._model_name!r} is a {model_kind}; relabel preview only supports "
                 "detector and crop-classifier models — nothing to do"
             )
+            await self._persist_run_stats("completed")
             return self._build_result()
 
         # A crop classifier is the second pass of a hierarchical config: it answers
@@ -299,6 +309,7 @@ class PreviewModelRelabelTask(Task):
                     f"Model {self._model_name!r} is a crop classifier; it classifies one box at a "
                     f"time and cannot run in {self._crop_mode!r} mode — re-run with crop_mode='bbox'"
                 )
+                await self._persist_run_stats("completed")
                 return self._build_result()
             self._crop_padding = await asyncio.to_thread(_read_crop_padding, self._model_name)
             self.log(
@@ -339,6 +350,7 @@ class PreviewModelRelabelTask(Task):
         )
 
         await self.heartbeat(force=True)
+        await self._persist_run_stats("running")
 
         for batch_start in range(0, len(remaining), _IMAGE_BATCH_SIZE):
             if self._cancel_flag.is_set():
@@ -435,6 +447,7 @@ class PreviewModelRelabelTask(Task):
         )
         if self._sample_errors:
             self.log(f"Sample errors: {self._sample_errors}")
+        await self._persist_run_stats("cancelled" if self._cancel_flag.is_set() else "completed")
         return self._build_result()
 
     async def _build_label_name_map(self, labels_api: LabelsApi) -> Dict[str, str]:
@@ -850,7 +863,7 @@ class PreviewModelRelabelTask(Task):
         A failed flush keeps the buffer, so the next flush (or the final forced
         one) retries it rather than losing the work.
         """
-        if not self._preview_run_uuid or not self._candidates:
+        if not self._preview_run_uuid or not self._persist_candidates or not self._candidates:
             return
         if not force and len(self._candidates) < _CANDIDATE_FLUSH_SIZE:
             return
@@ -876,6 +889,26 @@ class PreviewModelRelabelTask(Task):
         await asyncio.to_thread(api.add_preview_candidates, self._preview_run_uuid, payload)
         self._candidates_written += len(batch)
         self._candidates = []
+
+    async def _persist_run_stats(self, state: str) -> None:
+        """Write the run summary into the persisted preview run.
+
+        `state` distinguishes a report that is still being produced from a
+        finished one and from one whose task died mid-run, which is all a later
+        viewer has to go on: nothing else records that a run ever started.
+        """
+        if not self._preview_run_uuid or not self._persist_stats:
+            return
+        stats = self._build_result()
+        stats.pop("candidates", None)
+        stats["state"] = state
+        stats["task_uuid"] = self._instance_uuid
+        api = PreviewRunsApi(self._manager.get_db_api_client())
+        try:
+            await asyncio.to_thread(api.update_preview_run, self._preview_run_uuid, PreviewRunUpdate(stats=stats))
+            self._stats_state = state
+        except Exception:
+            logger.exception("Failed to write stats for preview run %s", self._preview_run_uuid)
 
     def _build_resume_data(self) -> Dict[str, Any]:
         return {
@@ -919,6 +952,10 @@ class PreviewModelRelabelTask(Task):
         return result
 
     async def _deinit(self) -> None:
+        # Runs on every exit path, cancellation and exception included: without
+        # this a crashed run leaves its report stuck on "running" forever.
+        if self._stats_state in (None, "running"):
+            await self._persist_run_stats("interrupted")
         if not self._pin_id:
             return
         inference_api_client = self._manager.get_inference_api_client()
@@ -944,6 +981,8 @@ class PreviewModelRelabelTask(Task):
                     "bbox_uuids",
                     "preview_run_uuid",
                     "conflict_policy",
+                    "persist_candidates",
+                    "persist_stats",
                 ],
             },
             "model_name": {
@@ -1031,6 +1070,26 @@ class PreviewModelRelabelTask(Task):
                     "Persist candidates into this preview run as they are found, instead of "
                     "returning them all in the one-shot result. Several models sharing one uuid "
                     "land in the same run."
+                ),
+            },
+            "persist_candidates": {
+                "type": "bool",
+                "label": "Persist Candidates",
+                "default": True,
+                "description": (
+                    "Write candidates into the preview run. Turn off for a measurement run, "
+                    "whose 'candidates' are disagreements with ground truth and must never be "
+                    "offered as relabels of it. Only meaningful with preview_run_uuid set."
+                ),
+            },
+            "persist_stats": {
+                "type": "bool",
+                "label": "Persist Stats",
+                "default": False,
+                "description": (
+                    "Write the run summary (counts + confusion matrix) into the preview run's "
+                    "stats as the task finishes, so the report survives losing the page that "
+                    "started it. Only meaningful with preview_run_uuid set."
                 ),
             },
             "conflict_policy": {

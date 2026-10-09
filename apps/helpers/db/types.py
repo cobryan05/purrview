@@ -1049,6 +1049,14 @@ class TaskResult(BaseModel):
 # write to bboxes/labels/tags (see PreviewModelRelabelTask's docstring).
 
 
+# `params_json` flag marking a run whose whole result is its `stats_json` and
+# which holds no candidates — Verify Model's accuracy report. Set at creation
+# and never changed, because the early sweep below reads "no untriaged
+# candidates" as "nothing left to come back to", which for a report is exactly
+# backwards: it would delete the report a day after writing it.
+PREVIEW_REPORT_PARAM = "report"
+
+
 class PreviewRunTTL:
     """How long a run survives before the lazy sweep on GET /api/preview-runs.
 

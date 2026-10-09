@@ -64,6 +64,12 @@ import {
   deleteTasks,
   TaskStatus,
 } from '/app-static/js/shared/api/tasks.js';
+import {
+  createPreviewRun,
+  fetchPreviewRun,
+  fetchPreviewRuns,
+  REPORT_PARAM,
+} from '/app-static/js/shared/api/previewRuns.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { resolveCandidateScope, confirmLargeRun, truncateScope, WARN_THRESHOLD } from '/app-static/js/app/review/runModelOnResults.js';
@@ -519,6 +525,12 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
 
   const progressArea = document.createElement('div');
   progressArea.style.cssText = 'margin-top: 1rem; display: none;';
+  // Filled in once the runs exist, because what it can promise depends on
+  // whether they were saved and on whether an archived version is involved.
+  const savedNote = document.createElement('div');
+  savedNote.dataset.testid = 'compare-models-saved-note';
+  savedNote.style.cssText = 'display: none; margin-bottom: 0.5rem; font-size: 0.9em;';
+  progressArea.appendChild(savedNote);
   const progressLabel = document.createElement('div');
   const progressBar = document.createElement('progress');
   progressBar.max = 100;
@@ -561,21 +573,28 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
     try {
       const confThresh = Math.min(1, Math.max(0, parseFloat(threshInput.value) || 0.25));
       const iouThresh = Math.min(1, Math.max(0, parseFloat(iouInput.value) || 0.5));
-      const labelA = (a.displayName ?? a.modelName) + (a.subModelNames.length ? ` → ${a.subModelNames.join(', ')}` : '');
+      const labelA = _configLabel(a);
+      const labelB = b.modelName ? _configLabel(b) : null;
+
+      // Both runs are created before either starts, so the second one is already
+      // on record if the page goes away while the first is still running.
+      const group = `verify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const scope = { bbox_uuid_count: bboxUuids.length, image_uuid_count: imageUuids.length };
+      const runA = await _createReportRun({ label: labelA, cfg: a, cropMode, confThresh, iouThresh, scope, group, slot: 'A' });
+      const runB = labelB
+        ? await _createReportRun({ label: labelB, cfg: b, cropMode, confThresh, iouThresh, scope, group, slot: 'B' })
+        : null;
+      _showSavedNote(savedNote, [runA, runB].filter(Boolean), livePreviews.size > 0);
 
       progressLabel.textContent = `Running ${labelA}…`;
       progressBar.value = 0;
-      const resultA = await _runOneConfig({ ...a, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
-      resultA.supportedLabelUuids = a.supportedLabelUuids;
+      const resultA = await _runOneConfig({ ...a, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid: runA?.uuid ?? null, onProgress: p => { progressBar.value = p; } });
 
       let resultB = null;
-      let labelB = null;
-      if (b.modelName) {
-        labelB = (b.displayName ?? b.modelName) + (b.subModelNames.length ? ` → ${b.subModelNames.join(', ')}` : '');
+      if (labelB) {
         progressLabel.textContent = `Running ${labelB}…`;
         progressBar.value = 0;
-        resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
-        resultB.supportedLabelUuids = b.supportedLabelUuids;
+        resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid: runB?.uuid ?? null, onProgress: p => { progressBar.value = p; } });
       }
 
       progressArea.style.display = 'none';
@@ -595,8 +614,65 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
   open();
 }
 
+/** "model → sub, sub" — what a configuration is called in the results. */
+function _configLabel(cfg) {
+  return (cfg.displayName ?? cfg.modelName) + (cfg.subModelNames.length ? ` → ${cfg.subModelNames.join(', ')}` : '');
+}
+
+/**
+ * Register one configuration's report before its task starts.
+ *
+ * The run is what makes the result outlive this dialog: the task writes its
+ * summary into `stats` as it finishes, so a verification survives closing the
+ * page that started it. Returns null if the run could not be created — the
+ * comparison still runs, it just won't be saved.
+ */
+async function _createReportRun({ label, cfg, cropMode, confThresh, iouThresh, scope, group, slot }) {
+  try {
+    return await createPreviewRun({
+      name: `Verify: ${label}`,
+      modelName: cfg.modelName,
+      taskTypename: 'PreviewModelRelabelTask',
+      params: {
+        [REPORT_PARAM]: true,
+        display_label: label,
+        crop_mode: cropMode,
+        conf_thresh: confThresh,
+        iou_thresh: iouThresh,
+        sub_model_names: cfg.subModelNames,
+        // Array, not the Set the dialog carries: this round-trips through JSON.
+        supported_label_uuids: [...(cfg.supportedLabelUuids ?? [])],
+        comparison_group: group,
+        slot,
+      },
+      scope,
+    });
+  } catch (err) {
+    Logger.error('Failed to create verification run:', err);
+    toast('Could not save this verification; its results will be lost if you close this window.', 6000, 'warning');
+    return null;
+  }
+}
+
+/** Tell the user whether they still have to sit here while the run finishes. */
+function _showSavedNote(noteEl, runs, holdsVersionPreview) {
+  noteEl.style.display = 'block';
+  if (runs.length === 0) {
+    noteEl.textContent = '⚠ This run is not being saved — keep this window open or the results are lost.';
+    return;
+  }
+  const names = runs.map(r => `“${r.name}”`).join(' and ');
+  if (holdsVersionPreview) {
+    // Closing the dialog releases the materialised version copy, and the task
+    // then fails on a model that no longer exists.
+    noteEl.textContent = `Saving as ${names}. This run uses an archived version, so keep this window open until it finishes — closing it deletes the temporary copy the run needs.`;
+    return;
+  }
+  noteEl.textContent = `✓ Saving as ${names} — you can close this window. The run keeps going and the report is waiting under “Saved Previews” in the review toolbar.`;
+}
+
 /** Launches one PreviewModelRelabelTask run and returns its parsed stats. */
-async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress }) {
+async function _runOneConfig({ modelName, subModelNames, supportedLabelUuids, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, previewRunUuid, onProgress }) {
   const params = {
     model_name: modelName,
     crop_mode: cropMode,
@@ -606,6 +682,10 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
     iou_thresh: iouThresh,
     image_uuids: imageUuids,
     bbox_uuids: bboxUuids,
+    // A verification's "candidates" are its disagreements with ground truth, so
+    // they are counted and never persisted: offered as triagable relabels they
+    // would propose overwriting the very labels being measured against.
+    ...(previewRunUuid ? { preview_run_uuid: previewRunUuid, persist_candidates: false, persist_stats: true } : {}),
     // Only meaningful (and only accepted by the task) in image mode — see
     // the module docstring on why bbox mode never chains a sub-model.
     ...(cropMode === 'image' && subModelNames.length ? { sub_model_names: subModelNames } : {}),
@@ -656,6 +736,16 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
   const data = resultsMap.get(taskUuid)?.data ?? {};
   await deleteTasks({ taskUuids: [taskUuid] }).catch(e => Logger.error('Cleanup failed', e));
 
+  return _resultFromStats(data, supportedLabelUuids);
+}
+
+/**
+ * Score one run's raw counts.
+ *
+ * Takes the task result or a saved run's `stats` — they are the same dict,
+ * which is the whole reason a report reads back identically to a live run.
+ */
+function _resultFromStats(data, supportedLabelUuids = null) {
   const noOp = data.no_op_count ?? 0;
   // `candidate_count`, not `candidates.length`: the task empties `candidates`
   // out of its result whenever the run is persisted to a preview run, and a
@@ -671,6 +761,7 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
     total,
     confusion: data.confusion ?? {},
     imagesFailed: data.images_failed ?? 0,
+    supportedLabelUuids: supportedLabelUuids ?? null,
   };
 }
 
@@ -963,4 +1054,179 @@ function _renderComparison({ labelA, labelB, resultA, resultB, labels }) {
   container.appendChild(details);
 
   return container;
+}
+
+// ── Saved reports ──────────────────────────────────────────────────────────
+//
+// A verification is a measurement, not a proposal: it has no candidates to
+// triage, so a saved run carries its whole result in `stats` and the triage
+// panel has nothing to show for it. These two exports are what the Saved
+// Previews list uses instead — a one-line summary for the row, and this
+// read-only rebuild of the same report the dialog rendered live.
+
+const _REPORT_POLL_MS = 2000;
+
+/** One line for a saved report's row in the Saved Previews list. */
+export function reportRowSummary(run) {
+  const stats = run?.stats ?? {};
+  if (!stats.state) return 'never started';
+  if (stats.state === 'running') return 'still running…';
+  const result = _resultFromStats(stats);
+  const pct = result.accuracy == null ? 'no scorable boxes' : `${(result.accuracy * 100).toFixed(1)}% accurate`;
+  const detail = `${result.correct}/${result.total}`;
+  if (stats.state === 'completed') return `${pct} (${detail})`;
+  // cancelled / interrupted: the numbers are real but cover only part of the scope.
+  return `${stats.state} — ${pct} so far (${detail})`;
+}
+
+function _reportResult(run) {
+  const supported = run.params?.supported_label_uuids;
+  return _resultFromStats(run.stats ?? {}, Array.isArray(supported) ? new Set(supported) : null);
+}
+
+function _reportLabel(run) {
+  return run.params?.display_label || run.modelName || run.name;
+}
+
+/**
+ * Re-open a saved verification. Still-running runs are polled to completion
+ * here, which is what makes closing the dialog mid-run safe in the first place.
+ */
+export async function openSavedVerifyReport({ run, labels = null }) {
+  // ESC and a backdrop click dismiss the modal too, so the poll loop below has
+  // to key off the shell's own teardown rather than the Close button.
+  let closed = false;
+  const { dialog, open, close } = createModalShell({ onClose: () => { closed = true; } });
+  dialog.classList.add('app-modal-dialog--lg');
+  dialog.style.cssText = 'overflow-y: auto;';
+
+  const title = document.createElement('h3');
+  title.textContent = run.name;
+  dialog.appendChild(title);
+
+  const meta = document.createElement('p');
+  meta.style.cssText = 'font-size: 0.85em; color: var(--pico-muted-color, #888);';
+  const p = run.params ?? {};
+  const scope = run.scope ?? {};
+  meta.textContent = [
+    p.crop_mode === 'bbox' ? 'identification only' : 'full pipeline',
+    `conf ≥ ${p.conf_thresh ?? '?'}`,
+    p.crop_mode === 'bbox' ? null : `IoU ≥ ${p.iou_thresh ?? '?'}`,
+    `${scope.bbox_uuid_count ?? 0} box(es)`,
+  ].filter(Boolean).join(' · ');
+  dialog.appendChild(meta);
+
+  const body = document.createElement('div');
+  body.dataset.testid = 'verify-report-body';
+  body.style.marginTop = '1rem';
+  dialog.appendChild(body);
+
+  const footer = document.createElement('div');
+  footer.style.cssText = 'margin-top: 1.25rem; display: flex; justify-content: flex-end;';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'secondary';
+  closeBtn.textContent = 'Close';
+  closeBtn.addEventListener('click', close);
+  footer.appendChild(closeBtn);
+  dialog.appendChild(footer);
+
+  open();
+
+  let current = run;
+  if (current.stats?.state === 'running') {
+    current = await _awaitReport(current, body, () => closed);
+    if (closed) return;
+  }
+
+  body.innerHTML = '';
+  if (!current.stats?.state) {
+    body.textContent = 'This verification never started, so there is nothing to show.';
+    return;
+  }
+  if (current.stats.state === 'interrupted') {
+    const warn = document.createElement('p');
+    warn.textContent = '⚠ This run stopped before it finished — the numbers below cover only the boxes it got through.';
+    body.appendChild(warn);
+  }
+
+  // A two-model comparison is two runs sharing a `comparison_group`; rendering
+  // the pair reproduces the side-by-side verdict the dialog showed live.
+  const sibling = await _findSibling(current);
+  const labelA = _reportLabel(current);
+  if (sibling && sibling.stats?.state === 'completed' && current.stats.state === 'completed') {
+    const [first, second] = current.params?.slot === 'B' ? [sibling, current] : [current, sibling];
+    body.appendChild(_renderComparison({
+      labelA: _reportLabel(first),
+      labelB: _reportLabel(second),
+      resultA: _reportResult(first),
+      resultB: _reportResult(second),
+      labels,
+    }));
+    return;
+  }
+  body.appendChild(_renderSingleResult({ labelA, resultA: _reportResult(current), labels }));
+}
+
+/** The other half of a two-model comparison, if it is saved and readable. */
+async function _findSibling(run) {
+  const group = run.params?.comparison_group;
+  if (!group) return null;
+  try {
+    const runs = await fetchPreviewRuns();
+    return runs.find(r => r.uuid !== run.uuid && r.params?.comparison_group === group) ?? null;
+  } catch (err) {
+    Logger.error('Failed to look up the other half of this comparison:', err);
+    return null;
+  }
+}
+
+/**
+ * Watch a run that is still in flight. The run's own `stats.state` is the only
+ * authority on being finished — the task writes it as it exits — so a task that
+ * vanished (tasks_server restarted under it) is detected by its absence from
+ * the status map rather than by waiting for a terminal status it will never get.
+ */
+async function _awaitReport(run, body, isClosed) {
+  body.innerHTML = '';
+  const label = document.createElement('div');
+  label.textContent = 'Still running — this picks up where it left off.';
+  const bar = document.createElement('progress');
+  bar.max = 100;
+  bar.style.width = '100%';
+  body.append(label, bar);
+
+  const taskUuid = run.stats?.task_uuid;
+  let missingPolls = 0;
+  let current = run;
+  while (!isClosed()) {
+    if (taskUuid) {
+      try {
+        const { tasks } = await fetchTasksStatus({ taskUuids: [taskUuid] });
+        const info = tasks?.[taskUuid];
+        if (info) {
+          missingPolls = 0;
+          bar.value = info.progress ?? 0;
+        } else {
+          missingPolls += 1;
+        }
+      } catch (err) {
+        Logger.warn('Report progress poll failed:', err);
+      }
+    }
+    await new Promise(r => setTimeout(r, _REPORT_POLL_MS));
+    if (isClosed()) break;
+    try {
+      current = await fetchPreviewRun(run.uuid);
+    } catch (err) {
+      Logger.error('Failed to re-read the verification run:', err);
+      break;
+    }
+    if (current.stats?.state !== 'running') break;
+    if (missingPolls > MAX_MISSING_POLLS) {
+      // The task is gone and nothing will ever update the run again.
+      current = { ...current, stats: { ...current.stats, state: 'interrupted' } };
+      break;
+    }
+  }
+  return current;
 }

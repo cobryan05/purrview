@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from apps.helpers.db.types import (
+    PREVIEW_REPORT_PARAM,
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
     PreviewCandidateCreate,
@@ -72,10 +73,14 @@ async def _get_image_uuid(http_client, image_path="preview_test.png"):
     return r.json()["image"]["uuid"]
 
 
-async def _create_run(http_client, name=None, model_name="yolov8", task_typename="PreviewModelRelabelTask"):
+async def _create_run(
+    http_client, name=None, model_name="yolov8", task_typename="PreviewModelRelabelTask", params=None
+):
     payload = {"modelName": model_name, "taskTypename": task_typename}
     if name is not None:
         payload["name"] = name
+    if params is not None:
+        payload["params"] = params
     r = await http_client.post("/api/preview-runs", json=payload)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -1012,3 +1017,42 @@ class TestTtlSweep:
         r = await http_client.get("/api/preview-runs")
         uuids = [x["uuid"] for x in r.json()["runs"]]
         assert run["uuid"] not in uuids
+
+    @staticmethod
+    async def _backdate(db_client, run_uuid):
+        """Push updated_at past the triaged cutoff. update_preview_run always
+        bumps it forward via ORM refresh, so this reaches into the session."""
+        from apps.helpers.db.types import PreviewRun
+
+        async with db_client._async_session_maker() as session:
+            row = await session.get(PreviewRun, run_uuid)
+            row.updated_at = datetime.now(timezone.utc) - timedelta(hours=PreviewRunTTL.TRIAGED_HOURS + 1)
+            session.add(row)
+            await session.commit()
+
+    async def test_candidateless_run_swept_early(self, http_client, db_client):
+        # The baseline the report exemption below is an exception to: with no
+        # candidates there is nothing untriaged, so the short TTL applies.
+        run = await _create_run(http_client, name="NothingProposed")
+        await self._backdate(db_client, run["uuid"])
+
+        r = await http_client.get("/api/preview-runs")
+        assert run["uuid"] not in [x["uuid"] for x in r.json()["runs"]]
+
+    async def test_candidateless_report_run_survives_the_early_sweep(self, http_client, db_client):
+        # A report's result is its stats and it never has candidates, so the
+        # "fully triaged" rule would delete it a day after it was written.
+        run = await _create_run(http_client, name="Verify: yolov8", params={PREVIEW_REPORT_PARAM: True})
+        await self._backdate(db_client, run["uuid"])
+
+        r = await http_client.get("/api/preview-runs")
+        assert run["uuid"] in [x["uuid"] for x in r.json()["runs"]]
+
+    async def test_expired_report_run_is_still_swept(self, http_client, db_client):
+        # The exemption is only from the 24h triaged rule — a report still has a
+        # normal 7-day TTL and still has to be pinned to outlive it.
+        run = await _create_run(http_client, name="Verify: old", params={PREVIEW_REPORT_PARAM: True})
+        await db_client.update_preview_run(run["uuid"], expires_at=datetime.now(timezone.utc) - timedelta(days=1))
+
+        r = await http_client.get("/api/preview-runs")
+        assert run["uuid"] not in [x["uuid"] for x in r.json()["runs"]]

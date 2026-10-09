@@ -30,6 +30,19 @@ export const PreviewDecision = {
   STALE: 'stale',
 };
 
+/**
+ * `params.report` marks a run that carries no candidates at all and whose whole
+ * result is its `stats` — a Verify Model accuracy report. Mirrors
+ * PREVIEW_REPORT_PARAM in apps/helpers/db/types.py, which the server's TTL sweep
+ * reads to keep such a run from being swept as "fully triaged".
+ */
+export const REPORT_PARAM = 'report';
+
+/** True for a saved accuracy report rather than a triagable candidate run. */
+export function isReportRun(run) {
+  return Boolean(run?.params?.[REPORT_PARAM]);
+}
+
 /** What accepting a candidate does — mirrors PreviewDecisionAction. */
 export const PreviewDecisionAction = {
   RELABEL: 'relabel',

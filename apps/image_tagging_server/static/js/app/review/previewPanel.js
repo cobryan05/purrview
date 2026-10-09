@@ -35,6 +35,7 @@ import {
   queryPreviewCandidates,
   updatePreviewCandidates,
   updatePreviewRun,
+  isReportRun,
   PreviewDecision,
   PreviewDecisionAction,
 } from '/app-static/js/shared/api/previewRuns.js';
@@ -1087,6 +1088,12 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
       listBody.textContent = `Failed to load saved previews: ${err.message}`;
       return;
     }
+    // Scoring a report's stats lives with the verification dialog that produced
+    // them; this list only needs the one line, and only when a report is in it.
+    let reportRowSummary = () => '';
+    if (runs.some(isReportRun)) {
+      ({ reportRowSummary } = await import('/app-static/js/app/review/compareModels.js'));
+    }
     if (runs.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'relabel-modal-empty';
@@ -1094,10 +1101,10 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
       listBody.appendChild(empty);
       return;
     }
-    for (const run of runs) listBody.appendChild(_buildRunRow(run));
+    for (const run of runs) listBody.appendChild(_buildRunRow(run, reportRowSummary));
   }
 
-  function _buildRunRow(run) {
+  function _buildRunRow(run, reportRowSummary) {
     const row = document.createElement('div');
     row.className = 'preview-run-row';
     row.dataset.testid = 'preview-run-row';
@@ -1109,11 +1116,13 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
     const name = document.createElement('div');
     name.textContent = run.name;
     name.style.cssText = 'font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    const isReport = isReportRun(run);
     const counts = run.decisionCounts ?? {};
     const meta = document.createElement('div');
     meta.className = 'preview-run-row__meta';
     meta.style.cssText = 'font-size:0.8em;color:#aaa;';
-    meta.textContent = [
+    // A report has no candidates to count — its result is its stats.
+    meta.textContent = isReport ? [run.modelName, reportRowSummary(run)].filter(Boolean).join(' · ') : [
       run.modelName,
       `${counts[PreviewDecision.PENDING] ?? 0} unreviewed`,
       `${counts[PreviewDecision.ACCEPTED] ?? 0} accepted`,
@@ -1126,7 +1135,12 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
     openBtn.dataset.testid = 'preview-run-open';
     openBtn.textContent = 'Open';
     openBtn.addEventListener('click', async () => {
-      await openPreviewRunModal({ runUuid: run.uuid, labels, onApplied });
+      if (isReport) {
+        const { openSavedVerifyReport } = await import('/app-static/js/app/review/compareModels.js');
+        await openSavedVerifyReport({ run, labels });
+      } else {
+        await openPreviewRunModal({ runUuid: run.uuid, labels, onApplied });
+      }
       await _render();
     });
 
@@ -1154,7 +1168,9 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
     delBtn.addEventListener('click', async () => {
       const confirmed = await showConfirmModal({
         title: 'Delete preview run',
-        message: `Delete "${run.name}" and all of its candidates? Applied changes are not undone.`,
+        message: isReport
+          ? `Delete "${run.name}"? Its accuracy report is not recoverable — the run would have to be re-run.`
+          : `Delete "${run.name}" and all of its candidates? Applied changes are not undone.`,
         confirmText: 'Delete',
         danger: true,
       });

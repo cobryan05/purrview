@@ -1119,6 +1119,54 @@ class TestSavedPreviewsList:
         expect(page.get_by_test_id("preview-run-row")).to_have_count(0)
         assert api.delete_calls == ["run-1"]
 
+    def test_a_saved_report_shows_its_accuracy_and_opens_as_a_report(self, page: Page, base_url: str):
+        # A Verify Model run measures a model; it has no candidates to triage, so
+        # the row must not read as "0 unreviewed" and Open must not land on the
+        # triage panel.
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(
+            _make_run(
+                uuid="run-9",
+                name="Verify: yolo9-detector",
+                params={"report": True, "display_label": "yolo9-detector", "crop_mode": "image", "conf_thresh": 0.25},
+                stats={"state": "completed", "no_op_count": 9, "candidate_count": 1, "no_detection_count": 0},
+            ),
+            [],
+        )
+        api.install(page)
+
+        self._saved_previews_btn(page).click()
+        row = page.locator('[data-testid="preview-run-row"][data-run-uuid="run-9"]')
+        expect(row).to_contain_text("90.0% accurate (9/10)")
+        expect(row).not_to_contain_text("unreviewed")
+
+        row.get_by_test_id("preview-run-open").click()
+
+        expect(page.get_by_test_id("verify-report-body")).to_be_visible()
+        expect(page.get_by_test_id("preview-panel")).to_have_count(0)
+
+    def test_a_running_report_says_so_instead_of_scoring_a_partial_run(self, page: Page, base_url: str):
+        # Scoring the counts written at the start of a run would report 0%
+        # accuracy for a model that has not been measured yet.
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(
+            _make_run(
+                uuid="run-9",
+                name="Verify: yolo9-detector",
+                params={"report": True},
+                stats={"state": "running", "task_uuid": "task-1", "no_op_count": 0, "candidate_count": 0},
+            ),
+            [],
+        )
+        api.install(page)
+
+        self._saved_previews_btn(page).click()
+        row = page.locator('[data-testid="preview-run-row"][data-run-uuid="run-9"]')
+        expect(row).to_contain_text("still running")
+        expect(row).not_to_contain_text("accurate")
+
     def test_open_opens_triage_panel(self, page: Page, base_url: str):
         _setup_common(page, base_url)
         api = FakePreviewApi()

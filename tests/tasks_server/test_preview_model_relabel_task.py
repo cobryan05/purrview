@@ -1197,3 +1197,101 @@ class TestInferenceBackendWiring:
         assert result["images_failed"] == 0, f"inference backend never ran: {result['sample_errors']}"
         assert result["new_boxes_found"] == 1
         assert task._candidates[0]["isNew"] is True
+
+
+class TestReportPersistence:
+    """Verify Model's mode: the summary is persisted, the candidates are not.
+
+    Its "candidates" are disagreements with verified ground truth, so offering
+    them as relabels would propose overwriting the labels being measured
+    against. And the summary is written by the *task*, because the page that
+    started the run is exactly what goes missing.
+    """
+
+    @staticmethod
+    def _fake_api(monkeypatch):
+        """Captures both preview-run writes without an HTTP round-trip."""
+        calls = {"candidates": [], "stats": []}
+
+        class _FakeApi:
+            def __init__(self, _client):
+                pass
+
+            def add_preview_candidates(self, run_uuid, payload):
+                calls["candidates"].append((run_uuid, payload))
+
+            def update_preview_run(self, run_uuid, payload):
+                calls["stats"].append((run_uuid, payload))
+
+        monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.PreviewRunsApi", _FakeApi)
+        return calls
+
+    @staticmethod
+    def _report_params(**overrides):
+        return _base_params(
+            preview_run_uuid="run-1",
+            persist_candidates=False,
+            persist_stats=True,
+            **overrides,
+        )
+
+    async def test_candidates_are_counted_but_never_written(self, monkeypatch):
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(self._report_params())
+        await task._init(task._params, None)
+        task._candidates = [{"imageUuid": "img-1", "bboxUuid": "bbox-1", "proposedLabelUuid": "dog", "confidence": 0.9}]
+        task._no_op_count = 3
+
+        await task._flush_candidates(force=True)
+        assert calls["candidates"] == []
+
+        await task._persist_run_stats("completed")
+        _, payload = calls["stats"][0]
+        # The count is what accuracy is computed from; a zero here would read as
+        # "nothing wrong", i.e. a perfect score.
+        assert payload.stats["candidate_count"] == 1
+        assert payload.stats["no_op_count"] == 3
+        assert "candidates" not in payload.stats
+        assert payload.stats["state"] == "completed"
+
+    async def test_stats_are_not_written_without_the_flag(self, monkeypatch):
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(_base_params(preview_run_uuid="run-1"))
+        await task._init(task._params, None)
+        await task._persist_run_stats("completed")
+        assert calls["stats"] == []
+
+    async def test_deinit_marks_an_unfinished_run_interrupted(self, monkeypatch):
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(self._report_params())
+        await task._init(task._params, None)
+        await task._persist_run_stats("running")
+
+        await task._deinit()
+
+        assert [p.stats["state"] for _, p in calls["stats"]] == ["running", "interrupted"]
+
+    async def test_deinit_leaves_a_finished_run_alone(self, monkeypatch):
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(self._report_params())
+        await task._init(task._params, None)
+        await task._persist_run_stats("completed")
+
+        await task._deinit()
+
+        assert [p.stats["state"] for _, p in calls["stats"]] == ["completed"]
+
+    async def test_a_failed_stats_write_does_not_raise(self, monkeypatch):
+        class _BoomApi:
+            def __init__(self, _client):
+                pass
+
+            def update_preview_run(self, *_args, **_kwargs):
+                raise RuntimeError("db down")
+
+        monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.PreviewRunsApi", _BoomApi)
+        task = _make_task(self._report_params())
+        await task._init(task._params, None)
+        # The run is a report, not an annotation: losing the write must not fail
+        # the task that produced the numbers.
+        await task._persist_run_stats("completed")

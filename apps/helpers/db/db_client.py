@@ -47,6 +47,7 @@ from .types import (
     DETECTOR_MISS_TAG_UUID,
     HARVESTED_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
+    PREVIEW_REPORT_PARAM,
     REJECTION_TAG_UUID,
     RETIRED_TAG_UUIDS,
     UNVERIFIED_TAG_UUID,
@@ -9543,7 +9544,13 @@ class DbClient:
 
             # Fully-triaged runs older than the short TTL. "Fully triaged" is
             # expressed as NOT EXISTS an untriaged candidate, so a run with zero
-            # candidates (a model that proposed nothing) is swept too.
+            # candidates (a model that proposed nothing) is swept too — except a
+            # report run, which has no candidates by design and would otherwise
+            # be swept 24h after the only write it will ever get.
+            # coalesce, because json_extract on a run without the key yields NULL,
+            # and NOT NULL is NULL — which would exclude every ordinary run from
+            # the early sweep rather than only the reports.
+            is_report = func.coalesce(func.json_extract(PreviewRun.params_json, f"$.{PREVIEW_REPORT_PARAM}"), 0) == 1
             untriaged = (
                 select(PreviewCandidate.uuid)
                 .where(
@@ -9557,6 +9564,7 @@ class DbClient:
                     PreviewRun.pinned == False,  # noqa: E712
                     PreviewRun.updated_at <= triaged_cutoff,
                     ~untriaged,
+                    ~is_report,
                 )
             )
             doomed.update(stale.all())
