@@ -33,11 +33,11 @@ import { startHarvest } from './harvestRun.js';
 import { openSwitchReviewQueue } from './switchReviewQueue.js';
 import { Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
-import { buildEventCard } from './eventCard.js';
+import { buildEventCard, eventHeadline } from './eventCard.js';
 import { buildGroupCard } from './groupCard.js';
 import { createEventFilters, hasActiveFilter } from './filters.js';
 import { openEventDetailModal } from './eventDetailModal.js';
-import { buildSessionCard } from './sessionCard.js';
+import { buildSessionCard, formatSessionSpan } from './sessionCard.js';
 import { buildTimeline } from './timeline.js';
 import {
   GROUP_BY_MODES,
@@ -65,6 +65,15 @@ const PAGE_SIZE = 60;
  * grid, which the hover preview's "show these in the grid" button reaches.
  */
 const BUCKET_MODAL_LIMIT = 200;
+
+/**
+ * Events per page when a group card's events are browsed in the modal.
+ *
+ * A group is unbounded — an identity can hold four figures — so this one pages rather
+ * than taking a flat cap like a bin does: the modal is reached by clicking the card,
+ * which must stay cheap, and "Load more" costs one request only if you ask.
+ */
+const GROUP_MODAL_PAGE = 30;
 
 /**
  * The three projections of one query.
@@ -514,11 +523,16 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   }
 
   /**
-   * Narrow to one identity and show its events — the group and session cards' action.
+   * Narrow the page to one identity — the browse modal's "Show in grid", and a
+   * shift-click on a timeline mark.
    *
-   * `ungroupSessions` is what makes opening a visit meaningful: with the collapse still
-   * on, drilling into a session would land on the very card just clicked, since it is
-   * the only thing in that window.
+   * This rewrites the filter bar, which is why it is no longer what a plain click does:
+   * see `openGroupEvents`. It is still the right tool for acting on a whole identity
+   * at once, since selection and the bulk bar live on the page's grid, not in a modal.
+   *
+   * `ungroupSessions` is what makes narrowing to a visit meaningful: with the collapse
+   * still on, the grid would hold the very card just clicked, since it is the only
+   * thing in that window.
    */
   function drilldown(group, { window: win = null, ungroupSessions = false } = {}) {
     windowOverride = win;
@@ -640,6 +654,90 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
         return;
       }
       openDetail(events[0], events);
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not open those events', 5000, 'error');
+    }
+  }
+
+  /**
+   * One page of a group's events, under the filters currently in force.
+   *
+   * Spread over `queryState()` for the same reason `bucketEvents` is: the group was
+   * computed from the current query, so resolving its members has to use that query or
+   * the modal would show events the page is deliberately hiding. `win` narrows further
+   * for a visit, which is a group *plus* a time span.
+   */
+  async function groupEventsPage(group, { window: win = null, offset: from = 0 }) {
+    const window_ = win
+      ? { startFrom: win.from.toISOString(), ...(win.to ? { startTo: win.to.toISOString() } : {}) }
+      : {};
+    return fetchWatchEvents({
+      ...queryState(),
+      // The row's *own* grain, not the live grain select: a visit row carries no
+      // dimensions and is grouped at all three, while the select is hidden in the view
+      // visits appear in and can still hold a narrower value from the grouped view.
+      ...groupDrilldownFilters(group, { splitByCamera }),
+      ...window_,
+      limit: GROUP_MODAL_PAGE,
+      offset: from,
+    });
+  }
+
+  /**
+   * Open a group's events over the page, leaving its filters alone.
+   *
+   * Narrowing the page to the group — `drilldown` — throws away whatever filter set the
+   * reader built to find the group in the first place, which is the whole cost of
+   * clicking the thing you were looking for. So the click browses, and the drilldown is
+   * a button inside the modal for when narrowing really is what you wanted.
+   *
+   * A group of one goes straight to the player: an intermediate modal listing a single
+   * card is pure friction, the same bargain the timeline strikes for a one-event bin.
+   */
+  async function openGroupEvents(group, {
+    window: win = null,
+    ungroupSessions = false,
+    title = null,
+    subtitle = null,
+  } = {}) {
+    try {
+      const { events, total: matching } = await groupEventsPage(group, { window: win });
+      if (!events.length) {
+        toast('Those events are no longer there', 4000);
+        void search();
+        return;
+      }
+      const openDetail = (event, siblings) => openEventDetailModal(event, {
+        sourceNames,
+        siblings,
+        onDeleted: () => void search(),
+      });
+      if (events.length === 1 && matching <= 1) {
+        openDetail(events[0], events);
+        return;
+      }
+      const { primary, secondary } = groupHeadline(group, group.dimensions ?? dimensions());
+      openBucketBrowseModal({
+        events,
+        total: matching,
+        sourceNames,
+        testid: 'group-browse-modal',
+        title: title ?? primary,
+        subtitle: subtitle ?? secondary,
+        onOpenEvent: openDetail,
+        loadMore: offsetSoFar => groupEventsPage(group, { window: win, offset: offsetSoFar })
+          .then(page => page.events),
+        actions: [{
+          label: 'Show in grid',
+          title: 'Replace the page filters with this group and close the modal.',
+          testid: 'group-browse-drilldown',
+          onClick: close => {
+            close();
+            drilldown(group, { window: win, ungroupSessions });
+          },
+        }],
+      });
     } catch (err) {
       Logger.error(err);
       toast(err.message || 'Could not open those events', 5000, 'error');
@@ -1291,7 +1389,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
         dimensions: dimensions(),
         splitByCamera,
         sourceNames,
-        onSelectGroup: group => drilldown(group),
+        onSelectGroup: group => void openGroupEvents(group),
         onSelectBucket: (group, win) => drilldown(group, { window: win }),
         onOpenBucket: (group, win) => void openBucketEvents(group, win),
         onPreviewBucket: (group, win) => previewBucket(group, win),
@@ -1313,7 +1411,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
         const card = buildGroupCard(group, {
           sourceNames,
           sparkCounts: sparkCounts(byIdentity.get(group.key) ?? [], span),
-          onDrilldown: g => drilldown(g),
+          onDrilldown: g => void openGroupEvents(g),
           onOpenLatest: async g => {
             try {
               const event = await fetchWatchEvent(g.representativeUuid);
@@ -1454,9 +1552,9 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
           sourceNames,
           onToggleSelect: toggleSelectSession,
           selected: selectedSessions.has(session.representativeUuid),
-          // A visit of several events has no single clip to play, so it drills into its
-          // own events and its own minutes rather than guessing which of the seven was
-          // meant. A visit of *one* has exactly one, and an intermediate grid holding a
+          // A visit of several events has no single clip to play, so it browses its own
+          // events and its own minutes rather than guessing which of the seven was
+          // meant. A visit of *one* has exactly one, and an intermediate modal holding a
           // single card is pure friction — the same bargain the timeline strikes for a
           // bin holding one event.
           onOpen: s => {
@@ -1464,9 +1562,16 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
               void openSessionEvent(s, sessionWalkUuids);
               return;
             }
-            drilldown(s, {
+            void openGroupEvents(s, {
               window: { from: parseApiDate(s.startedAt), to: sessionWindowEnd(s) },
               ungroupSessions: true,
+              // A visit is captioned by its span, not by its grain: it is one trip to
+              // the bowl, and "when" is the fact that distinguishes it from the next.
+              title: eventHeadline(s),
+              subtitle: formatSessionSpan(
+                parseApiDate(s.startedAt),
+                s.isOpen ? null : parseApiDate(s.endedAt),
+              ),
             });
           },
         });

@@ -468,13 +468,11 @@ export function buildTimeline({
     // Tapping the lane's empty strip pins, so the highlight survives the pointer leaving.
     // Without a pin the view is unusable by touch, which has no hover at all.
     //
-    // ⚠️ Deliberately the *track*, not the label. The label already drills down, and the
-    // two on one element fought: `onSelectGroup` clears the focus on its way out and this
-    // handler — registered second — immediately re-pinned it, landing the user in the flat
-    // grid with everything dimmed and no control left on screen to unpin, because this is
-    // the only caller of `togglePin` and it had just been navigated away from. The track
-    // is the right target anyway: it is already the hover region for this identity, so a
-    // tap on it is exactly the touch equivalent of the hover it stands in for. Marks
+    // ⚠️ Deliberately the *track*, not the label. The label opens the lane's events, and
+    // two handlers on one element fight: a tap that both browsed and pinned leaves the
+    // page dimmed behind the modal with `togglePin`'s only trigger underneath it. The
+    // track is the right target anyway: it is already the hover region for this identity,
+    // so a tap on it is exactly the touch equivalent of the hover it stands in for. Marks
     // `stopPropagation`, so this fires only for the strip between them.
     track.addEventListener('click', () => focus.togglePin(group.key));
   }

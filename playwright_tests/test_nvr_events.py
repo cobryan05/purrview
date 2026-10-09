@@ -2524,21 +2524,42 @@ class TestGroupingCollapsesRepeatedEvents:
         expect(counts).to_have_count(2)
         assert [c.strip() for c in counts.all_text_contents()] == ["4", "2"], "biggest group leads"
 
-    def test_clicking_a_group_narrows_the_flat_view_to_it(self, page: Page, base_url: str):
-        """Drilling in must actually filter, not merely switch views.
+    def test_clicking_a_group_browses_it_without_rewriting_the_filters(self, page: Page, base_url: str):
+        """A click resolves the group; it does not re-point the page at it.
 
-        The mock returns every event whatever is asked, so the check is on the request:
-        a drill-down that switched views without sending the identity would look right on
-        screen and show the wrong events against a real server.
+        Narrowing the page threw away whatever filter set the reader built to *find* the
+        group, which is the whole cost of clicking the thing you were looking for. The
+        request still has to carry the identity — the mock returns every event whatever
+        is asked, so a modal that asked for everything would look right on screen and
+        show the wrong events against a real server.
         """
         queries = _mock(page, events=_two_identities())
         _open_events_pane(page, base_url, view="groups")
 
         page.locator("[data-testid='event-group-card-drill']").first.click()
-        expect(page.locator("[data-testid='event-view-all']")).to_have_class(re.compile("event-search__view--active"))
+
+        expect(page.locator("[data-testid='group-browse-modal']")).to_be_visible()
         wait_until(page, lambda: _query_values(queries[-1], "rule_uuids") == ["rule-water"])
         assert _query_values(queries[-1], "subject_refs") == ["label-cat"]
         assert _query_values(queries[-1], "target_refs") == ["zone-bowl"]
+        # The page behind it is untouched: same view, same cards, same filters to come
+        # back to once the modal closes.
+        expect(page.locator("[data-testid='event-view-groups']")).to_have_class(
+            re.compile("event-search__view--active")
+        )
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+    def test_the_browse_modal_can_still_narrow_the_page(self, page: Page, base_url: str):
+        """The drill-down did not go away, it stopped being the side effect of a click."""
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="groups")
+        page.locator("[data-testid='event-group-card-drill']").first.click()
+        expect(page.locator("[data-testid='group-browse-modal']")).to_be_visible()
+
+        page.locator("[data-testid='group-browse-drilldown']").click()
+
+        expect(page.locator("[data-testid='group-browse-modal']")).to_have_count(0)
+        expect(page.locator("[data-testid='event-view-all']")).to_have_class(re.compile("event-search__view--active"))
 
     def test_selecting_a_group_arms_a_delete_for_every_event_in_it(self, page: Page, base_url: str):
         """A group's checkbox stands for four rows, and the button must say four.
@@ -2806,15 +2827,31 @@ class TestSessionGroupingFoldsRepeats:
         expect(page.locator("[data-testid='event-session-card']")).to_have_count(1)
         expect(page.locator("[data-testid='event-session-repeat-badge']")).to_have_count(0)
 
-    def test_opening_a_visit_ungroups_it(self, page: Page, base_url: str):
-        """Drilling in with the collapse still on would land on the very card just
-        clicked — it is the only thing inside its own window."""
+    def test_opening_a_visit_browses_it_without_ungrouping_the_page(self, page: Page, base_url: str):
+        """A visit's events open over the grid, so the gap setting the rest of the page is
+        folded by survives looking inside one of them."""
+        _mock(page, events=_events(3), sessions=[_session()])
+        _open_events_pane(page, base_url, view="all")
+        page.locator("[data-testid='event-session-gap']").select_option("120")
+        expect(page.locator("[data-testid='event-session-card']")).to_have_count(1)
+
+        page.locator("[data-testid='event-session-card']").click()
+
+        expect(page.locator("[data-testid='group-browse-modal']")).to_be_visible()
+        expect(page.locator("[data-testid='group-browse-modal'] [data-testid='event-card']")).to_have_count(3)
+        assert page.locator("[data-testid='event-session-gap']").input_value() == "120"
+
+    def test_showing_a_visit_in_the_grid_ungroups_it(self, page: Page, base_url: str):
+        """The drill-down the click used to do, now a button — and it still has to ungroup:
+        with the collapse on, the grid it lands on holds the very card just clicked, which
+        is the only thing inside its own window."""
         queries = _mock(page, events=_events(3), sessions=[_session()])
         _open_events_pane(page, base_url, view="all")
         page.locator("[data-testid='event-session-gap']").select_option("120")
         expect(page.locator("[data-testid='event-session-card']")).to_have_count(1)
 
         page.locator("[data-testid='event-session-card']").click()
+        page.locator("[data-testid='group-browse-drilldown']").click()
 
         expect(page.locator("[data-testid='event-card']")).to_have_count(3)
         assert page.locator("[data-testid='event-session-gap']").input_value() == "0"
@@ -4079,13 +4116,16 @@ class TestTheFoldControlsDoNotRefetch:
         assert len(queries) == before, queries[before:]
 
 
-class TestALaneLabelDrillsDownWithoutPinning:
+class TestALaneLabelBrowsesWithoutPinning:
     def test_clicking_a_lane_label_does_not_leave_the_page_dimmed(self, page: Page, base_url: str):
         """The lane label carried two click handlers that undid each other: the drill-down
         cleared the focus and the pin, registered second, immediately restored it. The
         user landed in the flat grid with every non-matching tile dimmed and no control
         left on screen to unpin — the pin's only trigger was the lane they had just
         navigated away from.
+
+        The label browses rather than navigating now, so the lane is still there; the
+        assertion is that it still does not arm the pin on its way.
         """
         _mock(page, events=_two_identities())
         _open_events_pane(page, base_url, view="timeline")
@@ -4093,7 +4133,8 @@ class TestALaneLabelDrillsDownWithoutPinning:
 
         page.locator("[data-testid='event-timeline-label']").first.click()
 
-        expect(page.locator("[data-testid='event-view-all']")).to_have_class(re.compile("event-search__view--active"))
+        expect(page.locator("[data-testid='group-browse-modal']")).to_be_visible()
+        expect(page.locator("[data-testid='event-timeline']")).to_be_attached()
         expect(page.locator("[data-testid='event-search']")).not_to_have_class(re.compile("event-focus-pinned"))
 
     def test_the_lane_strip_still_pins(self, page: Page, base_url: str):

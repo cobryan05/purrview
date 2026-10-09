@@ -219,10 +219,10 @@ export function buildGroupCard(group, {
   body.appendChild(actions);
   card.appendChild(body);
 
-  // The card body drills in rather than opening a player. A group is a set, and the
-  // obvious thing to want from a set is to see it — "Latest" is the deliberate escape
-  // hatch to a single event, which is the opposite balance from the flat grid where a
-  // click opens the video because an event is nearly always opened to be watched.
+  // The card body opens the set rather than a player. A group is a set, and the obvious
+  // thing to want from a set is to see it — "Latest" is the deliberate escape hatch to a
+  // single event, which is the opposite balance from the flat grid where a click opens
+  // the video because an event is nearly always opened to be watched.
   card.addEventListener('click', e => {
     if (onToggleSelect && (e.shiftKey || e.ctrlKey || e.metaKey)) {
       e.preventDefault();

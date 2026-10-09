@@ -1551,6 +1551,16 @@ body.chrome-hidden .event-search__sticky-top {
   padding-right: var(--space-2);
 }
 
+/* Outside the scroller: "Load more" and the drill-down have to stay reachable without
+   scrolling to the bottom of a set that grows every time you press one of them. */
+.bucket-browse__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  padding-top: var(--space-2);
+}
+
 /* ----- identity focus -----
    One class on the root dims everything, one class per member undims it. Doing it this
    way round means a hover costs two class flips total rather than a style write per
