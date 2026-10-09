@@ -30,6 +30,8 @@
  * would invent a detection that never happened.
  */
 
+import { attachClipControls } from './clipControls.js';
+
 /**
  * Sidecar shapes this renderer understands. A newer one is ignored, not guessed at.
  *
@@ -227,6 +229,23 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
   canvas.dataset.testid = 'clip-overlay-canvas';
   wrapper.appendChild(canvas);
 
+  /**
+   * Fullscreen the wrapper, never the video.
+   *
+   * Only the fullscreen element's own subtree is painted, and the canvas is the video's
+   * sibling — fullscreening the video shows the picture with the boxes stripped off it.
+   */
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    // Not awaited: a refusal should leave the player exactly as it was.
+    else wrapper.requestFullscreen?.().catch(() => {});
+  };
+
+  // Appended after the canvas, so the bar draws over the boxes rather than under them,
+  // and it retreats on its own while playing (see `_poke`) to give the bottom strip of
+  // the picture back.
+  const controls = attachClipControls(wrapper, video, { onToggleFullscreen: toggleFullscreen });
+
   let showing = visible;
 
   /**
@@ -351,29 +370,42 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
   // than left to whichever browser happens to implement it. Handled on the wrapper so
   // the whole letterboxed area responds, not only the picture.
   const onDoubleClick = (e) => {
+    // The control bar is inside the wrapper, so a double-tap on the scrubber or the
+    // play button would otherwise read as a double-click on the picture.
+    if (e.target.closest?.('.clip-controls')) return;
     e.preventDefault();
-    if (document.fullscreenElement) document.exitFullscreen?.();
-    // Not awaited: a refusal should leave the player exactly as it was.
-    else wrapper.requestFullscreen?.().catch(() => {});
+    toggleFullscreen();
   };
   wrapper.addEventListener('dblclick', onDoubleClick);
 
-  // `controlsList="nofullscreen"` hides the control bar's own fullscreen button, but only
-  // on Chromium — it is not a standard attribute, and Firefox and Safari show the button
-  // regardless. That button fullscreens the VIDEO, which leaves this canvas behind and is
-  // the same loss `onDoubleClick` exists to prevent, so wherever the request comes from
-  // it is promoted to the wrapper. The re-request runs on the activation that opened
-  // fullscreen in the first place; if a browser refuses it, exiting is still the honest
-  // outcome — boxes over the picture or no fullscreen, never a picture missing its boxes.
-  // Escalated, not exited and re-entered. Leaving fullscreen first spends the gesture
-  // that opened it, and a request with no transient activation left is refused — which
-  // looked like fullscreen flashing open and shutting again. Asking while a fullscreen
-  // element is already set needs no fresh activation, and the wrapper is the video's own
-  // ancestor, so the picture never leaves the screen on the way. A refusal leaves the
-  // video fullscreen without its boxes, which is merely where this started.
+  // Clicking the picture plays and pauses it, the way a native player does.
+  //
+  // Acted on immediately rather than held back to see whether a double-click follows:
+  // the two clicks inside one toggle playback twice and land back where they started,
+  // so the gesture costs nothing, where deferring every click would put a visible lag
+  // on the commonest thing anyone does to a video.
+  const onClick = (e) => {
+    if (e.target.closest?.('.clip-controls')) return;
+    controls.togglePlay();
+  };
+  wrapper.addEventListener('click', onClick);
+
+  // A clip with a sidecar has no native control bar (see `clipControls.js`), so nothing
+  // in the UI can fullscreen the video element. A browser can still do it unprompted —
+  // its own double-click gesture, in the moment before the sidecar arrives and the bar
+  // is replaced — and the video alone on screen is the picture with its boxes stripped
+  // off. So the request is promoted to the wrapper, which is the video's own ancestor,
+  // so the picture never leaves the screen on the way.
+  //
+  // Escalated, not exited and re-entered: leaving fullscreen first spends the gesture
+  // that opened it, and the second request is then refused for want of transient
+  // activation. The escalation needs none of its own while a fullscreen element is
+  // already set — except in Gecko, which requires activation for every request and
+  // denies this one. There the only honest outcome left is no fullscreen at all, so a
+  // refusal exits rather than leaving a picture that is missing its boxes.
   const onFullscreenChange = () => {
     if (document.fullscreenElement === video) {
-      wrapper.requestFullscreen?.().catch(() => {});
+      wrapper.requestFullscreen?.().catch(() => document.exitFullscreen?.());
       return;
     }
     redraw();
@@ -408,12 +440,14 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
       return lead;
     },
     destroy() {
+      controls.destroy();
       observer.disconnect();
       video.removeEventListener('timeupdate', redraw);
       video.removeEventListener('seeked', redraw);
       video.removeEventListener('loadedmetadata', onMetadata);
       video.removeEventListener('durationchange', onMetadata);
       wrapper.removeEventListener('dblclick', onDoubleClick);
+      wrapper.removeEventListener('click', onClick);
       document.removeEventListener('fullscreenchange', onFullscreenChange);
       if (rafHandle != null && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(rafHandle);
       canvas.remove();

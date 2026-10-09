@@ -1251,11 +1251,12 @@ class TestTheDetectionOverlay:
 
     def test_fullscreening_the_video_itself_is_promoted_to_the_wrapper(self, page: Page, base_url: str):
         """The canvas is a sibling of the video, so fullscreening the video element shows
-        the picture with no boxes on it. `controlsList="nofullscreen"` hides the control
-        bar's own button, but only on Chromium — it is not standard, and Firefox and
-        Safari offer it regardless.
+        the picture with no boxes on it. Nothing in the UI can ask for that any more —
+        a clip with boxes has no native control bar — but a browser's own double-click
+        gesture can, in the window before the sidecar arrives, so the request is still
+        promoted to the wrapper.
 
-        The request is made here the way that button makes it: on the video, from a real
+        The request is made here the way that gesture makes it: on the video, from a real
         click so it carries the user activation a fullscreen request needs.
         """
         self._open_modal(page, base_url, overlay=_overlay())
@@ -1366,6 +1367,189 @@ class TestTheDetectionOverlay:
 
         expect(page.locator("[data-testid='event-detail-video']")).to_be_visible()
         expect(page.locator("[data-testid='event-detail-overlay-toggle']")).to_have_count(0)
+
+
+class TestTheClipControls:
+    """The player's own control bar, which a clip gets in place of the browser's.
+
+    The reason it exists is one the assertions have to keep honest: a native control
+    bar's fullscreen button fullscreens the `<video>` element, and only the fullscreen
+    element's subtree is painted, so the overlay canvas — the video's *sibling* — is
+    left behind and the picture fills the screen with the boxes stripped off it.
+    Promoting that request to the wrapper afterwards needs transient user activation
+    that a `fullscreenchange` handler does not have, and Gecko denies it. So the bar is
+    there to remove the button, and the test that matters is the conditional one: native
+    controls are gone exactly when there are boxes to lose.
+    """
+
+    def _open_modal(self, page: Page, base_url: str, **mock_kwargs):
+        _mock(page, **mock_kwargs)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']")
+
+    def test_a_clip_with_boxes_trades_the_native_controls_for_its_own(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay())
+        page.wait_for_selector("[data-testid='clip-controls']")
+
+        video = page.locator("[data-testid='event-detail-video']")
+        assert video.evaluate("v => v.controls") is False
+
+    def test_a_clip_with_no_boxes_keeps_the_native_controls(self, page: Page, base_url: str):
+        """The other half of the same rule. A clip with no sidecar has no canvas to
+        strand, so its native bar — fullscreen button included — costs nothing, and
+        taking it away would leave that clip with no fullscreen at all: the tools-row
+        button only appears alongside an overlay."""
+        self._open_modal(page, base_url, overlay=None)
+
+        video = page.locator("[data-testid='event-detail-video']")
+        expect(video).to_be_visible()
+        assert video.evaluate("v => v.controls") is True
+        expect(page.locator("[data-testid='clip-controls']")).to_have_count(0)
+
+    def test_the_play_button_runs_and_stops_the_clip(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay(), playable=True)
+        play = page.locator("[data-testid='clip-controls-play']")
+        video = page.locator("[data-testid='event-detail-video']")
+        # The fixture clip is one second long, so it would reach its end — and pause
+        # itself — inside the window these assertions are polling in.
+        video.evaluate("v => { v.muted = true; v.loop = true; }")
+
+        play.click()
+        wait_until(page, lambda: video.evaluate("v => !v.paused"), "the play button did not start the clip")
+
+        play.click()
+        wait_until(page, lambda: video.evaluate("v => v.paused"), "the play button did not stop the clip")
+
+    def test_the_scrubber_and_clock_follow_the_playhead(self, page: Page, base_url: str):
+        """A bar that does not track the video is worse than none: it reports a position
+        the picture is not at.
+
+        Only this direction is testable here — `route.fulfill` serves the clip with no
+        Range support, so assigning `currentTime` is refused and dragging the scrubber
+        could never move the playhead whatever the code did.
+        """
+        self._open_modal(page, base_url, overlay=_overlay(), playable=True)
+        video = page.locator("[data-testid='event-detail-video']")
+        seek = page.locator("[data-testid='clip-controls-seek']")
+        clock = page.locator("[data-testid='clip-controls-time']")
+
+        # The duration is unknown until metadata arrives, and is shown as unknown until
+        # it does rather than as a confident zero.
+        wait_until(
+            page,
+            lambda: "-:--" not in clock.text_content(),
+            lambda: f"the clock never learnt the duration: {clock.text_content()!r}",
+        )
+
+        video.evaluate("v => { v.muted = true; v.loop = true; return v.play(); }")
+
+        wait_until(
+            page,
+            lambda: float(seek.input_value()) > 0,
+            lambda: f"the scrubber stayed at {seek.input_value()!r} while the clip played",
+        )
+
+    def test_the_bar_retreats_while_playing_and_comes_back_on_pause(self, page: Page, base_url: str):
+        """It is laid over the bottom of the picture, where boxes are drawn — so it has
+        to get out of the way on its own. Only while playing: a paused player is someone
+        studying a frame, and a bar that vanished from one would hide where they are."""
+        self._open_modal(page, base_url, overlay=_overlay(), playable=True)
+        bar = page.locator("[data-testid='clip-controls']")
+        video = page.locator("[data-testid='event-detail-video']")
+
+        # Looped: the fixture clip is shorter than the idle window, and a clip that ends
+        # brings its bar back for the same reason a paused one keeps it.
+        video.evaluate("v => { v.muted = true; v.loop = true; return v.play(); }")
+        expect(bar).to_have_class(re.compile(r"clip-controls--hidden"), timeout=8000)
+
+        video.evaluate("v => v.pause()")
+        expect(bar).not_to_have_class(re.compile(r"clip-controls--hidden"))
+
+    def test_clicking_the_picture_plays_and_pauses_it(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay(), playable=True)
+        video = page.locator("[data-testid='event-detail-video']")
+        video.evaluate("v => { v.muted = true; v.loop = true; }")
+
+        video.click()
+        wait_until(page, lambda: video.evaluate("v => !v.paused"), "clicking the picture did not start the clip")
+
+        video.click()
+        wait_until(page, lambda: video.evaluate("v => v.paused"), "clicking the picture again did not stop the clip")
+
+    def test_a_double_click_fullscreens_and_leaves_playback_where_it_was(self, page: Page, base_url: str):
+        """The two clicks inside a double-click both reach the picture, so they have to
+        cancel each other out — a gesture that means "fill the screen" must not also
+        leave the clip running. This is what buys the click its immediacy: nothing is
+        held back to see whether a second one follows."""
+        self._open_modal(page, base_url, overlay=_overlay(), playable=True)
+        video = page.locator("[data-testid='event-detail-video']")
+        video.evaluate("v => { v.muted = true; v.loop = true; }")
+        assert video.evaluate("v => v.paused") is True
+
+        video.dblclick()
+
+        wait_until(
+            page,
+            lambda: page.evaluate("() => document.fullscreenElement?.classList.contains('clip-overlay') === true"),
+            "a double-click on the picture did not fullscreen the wrapper",
+        )
+        assert video.evaluate("v => v.paused") is True, "a double-click left the clip playing"
+
+    def test_the_bars_fullscreen_takes_the_wrapper_not_the_video(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        page.locator("[data-testid='clip-controls-fullscreen']").click()
+
+        wait_until(
+            page,
+            lambda: page.evaluate("() => document.fullscreenElement?.classList.contains('clip-overlay') === true"),
+            "the player's own fullscreen button did not fullscreen the overlay wrapper",
+        )
+
+    def test_a_refused_promotion_leaves_fullscreen_rather_than_a_boxless_picture(self, page: Page, base_url: str):
+        """What Firefox actually does. The promotion out of a video-element fullscreen is
+        made from a `fullscreenchange` handler, with no user activation left, and Gecko
+        requires one for every request — so it is denied, and the end state would be the
+        video alone on screen with its boxes gone. No fullscreen is the honest outcome.
+
+        The test browser cannot reproduce the denial on its own: Playwright's Firefox
+        runs with `full-screen-api.allow-trusted-requests-only` disabled, so every
+        request succeeds there. The refusal is injected instead.
+
+        Asserted over the recorded transitions rather than the live state: the exit
+        follows the rejection immediately, so polling for the intermediate
+        video-fullscreen would be a race the fix itself wins.
+        """
+        self._open_modal(page, base_url, overlay=_overlay())
+        page.wait_for_selector("[data-testid='clip-controls']")
+
+        page.evaluate("""() => {
+                  const video = document.querySelector("[data-testid='event-detail-video']");
+                  const wrapper = video.closest('.clip-overlay');
+                  wrapper.requestFullscreen = () => Promise.reject(new TypeError('denied'));
+                  window.__fsSeen = [];
+                  document.addEventListener('fullscreenchange', () => {
+                    window.__fsSeen.push(
+                      document.fullscreenElement ? document.fullscreenElement.className : null);
+                  });
+                  const btn = document.createElement('button');
+                  btn.id = 'denied-fullscreen-stand-in';
+                  btn.style.cssText = 'position:fixed;top:0;left:0;z-index:99999';
+                  btn.onclick = () => video.requestFullscreen();
+                  document.body.appendChild(btn);
+                }""")
+        page.locator("#denied-fullscreen-stand-in").click()
+
+        wait_until(
+            page,
+            lambda: page.evaluate("() => window.__fsSeen.length >= 2"),
+            lambda: f"fullscreen never settled: {page.evaluate('() => window.__fsSeen')}",
+        )
+        seen = page.evaluate("() => window.__fsSeen")
+        assert "event-detail__video" in seen[0], f"the video was expected to go fullscreen first: {seen}"
+        assert seen[-1] is None, f"a refused promotion left something fullscreen: {seen}"
+        assert page.evaluate("() => document.fullscreenElement") is None
 
 
 class TestExportingTheVideo:

@@ -804,14 +804,11 @@ export function openEventDetailModal(
 
     video = document.createElement('video');
     video.className = 'event-detail__video';
+    // Native for now, and only for as long as it takes to learn whether this clip has a
+    // sidecar: one that does swaps them for the overlay's own bar, whose fullscreen
+    // button takes the canvas with it (`clipControls.js`). A clip with no boxes keeps
+    // these, where a video-only fullscreen costs nothing.
     video.controls = true;
-    // The control bar's own fullscreen button fullscreens the <video> ELEMENT, which
-    // leaves the overlay canvas — its sibling inside `.clip-overlay` — behind on the
-    // page: the picture fills the screen and the boxes silently vanish. Suppressed where
-    // the browser honours it, in favour of the tools-row button that fullscreens the
-    // wrapper and keeps them. Advisory only (Chromium-family today), so the wrapper
-    // button is the real answer and this just removes a wrong-looking route to it.
-    video.setAttribute('controlsList', 'nofullscreen');
     // No autoplay: this is a review surface, and a grid of events opened one after
     // another that each start talking and moving is hostile.
     video.preload = 'metadata';
@@ -946,11 +943,9 @@ export function openEventDetailModal(
   /**
    * Fullscreen for a clip, without losing the boxes drawn over it.
    *
-   * The native control-bar button fullscreens the `<video>` element itself, which leaves
-   * the overlay canvas — a *sibling* of the video inside `.clip-overlay` — behind on the
-   * page, so the picture fills the screen and the boxes vanish. `controlsList` suppresses
-   * that button where the browser honours it (see `renderVideo`); this one fullscreens
-   * the wrapper, so the canvas comes with it and the overlay's own resize loop refits it.
+   * Fullscreens the wrapper, so the canvas comes with it and the overlay's own resize
+   * loop refits it. The same thing the player's own ⛶ does — this one sits in the tools
+   * row, next to the overlay toggle it belongs with.
    *
    * @returns {HTMLElement}
    */
