@@ -9950,3 +9950,76 @@ progress.progress-indeterminate:indeterminate {
   flex: 1 1 auto;
   margin: 0;
 }
+
+/* ===== Busy indicator =====
+   Pinned to the top edge and above the modal band, because the operations it
+   reports (inference, image loads) run from inside the review canvas modal as
+   well as the tab.
+
+   Deliberately NOT accounted for in `visibleContainerHeight`: it overlaps a thin
+   strip of the canvas only while an operation is in flight and never changes the
+   container's clientHeight, so it cannot scale an image into a hidden zone the
+   way #bottom-bars can. Subtracting it would re-fit the canvas twice per
+   navigation to hide a chip that is already gone. */
+.busy-indicator {
+  position: fixed;
+  /* Clear of .main-tab-header (its bottom edge sits at ~3.5rem), so a chip that
+     appears mid-task never sits over the nav labels. Centred because the
+     complaint this answers is that the existing per-button feedback is too easy
+     to miss, and the top centre is the one place the eye is already going. */
+  top: 3.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--layer-busy-indicator);
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  max-width: min(90vw, 28rem);
+  padding: 0.3em 0.9em;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--pico-background-color, var(--bg));
+  color: var(--text);
+  font-size: 0.85em;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+  /* Never intercepts a click: the user is mid-interaction with whatever is
+     underneath, and this is only ever a report. */
+  pointer-events: none;
+}
+
+.busy-indicator__stripe {
+  flex: 0 0 auto;
+  width: 2.5em;
+  height: 0.3em;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--border-strong);
+  position: relative;
+}
+
+.busy-indicator__stripe::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-warning);
+  animation: busy-indicator-slide 1.1s ease-in-out infinite;
+}
+
+.busy-indicator__label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Indeterminate: the work reports no progress, so the stripe must not imply any. */
+@keyframes busy-indicator-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .busy-indicator__stripe::after {
+    animation: status-loading-pulse 1.1s ease-in-out infinite;
+  }
+}

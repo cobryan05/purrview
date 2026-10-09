@@ -28,7 +28,7 @@ import { parseToolUuid } from './canvas/tools.js';
 import { addInferenceResults } from './canvas/image.js';
 import { runDetectionUnit } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { Logger } from '/app-static/js/ui/utils/index.js';
+import { Logger, withBusy } from '/app-static/js/ui/utils/index.js';
 import { createLabelList } from '/app-static/js/ui/labelList.js';
 import { createTagPanel } from '/app-static/js/ui/inspector.js';
 
@@ -57,56 +57,66 @@ export function wireInferenceRunner(runtime, { logPrefix = '' } = {}) {
   return events.subscribeToCanvas(
     runtime.id,
     EventTypes.RUN_INFERENCE_ON_CANVAS,
-    async ({ modelNames, unitUuids = [], confThresh, replaceExisting }) => {
-      const img = runtime.state?.image?.img;
-      if (!img) {
-        Logger.error(`${logPrefix}Failed to run inference: no image loaded`);
-        return;
-      }
-      let outcomes = [];
-      try {
-        // Loose models go in one batch; each hierarchy is one request that runs its own
-        // cascade server-side. Issued together because they are independent, then
-        // applied in a fixed order below — no cascade is orchestrated here, which is the
-        // point: the canvas, the watcher and the review preview must all get identically
-        // refined detections, so only one implementation may exist.
-        const [loose, ...units] = await Promise.all([
-          // Loose models go through detect-unit too, as an explicit stack. They used to
-          // go to detect-batch, which runs whatever it is given through the DETECTION
-          // path — so a crop classifier picked from the model list came back as a
-          // confident full-image box instead of refining anything.
-          modelNames.length
-            ? runDetectionUnit({ modelNames }, img, confThresh)
-            : Promise.resolve({ outcomes: [], notes: [] }),
-          ...unitUuids.map(uuid => runDetectionUnit({ modelConfigUuid: uuid }, img, confThresh)),
-        ]);
-        // Models first, then hierarchies. `replaceExisting` makes application order
-        // observable, and a hierarchy's verdict is the more specific one, so it should
-        // land on top of a loose detector's rather than under it.
-        for (const result of [loose, ...units]) {
-          for (const note of result.notes || []) Logger.warn(`${logPrefix}${note}`);
-          outcomes.push(...result.outcomes);
-        }
-      } catch (err) {
-        // The whole request failed (inference server down, bad image). Per-model
-        // failures do not come through here — they arrive as `error` below, so
-        // one broken model still lets the others apply.
-        Logger.error(`${logPrefix}Failed to run inference:`, err);
-        return;
-      }
-      for (const { modelName, result, error } of outcomes) {
-        if (error || !result) {
-          Logger.error(`${logPrefix}Failed to run inference (${modelName}):`, error);
-          continue;
-        }
-        try {
-          await addInferenceResults(runtime, result, { replaceExisting });
-        } catch (err) {
-          Logger.error(`${logPrefix}Failed to apply inference (${modelName}):`, err);
-        }
-      }
-    },
+    // The panel's Run button and the `i` hotkey both only publish the event and
+    // return, so this subscriber is the only thing that knows when inference is
+    // actually over — and it is the slowest operation in the tab by a wide margin.
+    payload => withBusy('Running inference…', () => _runInference(runtime, payload, logPrefix)),
   );
+}
+
+/**
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {{ modelNames: string[], unitUuids?: string[], confThresh?: number, replaceExisting?: boolean }} payload
+ * @param {string} logPrefix
+ */
+async function _runInference(runtime, { modelNames, unitUuids = [], confThresh, replaceExisting }, logPrefix) {
+  const img = runtime.state?.image?.img;
+  if (!img) {
+    Logger.error(`${logPrefix}Failed to run inference: no image loaded`);
+    return;
+  }
+  let outcomes = [];
+  try {
+    // Loose models go in one batch; each hierarchy is one request that runs its own
+    // cascade server-side. Issued together because they are independent, then
+    // applied in a fixed order below — no cascade is orchestrated here, which is the
+    // point: the canvas, the watcher and the review preview must all get identically
+    // refined detections, so only one implementation may exist.
+    const [loose, ...units] = await Promise.all([
+      // Loose models go through detect-unit too, as an explicit stack. They used to
+      // go to detect-batch, which runs whatever it is given through the DETECTION
+      // path — so a crop classifier picked from the model list came back as a
+      // confident full-image box instead of refining anything.
+      modelNames.length
+        ? runDetectionUnit({ modelNames }, img, confThresh)
+        : Promise.resolve({ outcomes: [], notes: [] }),
+      ...unitUuids.map(uuid => runDetectionUnit({ modelConfigUuid: uuid }, img, confThresh)),
+    ]);
+    // Models first, then hierarchies. `replaceExisting` makes application order
+    // observable, and a hierarchy's verdict is the more specific one, so it should
+    // land on top of a loose detector's rather than under it.
+    for (const result of [loose, ...units]) {
+      for (const note of result.notes || []) Logger.warn(`${logPrefix}${note}`);
+      outcomes.push(...result.outcomes);
+    }
+  } catch (err) {
+    // The whole request failed (inference server down, bad image). Per-model
+    // failures do not come through here — they arrive as `error` below, so
+    // one broken model still lets the others apply.
+    Logger.error(`${logPrefix}Failed to run inference:`, err);
+    return;
+  }
+  for (const { modelName, result, error } of outcomes) {
+    if (error || !result) {
+      Logger.error(`${logPrefix}Failed to run inference (${modelName}):`, error);
+      continue;
+    }
+    try {
+      await addInferenceResults(runtime, result, { replaceExisting });
+    } catch (err) {
+      Logger.error(`${logPrefix}Failed to apply inference (${modelName}):`, err);
+    }
+  }
 }
 
 /**

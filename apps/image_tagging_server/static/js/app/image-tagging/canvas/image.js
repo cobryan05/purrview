@@ -3,7 +3,7 @@ import { fetchImage, updateImage, invalidateCachedImage } from '/app-static/js/s
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { CONFIDENCE_KEY } from '/app-static/js/shared/domain/image/confidence.js';
-import { Logger, toast, showUnsavedChangesModal } from '/app-static/js/ui/utils/index.js';
+import { Logger, toast, showUnsavedChangesModal, withBusy } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
@@ -45,6 +45,14 @@ export async function reloadImage(runtime) {
  *   and every save-driven reload deliberately stay uncached.
  */
 export async function loadImageOntoCanvas(runtime, imageName, { allowCached = false } = {}) {
+  // Every image load funnels through here — next/prev, the file browser, the
+  // review modal's stepper — so this is the one place that can report a slow
+  // one. The navigation triggers themselves only publish an event and return,
+  // and so never learn how long the load took.
+  return withBusy('Loading image…', () => _loadImageOntoCanvas(runtime, imageName, { allowCached }));
+}
+
+async function _loadImageOntoCanvas(runtime, imageName, { allowCached }) {
   Logger.debug('loadImageOntoCanvas called with imageName:', imageName);
 
   if (!runtime.canvas) return;

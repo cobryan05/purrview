@@ -90,6 +90,10 @@
   /* Guided-tour spotlight and card: above every modal (a step may point into one),
      below the bottom bars so they stay usable while a tour is up. */
   --layer-tour: 1950;
+  /* Busy indicator: above every modal, because inference and image loads are
+     started from inside the review canvas modal as well as from the tab. Below
+     the bottom bars, which stay clickable while something is running. */
+  --layer-busy-indicator: 1960;
   --layer-bottom-bars: 2000;
   --layer-bottom-bars-menu: 2100;
 
