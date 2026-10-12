@@ -1,12 +1,29 @@
+# Most of this file is deliberately unpinned: a patch release of aiofiles or lz4 is
+# not worth a commit. The bounded entries below are the exceptions, and they are
+# bounded for one reason — nothing here is resolved when a file changes, it is
+# resolved when the image is built. A long-lived container and a fresh build can
+# therefore sit on different majors with no diff to show for it, which is how a bare
+# `sqlalchemy` put 2.0 in production and 2.1 in the next build.
+#
+# So: libraries that define a contract this tree is written against — the DB schema
+# and migration behaviour, request/response validation, route semantics — carry an
+# upper bound at the next breaking version. The lower bound is the oldest release
+# known to work here, not a guess. Everything else floats.
+#
+# Raising a bound is a deliberate act: do it in its own commit, with both suites run
+# against the new version, never as a side effect of an unrelated rebuild.
 aiofiles
 aiopath
 imagehash
 pybktree
 aiosqlite
-alembic
+# Owns schema migrations; a major rewrites how revisions are generated and applied.
+alembic>=1.20,<2
 dacite
 debugpy
-fastapi
+# Pre-1.0, so its minors are the breaking ones: route and dependency semantics
+# move there, and `Payload`/alias handling across every endpoint rides on them.
+fastapi>=0.142,<1
 ffmpeg-python
 httpx
 jinja2
@@ -24,10 +41,17 @@ onnx<1.23
 opencv-python-headless
 paho-mqtt
 pillow
-pydantic
+# Every request body and ORM model is a pydantic model; a major changes validation
+# and serialisation behaviour across the whole tree at once.
+pydantic>=2.13,<3
 python-multipart
 requests
-sqlalchemy
-sqlmodel
+# The asyncio extra, not bare sqlalchemy: db_client imports sqlalchemy.ext.asyncio,
+# which needs greenlet. 2.0 pulled greenlet in anyway; 2.1 made it opt-in, so a bare
+# install resolves and then fails at import inside the OpenAPI schema generation.
+sqlalchemy[asyncio]>=2.0,<3
+# Still 0.0.x and welded to sqlalchemy's and pydantic's internals, so its patch
+# releases track their majors rather than its own API.
+sqlmodel>=0.0.48,<0.1
 sse-starlette
 uvicorn
