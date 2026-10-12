@@ -972,7 +972,9 @@ class Manager:
                 parts.append(f"recording ({fmt_duration(retention)} retention)" if retention else "recording")
             tracks = mtx.get("tracks")
             if tracks:
-                parts.append("/".join(str(t) for t in tracks))
+                # Codec names are a generated enum, whose str() is "PathTrackCodec.H264".
+                # The panel wants the wire value, and plain strings must still pass through.
+                parts.append("/".join(str(getattr(t, "value", t)) for t in tracks))
             received = mtx.get("bytes_received")
             if received:
                 parts.append(f"{received / 1e6:.0f} MB in")

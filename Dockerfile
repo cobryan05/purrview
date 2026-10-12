@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ARGs must come before first FROM statement to be used in a FROM statement and re-declared after a FROM
-ARG MEDIAMTX_VERSION=1.12.0
+ARG MEDIAMTX_VERSION=1.21.2
 ARG HTMX_VERSION=1.9.12
 ARG CUDA_VERSION=12.8.1
 ARG PICO_CSS_VERSION=2.1.1
@@ -71,8 +71,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Generate mediamtx_client wheel — needed by stream_server at import time
 # and by the app image at runtime.
-RUN curl -fsSL https://raw.githubusercontent.com/bluenviron/mediamtx/v${MEDIAMTX_VERSION}/apidocs/openapi.yaml \
+#
+# The spec lives under api/ since 1.19.2 (it 404s at the old apidocs/ path), and it
+# needs patching before generation — see scripts/patch_mediamtx_spec.py for which
+# schema and why. The patch exits non-zero if the spec no longer matches, so this
+# fails the build rather than producing a client that breaks on first use.
+#
+# BOTH the path above and that patch are pinned to MEDIAMTX_VERSION's schema and
+# may need to change, or to go away entirely, on the next bump. Re-read the
+# script's header before raising that version — a bump is not a one-line change.
+COPY scripts/patch_mediamtx_spec.py ./scripts/
+RUN curl -fsSL https://raw.githubusercontent.com/bluenviron/mediamtx/v${MEDIAMTX_VERSION}/api/openapi.yaml \
         -o /tmp/mediamtx-openapi.yaml \
+    && python3 ./scripts/patch_mediamtx_spec.py /tmp/mediamtx-openapi.yaml \
     && openapi-generator-cli generate -i /tmp/mediamtx-openapi.yaml -g python \
         -o /tmp/mediamtx_client_src --package-name mediamtx_client \
     && pip wheel --no-deps /tmp/mediamtx_client_src -w ./openapi_wheels/ \
