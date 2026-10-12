@@ -12,6 +12,7 @@ forever.
 
 import asyncio
 import json
+import re
 
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
 from apps.helpers.mqtt.bridge import (
@@ -26,6 +27,7 @@ from apps.helpers.mqtt.bridge import (
     SourceView,
     SubjectView,
     build_all_discovery,
+    build_counter_seed,
     build_rules_discovery,
     build_seed_publishes,
     build_slug_index,
@@ -985,12 +987,13 @@ class TestLivePublishingMatchesDiscovery:
         bridge, fake = _connected_bridge([profile])
         cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
 
+        # The closing edge, because that is the one that writes `count`.
         bridge.publish_rule_transition(
             profile_uuid="profile-1",
             source_uuid="src-1",
             rule_uuid="rule-1",
-            active=True,
-            opened=True,
+            active=False,
+            opened=False,
             last_seen="2026-01-01T00:00:00+00:00",
         )
 
@@ -1112,7 +1115,11 @@ class TestTopicsAreProfileScoped:
 
 
 class TestLiveCounters:
-    def test_an_opening_event_increments_past_the_seeded_value(self):
+    def test_a_closing_event_increments_past_the_seeded_value(self):
+        """On close, matching `_close_watch_event_counter`. The seeded value comes from
+        that same durable row, so counting on the opening edge instead put the sensor
+        permanently above it and every reseed stepped back down — which
+        `total_increasing` reads as a meter reset."""
         profile = _profile()
         bridge, fake = _connected_bridge([profile])
         bridge._counts = {("profile-1", "src-1", "rule-1"): 42}
@@ -1121,8 +1128,8 @@ class TestLiveCounters:
             profile_uuid="profile-1",
             source_uuid="src-1",
             rule_uuid="rule-1",
-            active=True,
-            opened=True,
+            active=False,
+            opened=False,
             last_seen="2026-01-01T00:00:00+00:00",
         )
 
@@ -1164,8 +1171,8 @@ class TestLiveCounters:
             profile_uuid="profile-1",
             source_uuid="src-1",
             rule_uuid="rule-1",
-            active=True,
-            opened=True,
+            active=False,
+            opened=False,
             last_seen="2026-01-01T00:00:00+00:00",
         )
         bridge.publish_rule_transition(**kwargs)
@@ -1824,7 +1831,7 @@ class TestAnOptedOutCameraStillFeedsTheRulesDevice:
     ON = SourceView(uuid="src-1", name="Kitchen cam")
     OFF = SourceView(uuid="src-1", name="Kitchen cam", publish_to_ha=False)
 
-    def _open(self, bridge, **kw):
+    def _transition(self, bridge, **kw):
         bridge.publish_rule_transition(
             profile_uuid="profile-1",
             source_uuid="src-1",
@@ -1838,14 +1845,14 @@ class TestAnOptedOutCameraStillFeedsTheRulesDevice:
         'the flag stopped doing anything'."""
         bridge, fake = _connected_bridge([_profile(sources=(self.OFF,))])
 
-        self._open(bridge, active=True, opened=True)
+        self._transition(bridge, active=True, opened=True)
 
         assert _per_source(fake, "/state") == []
 
     def test_but_the_rules_device_still_hears_it(self):
         bridge, fake = _connected_bridge([_profile(sources=(self.OFF,))])
 
-        self._open(bridge, active=True, opened=True)
+        self._transition(bridge, active=True, opened=True)
 
         assert [c["payload"] for c in _rule_global(fake, "/state")] == ["ON"]
 
@@ -1857,11 +1864,11 @@ class TestAnOptedOutCameraStillFeedsTheRulesDevice:
         life of the process — with no further transition able to clear it.
         """
         bridge, fake = _connected_bridge([_profile(sources=(self.ON,))])
-        self._open(bridge, active=True, opened=True)
+        self._transition(bridge, active=True, opened=True)
 
         # What a reconcile does after the flag is unticked, mid-event.
         bridge._slugs = build_slug_index([_profile(sources=(self.OFF,))])
-        self._open(bridge, active=False, opened=False)
+        self._transition(bridge, active=False, opened=False)
 
         assert [c["payload"] for c in _rule_global(fake, "/state")] == ["ON", "OFF"]
         assert bridge._open_rules == set()
@@ -1872,13 +1879,13 @@ class TestAnOptedOutCameraStillFeedsTheRulesDevice:
         two_cams = (self.OFF, SourceView(uuid="src-2", name="Hall cam"))
         bridge, fake = _connected_bridge([_profile(sources=two_cams)])
 
-        self._open(bridge, active=True, opened=True)
+        self._transition(bridge, active=False, opened=False)
         bridge.publish_rule_transition(
             profile_uuid="profile-1",
             source_uuid="src-2",
             rule_uuid="rule-1",
-            active=True,
-            opened=True,
+            active=False,
+            opened=False,
             last_seen="2026-01-01T00:01:00+00:00",
         )
 
@@ -2904,3 +2911,180 @@ class TestTheCameraWatchingSwitch:
         await bridge._restore_watching_state()
 
         assert bridge.is_source_watching("src-1") is True
+
+
+def _ha_entity_id(device_name: str, entity_name: str) -> str:
+    """How Home Assistant composes an entity_id: `<device> <entity>`, slugified with
+    every run of non-alphanumerics collapsed to a single `_`.
+
+    Reimplemented rather than imported — `templating.slugify` separates on `-` for MQTT
+    topics, and it is HA's collapse that these tests are about.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", f"{device_name} {entity_name}".lower()).strip("_")
+
+
+class TestCameraSlotStaysReadableInAnEntityId:
+    """The per-(label, rule, camera) counters carry three slots in one name, and HA
+    collapses punctuation when it builds the entity_id — so the camera boundary has to
+    be a word or the split becomes unguessable."""
+
+    def test_the_camera_is_recoverable_from_the_slugified_id(self):
+        cmps = build_subject_discovery(
+            SubjectView(uuid="subj-a", name="Maple", publish_per_source=True),
+            [(RuleView(uuid="rule-1", name="Cat Using Litter Box"), [SourceView(uuid="src-1", name="Laundry")])],
+            PREFIX,
+        )["cmps"]
+
+        entity_id = _ha_entity_id("Maple", cmps["rule-1_src-1_count"]["name"])
+
+        rule_part, _, camera_part = entity_id.partition("_cam_")
+        assert camera_part == "laundry"
+        assert rule_part == "maple_cat_using_litter_box"
+
+    def test_presence_sensor_and_counter_mark_the_camera_the_same_way(self):
+        """Both halves of the per-camera tier name the camera slot identically, so one
+        camera reads the same whichever entity you are looking at."""
+        camera = SourceView(uuid="src-1", name="Laundry")
+        cmps = build_subject_discovery(
+            SubjectView(uuid="subj-a", name="Maple", publish_per_source=True),
+            [(RuleView(uuid="rule-1", name="Cat Using Litter Box"), [camera])],
+            PREFIX,
+            cameras=[camera],
+        )["cmps"]
+
+        assert _ha_entity_id("Maple", cmps["source_src-1_detected"]["name"]).endswith("_cam_laundry")
+        assert _ha_entity_id("Maple", cmps["rule-1_src-1_count"]["name"]).endswith("_cam_laundry")
+
+
+class TestPerCameraRuleStateSeeding:
+    """A camera's rule binary_sensor must read `OFF` before the rule has ever fired on
+    that camera.
+
+    `unknown` is not `unavailable`: it renders as a working sensor while
+    `is_state(..., "off")` never matches and a `from: "off"` trigger never fires, so the
+    first real occurrence arrives as `unknown -> on` and is missed.
+    """
+
+    def _seed(self, profile, open_rules=()):
+        bridge, fake = _connected_bridge([profile])
+        # A broker holding nothing, which is what a first run looks like.
+        bridge._published_rule_states = set()
+        for key in open_rules:
+            bridge._open_rules.add(key)
+        bridge._seed_rule_source_states([profile])
+        return bridge, fake
+
+    def _states(self, fake):
+        return {c["topic"]: c["payload"] for c in _per_source(fake, "/state")}
+
+    def test_a_rule_that_has_never_fired_reads_off_on_every_camera_it_covers(self):
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Garage")),
+            rules=(RuleView(uuid="rule-1", name="Package On Porch"),),
+        )
+
+        _bridge, fake = self._seed(profile)
+
+        states = self._states(fake)
+        assert len(states) == 2
+        assert set(states.values()) == {"OFF"}
+        # Retained, or HA re-reads nothing after a restart and the entity is `unknown`
+        # again on the next reconnect.
+        assert all(c["retain"] for c in _per_source(fake, "/state"))
+
+    def test_a_camera_outside_the_rules_scope_is_left_alone(self):
+        """A scoped rule has no entity on the other cameras, and these publishes are
+        retained — one onto a camera that reads it would sit on the broker for good."""
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Garage")),
+            rules=(RuleView(uuid="rule-1", name="Package On Porch", source_uuids=("src-1",)),),
+        )
+
+        _bridge, fake = self._seed(profile)
+
+        states = self._states(fake)
+        assert len(states) == 1
+        assert "/kitchen/" in next(iter(states))
+
+    def test_an_open_event_is_published_on_and_not_blanked_by_the_next_reconcile(self):
+        """The reason the seed is blanks-only and reads `_open_rules` rather than a
+        constant: this runs every reconcile, and an unconditional `OFF` would close a
+        live event in Home Assistant every time a watcher started."""
+        profile = _profile()
+
+        bridge, fake = self._seed(profile, open_rules=[("profile-1", "src-1", "rule-1")])
+        bridge._seed_rule_source_states([profile])
+
+        assert [c["payload"] for c in _per_source(fake, "/state")] == ["ON"]
+
+    def test_nothing_is_seeded_when_the_retained_read_failed(self):
+        """`None` means the broker could not be read, and seeding then would overwrite
+        good retained values with a guess."""
+        bridge, fake = _connected_bridge([_profile()])
+        bridge._published_rule_states = None
+
+        bridge._seed_rule_source_states([_profile()])
+
+        assert _per_source(fake, "/state") == []
+
+    async def test_the_seed_runs_as_part_of_a_discovery_pass(self):
+        """Wiring rather than logic: the entities are created by `publish_all_discovery`,
+        so the seed is only worth anything if that same pass performs it."""
+        profile = _profile()
+        bridge, _ = _connected_bridge([profile])
+        # The full pass subscribes and reads retained state, which the plain fake cannot.
+        fake = _ArmingPublisher()
+        bridge._publisher = fake
+        bridge._published_rule_states = set()
+        bridge._published_rule_globals = set()
+        bridge._published_source_states = set()
+        # Non-empty so the arming restore short-circuits; it needs a real broker read.
+        bridge._armed = {"rule-1": True}
+
+        async def _profiles():
+            return [profile]
+
+        bridge._load_profiles = _profiles
+        await bridge.publish_all_discovery()
+
+        assert list(self._states(fake).values()) == ["OFF"]
+
+
+class TestCounterSeedRollsUpEverySubject:
+    """`watch_event_counts` returns a row per (source, rule, **subject**), so the
+    subject-agnostic rule and camera counters are a sum across those rows.
+
+    Assigning instead of summing is silent and plausible — the sensor shows a real
+    number, just one cat's — and a reseed replaces the running total with it.
+    """
+
+    ROWS = [
+        {"source_uuid": "src-1", "rule_uuid": "rule-1", "subject_ref": "maple", "count": 87, "last_seen": None},
+        {"source_uuid": "src-1", "rule_uuid": "rule-1", "subject_ref": "pepper", "count": 22, "last_seen": None},
+        {"source_uuid": "src-1", "rule_uuid": "rule-1", "subject_ref": "juniper", "count": 19, "last_seen": None},
+    ]
+
+    def test_one_cameras_rule_count_is_every_subjects_rows_added_up(self):
+        seeded = build_counter_seed([_profile()], self.ROWS)
+
+        assert seeded[("profile-1", "src-1", "rule-1")] == 128
+
+    def test_the_rule_counter_matches_the_subject_tiers_total_for_the_same_rows(self):
+        """The two seeds roll the same rows up different axes, so for one camera they
+        must land on the same number — a camera count that disagrees with the sum of its
+        subjects is a discrepancy nobody can account for afterwards."""
+        profile = _profile()
+        by_rule = build_counter_seed([profile], self.ROWS)
+        by_subject = build_subject_seed(self.ROWS, [profile])
+
+        subject_total = sum(count for key, (count, _seen) in by_subject.items() if len(key) == 3 and key[1] == "rule-1")
+        assert by_rule[("profile-1", "src-1", "rule-1")] == subject_total
+
+    def test_a_subjectless_row_still_counts_toward_the_rule(self):
+        """Rule-level events carry no subject. They are the rule firing, so the rule's
+        own counter must include them even though no subject tier can."""
+        rows = self.ROWS + [
+            {"source_uuid": "src-1", "rule_uuid": "rule-1", "subject_ref": None, "count": 5, "last_seen": None}
+        ]
+
+        assert build_counter_seed([_profile()], rows)[("profile-1", "src-1", "rule-1")] == 133

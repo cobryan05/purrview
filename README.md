@@ -289,14 +289,16 @@ filter chains and watchers are launched from the same page.*
 
 ### Settings
 
-Service health, retention for recordings and timelapse frames (age and size caps,
+Service status, retention for recordings and timelapse frames (age and size caps,
 with a "clean up now"), model-version and training-folder retention, the
 thumbnail cache, dedup hash sizes, the MQTT broker, and optional access control:
 an API token for Home Assistant and other callers, plus a separate login password —
 off by default, stored only as a hash — for signing in to the web interface. Once a
 password is set the sign-in page stops accepting the token, so the integration's copy
-of it cannot open a browser session; a forgotten password is cleared with
-`python scripts/reset_login_password.py` on the host.
+of it cannot open a browser session; a forgotten password is cleared from a shell
+on the host with `docker compose exec app python scripts/reset_login_password.py`
+(`mono` instead of `app` on a single-container install), then restarting that
+container so the cached settings are reread.
 
 ## How watching works
 
@@ -485,6 +487,88 @@ and it shows up in the Events pane as something to fix.
 *Maple can't keep it in the box. Last-seen sensors and pre-filtered events browser on a page in
  Home Assistant let us know when it's been too long since the last time Maple used the litter.*
 
+### What gets an entity
+
+Four tiers, each answering a different question. The first three are published
+by default; the fourth is opted into per label.
+
+| Tier | Device | Answers | Example |
+|---|---|---|---|
+| Rule | **PurrView Rules** | Did this happen at all, to anyone, anywhere | `sensor.purrview_rules_cat_using_litter_box_count` |
+| Camera × rule | one per camera | Did it happen on *this camera* | `sensor.laundry_cat_using_litter_box_count` |
+| Label × rule | one per label | Did it happen to *this cat* | `sensor.maple_cat_using_litter_box` |
+| Label × rule × camera | one per label | Which cat, doing what, on which camera | `sensor.maple_cat_using_litter_box_cam_laundry` |
+
+To turn on the fourth tier, tick **Per-camera breakdown** beside **Publish to
+Home Assistant** on the label, under Configuration → Vocabulary → Labels. It
+also gives the label a presence sensor per camera
+(`binary_sensor.maple_cam_laundry`), which needs no rule — it reads the
+tracker, so it answers "is this cat in the laundry room right now".
+
+This tier multiplies out — labels × rules × cameras. Four cat labels, five rules
+and seven cameras is roughly 120 entities, which is why it is off by default.
+`sensor.purrview_ha_entities_published` reports the running total.
+
+The `cam_` in those ids is a deliberate marker. Home Assistant builds an
+entity_id by slugifying the name and collapses any run of separators, so `·` or
+`__` between the slots would vanish and leave `maple_cat_using_litter_box_laundry`
+with no way to tell where the rule ends and the camera begins.
+
+### History and trends
+
+Every count above declares `state_class: total_increasing`, so Home Assistant
+keeps **long-term statistics** for it indefinitely: one row per hour, not
+subject to the recorder's purge. Raw state history still purges on the normal
+schedule (10 days by default), but the statistics behind these graphs do not.
+
+The sensors hold lifetime totals, so graph the *change* over each bucket rather
+than the value. A Statistics Graph card does that at any grain:
+
+```yaml
+type: statistics-graph
+title: Litter box visits per day, by cat
+period: day          # hour | day | week | month
+stat_types: [change]
+chart_type: bar
+entities:
+  - sensor.maple_cat_using_litter_box
+  - sensor.pepper_cat_using_litter_box
+```
+
+The entity ids are the breakdown. Fourth-tier ids end in the camera, so one card
+can compare cats on a single camera, one cat across every camera, or litter box
+against water bowl — change `period` for the grain, and add `state` to
+`stat_types` to overlay the lifetime total alongside the bars.
+
+Statistics are stored per hour, so time-of-day patterns are available across the
+whole history, not just the recorder window. `period: hour` on the card above
+plots the series directly. For an hour-of-day aggregate or a heat map — which
+hours a cat actually drinks, rather than when it happened on a given day — Home
+Assistant ships no card; a custom one such as `apexcharts-card` or
+`plotly-graph-card` reads the same hourly statistics and can bucket them.
+
+For a number an automation or a gauge card can read ("more than six visits
+today"), add a `utility_meter` helper over the counter with a `daily`, `weekly`
+or `monthly` cycle. The graphs above need no helper.
+
+Two things to know:
+
+- **A count updates when its event ends, not when it starts.** The tally is keyed
+  on the subject the event was finally decided to be, which is only known once it
+  closes. Bind automations that need to fire *now* to the binary_sensor or the
+  event entity, which both move on the opening edge.
+
+- **Statistics begin when the entity does.** Switching on the per-camera
+  breakdown seeds each new counter with its lifetime total from the database, so
+  totals are correct immediately, but per-period bars start accruing from that
+  point. Earlier per-camera detail stays available in the app's own Events view.
+- **Do not list these under `recorder: exclude:`.** Excluding an entity stops
+  its statistics as well, and that is the part which cannot be rebuilt later.
+
+Renaming a label, rule or camera is safe — entity unique ids come from uuids, so
+statistics survive it. A rename does move the MQTT topic, which is what the
+**Home Assistant name** override beside those checkboxes is for; set it on
+anything you automate against.
 
 ## Architecture
 
@@ -659,8 +743,8 @@ it belongs to the app, so moving the whole thing is always safe.
 > there so the sweep cannot race a clip that is still being written, not to protect
 > unrelated data. The third rail is the one that helps you: the sweep only deletes
 > the file types the app itself writes (`.mp4`, `.jpg`, `.json`, and the `.part`,
-> `.txt` and `.png` scratch left beside them). A document, an archive or a database
-> under a recordings root is left alone.
+> `.repair`, `.txt` and `.png` scratch left beside them). A document, an archive
+> or a database under a recordings root is left alone.
 >
 > That narrows the damage; it does not prevent it. `.jpg` and `.mp4` are exactly
 > what a photo or video library is made of, so pointing a recordings root at one
@@ -715,8 +799,7 @@ bash generate_openapi_modules.sh              # regenerate and install the API c
 The dev images bundle the toolchain: formatters, pytest, Playwright and Chromium.
 Machine-specific mounts go in `docker-compose.override.yml` as described
 [above](#letting-it-see-your-files), pointed at `mono-dev` or `app-dev` rather
-than the production service. `CLAUDE.md` holds the working agreements for the
-repo and is worth reading before a first PR.
+than the production service.
 
 One build-host note: the slim `app` image is CUDA-free to pull and run, but
 *building* the training or `mono` images compiles the CUDA and torch wheelhouse.

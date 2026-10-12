@@ -237,6 +237,64 @@ class TestBridgeCounters:
 
         assert calls == []
 
+    def _dispatch(self, phase, *, subject_ref, started_at=10.0, at=70.0):
+        """One transition through the real dispatch, with a bridge that only records.
+
+        Returns the rule-transition calls as well, because
+        `_publish_bridge_transition` swallows every exception — without them an
+        assertion that nothing was published would pass just as happily for a fake
+        that raised on its first attribute.
+        """
+        subject_calls, rule_calls = [], []
+        task = _task([_pipeline()])
+        task._wallclock_offset = 0.0
+        task._manager = SimpleNamespace(
+            get_mqtt_bridge=lambda: SimpleNamespace(
+                publish_rule_transition=lambda **kw: rule_calls.append(kw),
+                publish_subject_event=lambda **kw: subject_calls.append(kw),
+            )
+        )
+
+        task._publish_bridge_transition(
+            SimpleNamespace(
+                source_uuid="src-1",
+                rule_uuid="rule-1",
+                phase=phase,
+                at=at,
+                started_at=started_at,
+                subject_ref=subject_ref,
+                subject_name="Maple",
+                target_name=None,
+                track_ids=(),
+                peak_confidence=0.9,
+                duration_s=60.0,
+            )
+        )
+        return task, subject_calls, rule_calls
+
+    def test_a_subject_is_counted_when_its_event_closes_not_when_it_opens(self):
+        """`subject_ref` is a running argmax over accumulated label mass, so the opening
+        edge carries a provisional guess while the closing one carries what the event was
+        decided to be — which is the value `_close_watch_event_counter` stores. Counting
+        on the opening edge left the live total above the durable one for good, and a
+        reseed then stepped it back down, which `total_increasing` reads as a reset.
+        """
+        _open_task, on_open, open_rule_calls = self._dispatch(EventPhase.START, subject_ref="provisional")
+        _close_task, on_close, close_rule_calls = self._dispatch(EventPhase.END, subject_ref="final")
+
+        assert len(open_rule_calls) == 1 and len(close_rule_calls) == 1
+        assert on_open == []
+        assert [c["subject_uuid"] for c in on_close] == ["final"]
+
+    def test_the_counted_event_is_stamped_with_its_start_not_its_close(self):
+        """The durable row keeps the event's `started_at`, so stamping the close time
+        here would make `last seen` walk backwards on the next reseed."""
+        task, calls, rule_calls = self._dispatch(EventPhase.END, subject_ref="final", started_at=10.0, at=70.0)
+
+        assert len(rule_calls) == 1
+        assert calls[0]["last_seen"] == task._wall_iso(10.0)
+        assert calls[0]["last_seen"] != task._wall_iso(70.0)
+
 
 class TestClipLength:
     def test_the_manual_cap_extends_the_overlay_reach(self):

@@ -2754,12 +2754,18 @@ class StreamWatcherTask(Task):
                 track_ids=signal.track_ids,
                 source_name=self._source_name_for(signal.source_uuid),
             )
-            if signal.phase is EventPhase.START and signal.subject_ref:
+            # END, not START: `subject_ref` is a running argmax over accumulated label
+            # mass, so the opening edge carries a provisional guess and the closing one
+            # carries what the event was decided to be — which is the value
+            # `_close_watch_event_counter` stores. `started_at` for the same reason: the
+            # durable row keeps the start time, so publishing the close time here would
+            # make `last seen` walk backwards on the next reseed.
+            if signal.phase is EventPhase.END and signal.subject_ref:
                 self._manager.get_mqtt_bridge().publish_subject_event(
                     subject_uuid=signal.subject_ref,
                     rule_uuid=signal.rule_uuid,
                     source_uuid=signal.source_uuid,
-                    last_seen=self._wall_iso(signal.at),
+                    last_seen=self._wall_iso(signal.started_at),
                     source_name=self._source_name_for(signal.source_uuid),
                 )
         except Exception:

@@ -680,6 +680,19 @@ def presence_availability_topic(source_slug: str) -> str:
 PRESENCE_ANY_AVAILABILITY_TOPIC = "presence/status"
 
 
+def camera_slot(source: SourceView) -> str:
+    """A camera's name with the word marking where the camera slot starts.
+
+    Home Assistant builds an entity_id by slugifying the name, and slugify collapses
+    any run of separators — `A __ B`, `A · B` and `A - B` all become `a_b`. So on a
+    three-slot name (subject, rule, camera) punctuation cannot mark the boundaries and
+    only a word survives: `maple_cat_using_litter_box_cam_laundry` is readable where
+    `maple_cat_using_litter_box_laundry` leaves the split unguessable. `object_id` is
+    no escape — the entity registry slugifies that too.
+    """
+    return f"Cam {source.name}"
+
+
 def build_subject_discovery(
     subject: SubjectView,
     rules: Sequence[Tuple[RuleView, Sequence[SourceView]]],
@@ -770,7 +783,7 @@ def build_subject_discovery(
             cmps[f"source_{source.uuid}_detected"] = {
                 "p": "binary_sensor",
                 "unique_id": f"{subject_device_id(subject.uuid)}_source_{source.uuid}_detected",
-                "name": source.name,
+                "name": camera_slot(source),
                 "device_class": "occupancy",
                 "state_topic": f"{base}/source/{source_slug}/state",
                 "payload_on": "ON",
@@ -828,7 +841,7 @@ def build_subject_discovery(
             cmps[f"{rule.uuid}_{source.uuid}_count"] = {
                 "p": "sensor",
                 "unique_id": f"{subject_device_id(subject.uuid)}_{rule.uuid}_{source.uuid}_count",
-                "name": f"{rule_label} · {source.name}",
+                "name": f"{rule_label} · {camera_slot(source)}",
                 "state_class": "total_increasing",
                 "state_topic": f"{base}/rule/{rule_slug}/{source_slug}/count",
             }
@@ -1369,7 +1382,14 @@ def build_counter_seed(
         rule_uuids = {r.uuid for r in profile.rules}
         for row in counts:
             if row["source_uuid"] in source_uuids and row["rule_uuid"] in rule_uuids:
-                out[(profile.uuid, row["source_uuid"], row["rule_uuid"])] = row["count"]
+                # Summed, not assigned. `watch_event_counts` returns a row per
+                # **(source, rule, subject)**, so a rule three cats can match is three
+                # rows for one camera — and assigning kept whichever arrived last, which
+                # made every camera and Rules-device count read as one arbitrary
+                # subject's tally instead of the rule's. `build_subject_seed` has always
+                # accumulated; this is the same rows rolled up one axis further.
+                key = (profile.uuid, row["source_uuid"], row["rule_uuid"])
+                out[key] = out.get(key, 0) + row["count"]
     return out
 
 
@@ -1629,6 +1649,10 @@ class MqttBridge:
         #: contract as `_published_source_states`: only the blanks are seeded, and `None`
         #: (the read failed) means seed nothing. See `_seed_rule_globals`.
         self._published_rule_globals: Optional[Set[str]] = None
+        #: Per-(camera, rule) `state` topics the broker already holds a value for. Same
+        #: contract again — blanks only, `None` means seed nothing. See
+        #: `_seed_rule_source_states`.
+        self._published_rule_states: Optional[Set[str]] = None
         #: Per-camera state topics the broker already holds a retained value for, read
         #: back at connect. Only the blanks are seeded — see `_unpublished_subjects`.
         #: `None` means the read failed and nothing may be seeded this run.
@@ -1858,6 +1882,18 @@ class MqttBridge:
         except Exception:
             self._published_rule_globals = None
             logger.warning("Could not read retained rule-global states; not seeding this run", exc_info=True)
+        # And the same question once more for the per-(camera, rule) `state` topics.
+        #
+        # `+/+/rule/+/state` rather than a deeper enumeration: the subject tier also
+        # sits five levels deep (`subject/<label>/rule/<rule>/count`), but it has no
+        # `state` leaf under `rule`, so the leaf literal is what keeps the two apart.
+        try:
+            existing_rule_states = await publisher.read_retained("+/+/rule/+/state")
+            self._published_rule_states = {self._strip_prefix(topic) for topic in existing_rule_states}
+            logger.info("MQTT bridge adopted %s retained per-camera rule state(s)", len(self._published_rule_states))
+        except Exception:
+            self._published_rule_states = None
+            logger.warning("Could not read retained per-camera rule states; not seeding this run", exc_info=True)
         try:
             await self.seed_counters()
         except Exception:
@@ -2092,6 +2128,7 @@ class MqttBridge:
         # in-memory truth republished unconditionally, while these are seeded only where
         # the broker holds nothing — see `_seed_rule_globals`.
         self._seed_rule_globals(profiles)
+        self._seed_rule_source_states(profiles)
         self._seed_blank_source_presence()
 
     def _seed_blank_source_presence(self) -> None:
@@ -2185,6 +2222,48 @@ class MqttBridge:
                     # sums to 0, which is the never-fired case.
                     total = sum(c for (p, _s, r), c in self._counts.items() if p == profile.uuid and r == rule.uuid)
                     self._publisher.publish(count_topic, total, retain=True)
+
+    def _seed_rule_source_states(self, profiles: Sequence[ProfileView]) -> None:
+        """Give a camera’s rule binary_sensor an `OFF` before that rule has ever fired
+        on that camera.
+
+        `_seed_rule_globals` does this for the cross-camera Rules tier only, which left
+        the per-camera one `unknown` until the rule happened to fire on each camera
+        individually — so a rule scoped to one camera left every other camera blank for
+        good. `unknown` is not `unavailable`: it renders as a working sensor while
+        `is_state(..., "off")` never matches and a `from: "off"` trigger never fires, so
+        the first real occurrence arrives as `unknown -> on` and is missed.
+
+        Only the `state` leaf. `attributes` carries `lastSeen`, a `device_class:
+        timestamp` field with no honest value for something that has not happened, and
+        the count is already seeded from the database by `build_seed_publishes`.
+
+        Blanks only, and from `_open_rules` rather than a constant, for the reasons set
+        out on `_seed_rule_globals`: this runs every reconcile, so an unconditional
+        `OFF` would blank an open event whenever a watcher started, and a renamed rule
+        or camera needs its new topics seeded rather than its old ones re-asserted.
+        """
+        if self._publisher is None or self._published_rule_states is None:
+            return
+        for profile in profiles:
+            for source in profile.sources:
+                for rule in profile.rules:
+                    if not rule.enabled or not rule.publish_to_ha or not source.publish_to_ha:
+                        continue
+                    # The same scoping `build_source_discovery` applies. Without it a
+                    # rule limited to one camera seeds a retained OFF onto every other
+                    # camera too, where no entity reads it and nothing ever expires it.
+                    if rule.source_uuids and source.uuid not in rule.source_uuids:
+                        continue
+                    base = self._slugs.rule_base(profile.uuid, source.uuid, rule.uuid)
+                    if base is None:
+                        continue
+                    state_topic = f"{base}/state"
+                    if state_topic in self._published_rule_states:
+                        continue
+                    self._published_rule_states.add(state_topic)
+                    open_now = (profile.uuid, source.uuid, rule.uuid) in self._open_rules
+                    self._publisher.publish(state_topic, "ON" if open_now else "OFF", retain=True)
 
     async def _restore_armed_state(self) -> None:
         """Re-read the armed flags this app itself retained, once per process.
@@ -2498,7 +2577,15 @@ class MqttBridge:
         # already open when the bridge connected still closes, and dropping that would
         # leave the count drifting upward for the life of the process.
         self._open_rules.add(key) if active else self._open_rules.discard(key)
-        if opened:
+        # Counted on the closing edge, which is where `_close_watch_event_counter` counts
+        # it. Counting on the opening one put every count permanently above the durable
+        # tally the next reseed reads back, and a `total_increasing` sensor reads that
+        # step down as a meter reset rather than a correction.
+        #
+        # END is the one transition that is not `active`; UPDATE is active and not
+        # `opened`, so neither of them may count.
+        closed = not active
+        if closed:
             # Counted unconditionally too: `_publish_rule_global` sums this dict for the
             # Rules device's cross-camera total, so skipping a camera here would make
             # that tier silently under-report rather than merely omit a topic.
@@ -2512,7 +2599,7 @@ class MqttBridge:
         # contributing to the Rules device even when the camera itself publishes nothing.
         base = self._slugs.rule_base(profile_uuid, source_uuid, rule_uuid)
         if base is not None:
-            if opened:
+            if closed:
                 self._publisher.publish(f"{base}/count", self._counts[key], retain=True)
             self._publisher.publish(
                 f"{base}/attributes",
@@ -2593,7 +2680,9 @@ class MqttBridge:
         if base is None:
             return
 
-        if opened:
+        # Same edge as the increment in `publish_rule_transition` — these two tiers are
+        # the same tally at two granularities, so they must move together.
+        if not active:
             # Lifetime total across sources, summed from the same per-source counters
             # the camera device publishes, so the two tiers cannot disagree.
             total = sum(c for (p, _s, r), c in self._counts.items() if p == profile_uuid and r == rule_uuid)
@@ -2661,10 +2750,18 @@ class MqttBridge:
     ) -> None:
         """One opening event, rolled into all three subject tiers.
 
-        Called only on START. The tiers are incremented together from one transition
-        rather than recomputed, which is what keeps them consistent between reseeds:
-        they are the same number counted at three granularities, so they must move
-        together or not at all.
+        Called on END, with the subject the event finally resolved to. `subject_ref` is
+        a running argmax over accumulated label mass, so it moves while an event is open
+        and counting at START attributed the event to a provisional guess — leaving the
+        live total above the durable one for good, since
+        `_close_watch_event_counter` records the value at close.
+
+        `last_seen` is the event's *start*, which is what that durable row keeps. The
+        close time would read as newer and then walk backwards on the next reseed.
+
+        The tiers are incremented together from one transition rather than recomputed,
+        which is what keeps them consistent between reseeds: they are the same number
+        counted at three granularities, so they must move together or not at all.
         """
         if self._publisher is None or subject_uuid not in self._subject_slugs:
             return
