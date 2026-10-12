@@ -586,14 +586,20 @@ class Manager:
         on the surviving `_source_relays` entry — so a relay restart that lasts seconds
         becomes an outage that lasts until someone notices.
         """
-        if not self._source_relays:
+        if not self._source_relays and not self._leases:
             return
         names = await self._configured_path_names()
         if names is None:
             return
 
-        for source_url, relay in list(self._source_relays.items()):
-            name = relay.master_stream_name
+        # Driven by the leases, not by `_source_relays`: a lease is durable state a
+        # holder is actively renewing, while an entry here is this process's memory of
+        # having armed a path once. A leased source missing from `_source_relays` is
+        # otherwise invisible to every recovery path there is.
+        sources = set(self._source_relays) | {lease.source_url for lease in self._leases.values()}
+        for source_url in sources:
+            relay = self._source_relays.get(source_url)
+            name = relay.master_stream_name if relay else master_path_name(source_url)
             if name in names:
                 continue
             leases = self.leases_for(source_url)
@@ -613,7 +619,9 @@ class Manager:
             )
             try:
                 await self._create_master_path(source_url, name, retention, record)
-                self._source_relays[source_url].refcount = len(leases)
+                rearmed = self._source_relays.get(source_url)
+                if rearmed is not None:
+                    rearmed.refcount = len(leases)
             except Exception as exc:
                 # One unreachable camera must not stop the rest from coming back.
                 logger.error(f"Failed to re-arm {name} for {source_url}: {exc}")
@@ -1049,28 +1057,47 @@ class Manager:
         await self.refresh_streams()
         await self._reconcile()
 
-    async def _worker_task(self):
-        """Periodic worker task that runs at regular intervals"""
+    async def _try_init(self) -> bool:
+        """Run ``_init``, reporting failure rather than raising.
+
+        Supervisord brings this service and MediaMTX up together, so the first attempt
+        can easily land before the relay's API is listening. Raising here leaves the
+        worker dead for the life of the process.
+        """
         try:
             await self._init()
+            return True
+        except Exception as exc:
+            logger.warning(f"Relay not ready to init ({exc}); retrying in {Manager.POLLING_INTERVAL}s")
+            return False
+
+    async def _worker_task(self):
+        """Periodic worker task that runs at regular intervals.
+
+        Every step is guarded and the loop exits only on cancellation. MediaMTX exits
+        on a panic in its own HTTP handler, so any call into it can fail on any tick;
+        an unguarded step lets that kill the loop for good, and with it
+        ``_rearm_lost_paths`` — the only thing that brings a camera back after the
+        relay restarts with an empty path table.
+        """
+        try:
+            while not await self._try_init():
+                await asyncio.sleep(Manager.POLLING_INTERVAL)
             while True:
                 await asyncio.sleep(Manager.POLLING_INTERVAL)
-                await self.refresh_streams()
-                try:
-                    await self._expire_stale_leases()
-                except Exception as exc:
-                    # A failed reap must not kill the poll loop that also feeds the
-                    # status panel; the next tick will try again.
-                    logger.error(f"Lease expiry sweep failed: {exc}")
-                try:
-                    await self.sweep_orphan_buffers()
-                except Exception as exc:
-                    logger.error(f"Orphan buffer sweep failed: {exc}")
-                try:
-                    await self._rearm_lost_paths()
-                except Exception as exc:
-                    logger.error(f"Lost-path re-arm failed: {exc}")
+                # refresh_streams runs first: the steps after it read self._streams.
+                for step in (
+                    self.refresh_streams,
+                    self._expire_stale_leases,
+                    self.sweep_orphan_buffers,
+                    self._rearm_lost_paths,
+                ):
+                    try:
+                        await step()
+                    except Exception as exc:
+                        logger.error(f"Periodic {step.__name__} failed: {exc}")
         except asyncio.CancelledError:
             logger.debug("Periodic worker cancelled.")
-        finally:
-            logger.debug("Periodic worker stopped.")
+        except BaseException:
+            logger.exception("Periodic worker died; no lost path will be re-armed until this service restarts")
+            raise

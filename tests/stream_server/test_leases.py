@@ -10,6 +10,7 @@ previous implementation got wrong:
   because a full tmpfs fails writes rather than evicting early.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -654,3 +655,81 @@ class TestRearmingPathsTheRelayLost:
         await lease_manager.ensure_stream(source_url=self.SOURCE, holder="provider-1")
 
         assert created.await_count == 1, "ensure must not trust its own memory of having armed the path"
+
+    async def test_a_leased_source_with_no_relay_entry_is_still_re_armed(self, lease_manager, monkeypatch):
+        """`_source_relays` is this process's memory of having armed a path; the lease is
+        the durable claim a holder is still renewing. Keying recovery on the former
+        leaves a renewing holder with no path and nothing that will ever notice."""
+        name = self._armed(lease_manager)
+        lease_manager._source_relays.clear()
+        self._relay_lists(monkeypatch, lease_manager, [])
+        created = AsyncMock()
+        monkeypatch.setattr(lease_manager, "_create_master_path", created)
+
+        await lease_manager._rearm_lost_paths()
+
+        assert created.await_count == 1, "the lease alone must be enough to bring the path back"
+        assert created.await_args.args[1] == name
+
+
+class TestTheWorkerLoopOutlivesTheRelay:
+    """The periodic worker is the only thing that re-arms a path the relay lost, so it
+    has to outlive the relay crashing underneath it.
+
+    MediaMTX exits on a panic in its own HTTP handler and supervisord brings it back
+    with an empty path table. Any call into it therefore fails for the seconds in
+    between — and an unguarded step let that exception end the ``while True``, killing
+    lease expiry, the orphan sweep and the re-arm for the life of the process. Holders
+    kept renewing leases that no longer had a path behind them, so every camera whose
+    consumer only renews stayed off the air until someone restarted this service.
+    """
+
+    @pytest.fixture
+    def worker(self, manager, monkeypatch):
+        """`manager` with the loop sped up and every step but the re-arm stubbed."""
+        monkeypatch.setattr(Manager, "POLLING_INTERVAL", 0.01)
+        monkeypatch.setattr(manager, "_expire_stale_leases", AsyncMock())
+        monkeypatch.setattr(manager, "sweep_orphan_buffers", AsyncMock())
+        return manager
+
+    @staticmethod
+    def _signal_on_rearm(manager, monkeypatch):
+        """An event set the first time the re-arm step runs, so no test needs a sleep."""
+        reached = asyncio.Event()
+        monkeypatch.setattr(manager, "_rearm_lost_paths", AsyncMock(side_effect=lambda: reached.set()))
+        return reached
+
+    async def test_a_step_that_raises_does_not_stop_the_re_arm_behind_it(self, worker, monkeypatch):
+        """`refresh_streams` is the step that actually failed: it polls the relay's path
+        list, so it is the first thing to raise when the relay is mid-restart — which is
+        exactly the tick on which the re-arm is needed."""
+        monkeypatch.setattr(worker, "_init", AsyncMock())
+        monkeypatch.setattr(worker, "refresh_streams", AsyncMock(side_effect=RuntimeError("connection refused")))
+        reached = self._signal_on_rearm(worker, monkeypatch)
+
+        worker.start()
+        try:
+            await asyncio.wait_for(reached.wait(), timeout=5)
+            assert not worker._task.done(), "the loop must still be running after a step raised"
+        finally:
+            worker._task.cancel()
+
+    async def test_init_against_a_down_relay_is_retried_rather_than_fatal(self, worker, monkeypatch):
+        """Supervisord starts this service and the relay together, so the first `_init`
+        can land before the relay's API is listening."""
+        attempts = []
+
+        async def flaky_init():
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(worker, "_init", flaky_init)
+        reached = self._signal_on_rearm(worker, monkeypatch)
+
+        worker.start()
+        try:
+            await asyncio.wait_for(reached.wait(), timeout=5)
+            assert len(attempts) == 3, "the worker must keep retrying init until the relay answers"
+        finally:
+            worker._task.cancel()
