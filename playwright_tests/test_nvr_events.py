@@ -4303,6 +4303,156 @@ class TestCorrectingAWrongLabel:
         assert queries[-1].get("review_state") is None
 
 
+def _weak_overlay() -> dict:
+    """A sidecar where one label is confidently detected and the other barely is.
+
+    The case the third answer exists for: the watcher named the event correctly, and
+    one of the labels it named it from was scraping along just above the inference
+    floor the whole time.
+    """
+    return _overlay(
+        frames=[
+            {
+                "t": 0.0,
+                "boxes": [
+                    {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2, "label": "cat", "labelUuid": "lbl-1", "conf": 0.9},
+                    {"x": 0.5, "y": 0.5, "w": 0.1, "h": 0.1, "label": "bowl", "labelUuid": "lbl-2", "conf": 0.25},
+                ],
+                "tracks": [],
+            },
+            {
+                "t": 2.0,
+                "boxes": [
+                    {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2, "label": "cat", "labelUuid": "lbl-1", "conf": 0.85},
+                    {"x": 0.5, "y": 0.5, "w": 0.1, "h": 0.1, "label": "bowl", "labelUuid": "lbl-2", "conf": 0.3},
+                ],
+                "tracks": [],
+            },
+        ],
+    )
+
+
+class TestCollectingLowConfidenceFrames:
+    """ "The label was right, but it was barely sure of it."
+
+    Neither of the other two answers can say this: there is nothing to remap and the box
+    is real, yet a label the detector only ever hedges on is one missed frame away from
+    the event never firing at all. The frames it hedged on are the training data that a
+    correct-but-weak detection otherwise never produces.
+    """
+
+    def _open_modal(self, page: Page, base_url: str, **mock_kwargs):
+        _mock(page, **mock_kwargs)
+        _route_labels(page)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']")
+
+    def test_the_option_is_offered_only_where_there_is_something_to_collect(self, page: Page, base_url: str):
+        """A row whose every box scored high can choose it and harvest nothing — an
+        option that can only ever produce an estimate of zero teaches the reader that
+        the dialog lies."""
+        self._open_modal(page, base_url, overlay=_weak_overlay())
+        page.locator("[data-testid='event-detail-relabel-event']").click()
+
+        confident = page.locator("[data-testid='label-correction-select'][data-label-uuid='lbl-1']")
+        hedged = page.locator("[data-testid='label-correction-select'][data-label-uuid='lbl-2']")
+
+        assert not [o for o in confident.locator("option").all_text_contents() if o.startswith("Right label")]
+        offered = [o for o in hedged.locator("option").all_text_contents() if o.startswith("Right label")]
+        assert offered == ["Right label — collect its 2 low-confidence frames"]
+
+    def test_choosing_it_is_a_correction_the_dialog_will_accept(self, page: Page, base_url: str):
+        """It corrects no label, so the "has anything been chosen" guard has to count it
+        as a choice or the button stays dead on the one answer that was true."""
+        self._open_modal(page, base_url, overlay=_weak_overlay())
+        page.locator("[data-testid='event-detail-relabel-event']").click()
+
+        confirm = page.locator("[data-testid='label-correction-confirm']")
+        expect(confirm).to_be_disabled()
+        page.locator("[data-testid='label-correction-select'][data-label-uuid='lbl-2']").select_option(
+            label="Right label — collect its 2 low-confidence frames"
+        )
+
+        expect(confirm).to_be_enabled()
+        # Two weak frames, both of them moments the detector struggled on.
+        expect(page.locator("[data-testid='label-correction-estimate']")).to_contain_text("Will save 2 frames")
+
+    def test_a_frame_counts_as_weak_when_any_of_its_boxes_is(self, page: Page, base_url: str):
+        """A frame holding a confident box and a hedged one of the same label still holds
+        a hedged one, and that box is the whole reason to collect the frame. Counting
+        only the first box of the label would miss it whenever the confident one came
+        first — which is the common ordering, since the sidecar writes them by score."""
+        self._open_modal(page, base_url, overlay=_weak_overlay())
+
+        result = page.evaluate("""async () => {
+                const { labelTallyAcrossClip } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const doc = { frames: [
+                  { t: 0, boxes: [{ labelUuid: 'a', conf: 0.9 }, { labelUuid: 'a', conf: 0.2 }] },
+                  { t: 5, boxes: [{ labelUuid: 'a', conf: 0.95 }] },
+                ] };
+                return labelTallyAcrossClip(doc, new Map()).map(r => [r.frames, r.weakFrames]);
+            }""")
+
+        assert result == [[2, 1]], "both frames harvestable, one of them weak"
+
+    def test_only_the_hedged_frames_are_candidates(self, page: Page, base_url: str):
+        """The frames where the model was already sure are frames of a label it gets
+        right — harvesting them is the duplicate training data the whole picker exists
+        to avoid."""
+        self._open_modal(page, base_url, overlay=_weak_overlay())
+
+        result = page.evaluate("""async () => {
+                const { framesHoldingLabels, WEAK_CONF_MAX } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const doc = { frames: [
+                  { t: 0, boxes: [{ labelUuid: 'a', conf: 0.2 }] },
+                  { t: 1, boxes: [{ labelUuid: 'a', conf: 0.95 }] },
+                  { t: 2, boxes: [{ labelUuid: 'a' }] },
+                ] };
+                return {
+                  all: framesHoldingLabels(doc, ['a']),
+                  weak: framesHoldingLabels(doc, ['a'], { maxConf: WEAK_CONF_MAX }),
+                };
+            }""")
+
+        assert result["all"] == [0, 1, 2]
+        # The scoreless box is not weak, it is unknown: collecting it would be collecting
+        # whatever a sidecar happens to omit.
+        assert result["weak"] == [0]
+
+    def test_a_collected_box_is_kept_exactly_as_the_detector_drew_it(self, page: Page, base_url: str):
+        """It is a collection instruction, not a correction, and it travels in the same
+        remap as real corrections — so the remap pass has to tell them apart within one
+        frame's boxes."""
+        self._open_modal(page, base_url, overlay=_weak_overlay())
+
+        result = page.evaluate("""async () => {
+                const { applyLabelRemap, NO_BBOX, WEAK } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const boxes = [{ labelUuid: 'a' }, { labelUuid: 'b' }, { labelUuid: 'c' }];
+                const remap = new Map([['a', 'z'], ['b', WEAK], ['c', NO_BBOX]]);
+                return applyLabelRemap(boxes, remap).map(b => b.labelUuid);
+            }""")
+
+        assert result == ["z", "b"]
+
+    def test_it_never_rewrites_the_events_own_identity(self, page: Page, base_url: str):
+        """The opposite of the `NO_BBOX` case and the same answer: the identity the row
+        already carries is the one being confirmed, so there is nothing to patch."""
+        self._open_modal(page, base_url, overlay=_weak_overlay())
+
+        result = page.evaluate("""async () => {
+                const { eventCorrectionFor, WEAK } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const event = { subjectRef: 'lbl-1', subjectName: 'Tabby' };
+                return eventCorrectionFor(event, new Map([['lbl-1', WEAK]]), new Map());
+            }""")
+
+        assert result is None
+
+
 class TestTheHarvestSpacingIsRealTime:
     """How far apart two harvested frames must be.
 

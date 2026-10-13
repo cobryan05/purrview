@@ -61,6 +61,51 @@ const KEEP = '';
 export const NO_BBOX = '__no_bbox__';
 
 /**
+ * The select option meaning "this label was right, but the detector was barely sure of
+ * it — collect the frames it hedged on".
+ *
+ * The third answer to "what did the watcher get wrong?", and the one the other two
+ * cannot express: the identity is correct and the box is real, so there is nothing to
+ * remap and nothing to delete, yet a label the model only ever scrapes past the floor
+ * on is one missed frame away from the event never firing. Those frames are training
+ * data of exactly the kind a correct-but-weak detection never otherwise produces.
+ *
+ * Carried in the same remap as a relabel so one dialog, one spread and one save covers
+ * a clip where one label was wrong and another was merely weak. `applyLabelRemap`
+ * leaves its boxes untouched; the picker aims only at the weak frames.
+ */
+export const WEAK = '__low_conf__';
+
+/**
+ * Confidence at or above which a box is not worth collecting for being weak.
+ *
+ * The watcher's own inference floor is far lower (the tracker needs the weak boxes),
+ * so everything between the floor and this is a detection the model made and hedged
+ * on. Above it the box tells the trainer nothing it does not already know.
+ */
+export const WEAK_CONF_MAX = 0.6;
+
+/**
+ * The lowest confidence any of these labels' boxes carries in a frame.
+ *
+ * The *lowest*, not the highest: a frame holding a confident box and a hedged one of
+ * the same label still holds a hedged one, and that box is the reason to collect it.
+ *
+ * @param {Object} frame - a sidecar frame
+ * @param {Set<string>} wanted
+ * @returns {?number} null when the frame holds none of them, or none carries a conf
+ */
+function weakestConf(frame, wanted) {
+  let worst = null;
+  for (const box of frame?.boxes ?? []) {
+    if (!wanted.has(box?.labelUuid)) continue;
+    const c = Number(box.conf);
+    if (Number.isFinite(c) && (worst == null || c < worst)) worst = c;
+  }
+  return worst;
+}
+
+/**
  * What a remap would do to the event row's own subject and target.
  *
  * The event carries the watcher's verdict about the *whole* visit — "Maple drinks
@@ -72,6 +117,9 @@ export const NO_BBOX = '__no_bbox__';
  * Returns null when the remap touches neither slot — the common case of correcting a
  * label that was never the event's own subject, where offering to "fix the event"
  * would be offering to change nothing.
+ *
+ * A `WEAK` target never touches the event row either, for the opposite reason: the
+ * identity it already carries is the one being confirmed.
  *
  * A `NO_BBOX` target never touches the event row: "this box shouldn't exist" says
  * nothing about what actually happened, so there is no corrected identity to write —
@@ -92,7 +140,8 @@ export function eventCorrectionFor(event, remap, labels) {
     ['target', 'targetRef', 'targetName'],
   ]) {
     const ref = event[refKey];
-    if (!ref || !remap.has(ref) || remap.get(ref) === NO_BBOX) continue;
+    if (!ref || !remap.has(ref)) continue;
+    if (remap.get(ref) === NO_BBOX || remap.get(ref) === WEAK) continue;
     const to = remap.get(ref);
     patch[refKey] = to;
     // The name goes with the ref, always — see `WatchEventUpdate` on why a row that
@@ -120,16 +169,20 @@ function el(tag, className, text) {
  *
  * @param {Object} doc - a clip overlay sidecar
  * @param {Map<string, Object>} labels - uuid → label, as `fetchLabels()` returns
- * @returns {Array<{labelUuid: string, name: string, boxes: number, frames: number}>} biggest first
+ * `weakFrames` is how many of those frames hold a box the detector hedged on, which is
+ * the only number saying whether "collect its low-confidence frames" has anything to
+ * collect — and the reason that option is offered on one row and not another.
+ *
+ * @returns {Array<{labelUuid: string, name: string, boxes: number, frames: number, weakFrames: number}>} biggest first
  */
-export function labelTallyAcrossClip(doc, labels) {
+export function labelTallyAcrossClip(doc, labels, { weakConfMax = WEAK_CONF_MAX } = {}) {
   const tally = new Map();
   for (const frame of doc?.frames ?? []) {
     const seenHere = new Set();
     for (const box of frame?.boxes ?? []) {
       if (!box?.labelUuid) continue;
       let row = tally.get(box.labelUuid);
-      if (!row) tally.set(box.labelUuid, (row = { boxes: 0, frames: 0 }));
+      if (!row) tally.set(box.labelUuid, (row = { boxes: 0, frames: 0, weakFrames: 0 }));
       row.boxes += 1;
       // Counted once per frame however many boxes of it are in that frame — otherwise
       // "frames" would say 12 for a clip that only has 4.
@@ -137,6 +190,12 @@ export function labelTallyAcrossClip(doc, labels) {
         seenHere.add(box.labelUuid);
         row.frames += 1;
       }
+    }
+    // After the boxes, not inside them: a frame counts as weak if *any* of the label's
+    // boxes in it is weak, and the hedged one is routinely not the first.
+    for (const labelUuid of seenHere) {
+      const worst = weakestConf(frame, new Set([labelUuid]));
+      if (worst != null && worst < weakConfMax) tally.get(labelUuid).weakFrames += 1;
     }
   }
   return [...tally.entries()]
@@ -154,18 +213,56 @@ export function labelTallyAcrossClip(doc, labels) {
 /**
  * The times of every frame holding at least one of these labels.
  *
+ * With `maxConf`, only the frames holding one the detector hedged on — the candidate
+ * set for a `WEAK` collection, which must never reach for the frames where the model
+ * was sure.
+ *
  * @param {Object} doc - a clip overlay sidecar
  * @param {Iterable<string>} labelUuids
+ * @param {Object} [opts]
+ * @param {number} [opts.maxConf] - keep only frames whose weakest box of these labels
+ *   is below this; a box carrying no confidence at all never qualifies
  * @returns {number[]} clip-relative seconds, ascending
  */
-export function framesHoldingLabels(doc, labelUuids) {
+export function framesHoldingLabels(doc, labelUuids, { maxConf = null } = {}) {
   const wanted = new Set(labelUuids ?? []);
   const times = [];
   for (const frame of doc?.frames ?? []) {
     if (typeof frame?.t !== 'number') continue;
-    if ((frame.boxes ?? []).some(b => wanted.has(b?.labelUuid))) times.push(frame.t);
+    if (maxConf == null) {
+      if ((frame.boxes ?? []).some(b => wanted.has(b?.labelUuid))) times.push(frame.t);
+      continue;
+    }
+    const worst = weakestConf(frame, wanted);
+    if (worst != null && worst < maxConf) times.push(frame.t);
   }
   return times.sort((a, b) => a - b);
+}
+
+/**
+ * The weak frames of these labels, weakest first.
+ *
+ * The `WEAK` counterpart to `hardMomentsFor`: there is no incident to rank by, so the
+ * ranking is the confidence itself. Handed to `pickTrainingFrames` as priority, it
+ * ensures the frames the model nearly missed survive the even spread rather than being
+ * thinned away by whichever neighbour sat nearer the fencepost.
+ *
+ * @param {Object} doc - a clip overlay sidecar
+ * @param {Iterable<string>} labelUuids
+ * @param {Object} [opts]
+ * @param {number} [opts.maxConf]
+ * @returns {Array<{t: number, weight: number, why: string}>} weakest first
+ */
+export function weakMomentsFor(doc, labelUuids, { maxConf = WEAK_CONF_MAX } = {}) {
+  const wanted = new Set(labelUuids ?? []);
+  const moments = [];
+  for (const frame of doc?.frames ?? []) {
+    if (typeof frame?.t !== 'number') continue;
+    const worst = weakestConf(frame, wanted);
+    if (worst == null || worst >= maxConf) continue;
+    moments.push({ t: frame.t, weight: 1 + (maxConf - worst), why: 'low_confidence' });
+  }
+  return moments.sort((a, b) => b.weight - a.weight || a.t - b.t);
 }
 
 /**
@@ -388,7 +485,9 @@ export function applyLabelRemap(boxes, remap) {
   return (boxes ?? [])
     .filter(box => !(box?.labelUuid && remap.get(box.labelUuid) === NO_BBOX))
     .map(box => (
-      box?.labelUuid && remap.has(box.labelUuid)
+      // `WEAK` is a collection instruction, not a correction: the label it names is the
+      // right one, so its boxes pass through exactly as the detector drew them.
+      box?.labelUuid && remap.has(box.labelUuid) && remap.get(box.labelUuid) !== WEAK
         ? { ...box, labelUuid: remap.get(box.labelUuid) }
         : box
     ));
@@ -447,9 +546,11 @@ export function dedupeOverlappingBoxes(boxes, iouThreshold = 0.75) {
  * @param {Map<string, Object>} opts.labels - every label the DB knows, uuid → label
  * @param {?Object} [opts.event] - the event being corrected. Given, the dialog can also
  *   offer to fix the event's own subject/target — see `eventCorrectionFor`.
- * @param {(labelUuids: string[]) => (number | {frames: number, hard: number})} [opts.estimateFrames] -
+ * @param {(remap: Map<string, string>) => (number | {frames: number, hard: number})} [opts.estimateFrames] -
  *   how many frames a given selection would harvest, for the live count; `hard` is how
- *   many of them sit on a moment `hardMomentsFor` pointed at
+ *   many of them sit on a moment `hardMomentsFor` or `weakMomentsFor` pointed at. Given
+ *   the whole remap, not only its keys: a `WEAK` label harvests a different set of
+ *   frames from a relabelled one
  * @param {(remap: Map<string, string>, opts: {fixEvent: boolean}) => (void | Promise<void>)}
  *   opts.onConfirm - non-empty remap, plus whether the event row itself should be corrected
  * @param {?Map<string, string>} [opts.presetRemap] - a correction the caller already
@@ -468,8 +569,9 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     'A spread of frames from across this clip is saved, left unverified for review — '
     + 'not every frame, because consecutive frames of the same subject are near-duplicates. '
     + 'A relabelled box keeps its geometry; "No bbox" removes the box instead, for a '
-    + 'detection that should never have been made. The event is flagged so you can find it '
-    + 'again.'));
+    + 'detection that should never have been made; "right label, collect weak frames" '
+    + 'keeps both and harvests only the moments the detector hedged on. The event is '
+    + 'flagged so you can find it again.'));
 
   const rows = el('div', 'label-correction__rows');
   /** @type {Array<{from: string, select: HTMLSelectElement}>} */
@@ -486,7 +588,10 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     // would produce. They are routinely very different numbers.
     line.appendChild(el('span', 'label-correction__from',
       `${row.name} — ${row.boxes} box${row.boxes === 1 ? '' : 'es'} `
-      + `in ${row.frames} frame${row.frames === 1 ? '' : 's'}`));
+      + `in ${row.frames} frame${row.frames === 1 ? '' : 's'}`
+      // The number that decides whether the weak-frame option is worth choosing, said
+      // on the row rather than discovered from an estimate of zero after choosing it.
+      + (row.weakFrames ? `, ${row.weakFrames} low-confidence` : '')));
 
     const select = document.createElement('select');
     select.className = 'label-correction__to';
@@ -500,6 +605,16 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     noBbox.value = NO_BBOX;
     noBbox.textContent = 'No bbox — false positive';
     select.appendChild(noBbox);
+    // Offered only where there is something to collect. A row whose every box scored
+    // high can choose it and harvest nothing, and an option that can only ever produce
+    // an estimate of zero teaches the reader that the dialog lies.
+    if (row.weakFrames) {
+      const weak = document.createElement('option');
+      weak.value = WEAK;
+      weak.textContent = `Right label — collect its ${row.weakFrames} low-confidence frame`
+        + (row.weakFrames === 1 ? '' : 's');
+      select.appendChild(weak);
+    }
     for (const label of allLabels) {
       if (label.uuid === row.labelUuid) continue;
       const option = document.createElement('option');
@@ -578,14 +693,14 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
   }
 
   function syncConfirm() {
-    const chosen = pickers.filter(p => p.select.value !== KEEP).map(p => p.from);
-    confirm.disabled = !chosen.length;
+    const remap = currentRemap();
+    confirm.disabled = !remap.size;
     syncFixEventRow();
-    if (!chosen.length) {
+    if (!remap.size) {
       estimate.textContent = '';
       return;
     }
-    const est = estimateFrames?.(chosen);
+    const est = estimateFrames?.(remap);
     const frames = typeof est === 'number' ? est : est?.frames;
     const hard = typeof est === 'number' ? 0 : (est?.hard ?? 0);
     // A clip routinely stops short of the event its sidecar describes. Said here rather
@@ -594,7 +709,7 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     estimate.textContent = frames == null
       ? ''
       : `Will save ${frames} frame${frames === 1 ? '' : 's'} from this clip`
-        + (hard ? `, ${hard} at moments the detector was caught out.` : '.')
+        + (hard ? `, ${hard} at moments the detector struggled.` : '.')
         + (beyond ? ` ${beyond} labelled moment${beyond === 1 ? ' is' : 's are'} past the end of the recording — `
           + 'the clip is shorter than the event, so they cannot be captured.' : '');
   }

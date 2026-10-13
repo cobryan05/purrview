@@ -995,7 +995,10 @@ export const EVENT_DETAIL = {
       body: '"Wrong label…" is for the event the watcher got wrong: say which label should '
         + 'have been which, and it harvests frames from across the clip with the corrected '
         + 'boxes, saved unverified for review. It can fix the event\'s own row at the same '
-        + 'time, so the headline and the grouping stop being wrong too. Frames are only ever '
+        + 'time, so the headline and the grouping stop being wrong too. A label it got right '
+        + 'but was barely sure of has its own answer in the same list — "right label, collect '
+        + 'its low-confidence frames" — which keeps the boxes as drawn and harvests only the '
+        + 'moments the detector hedged on. Frames are only ever '
         + 'taken from moments the recording actually contains — a clip shorter than its event '
         + 'yields fewer frames rather than eight copies of its last picture.',
     },

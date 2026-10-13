@@ -60,6 +60,9 @@ import {
   NO_BBOX,
   openLabelCorrectionModal,
   pickTrainingFrames,
+  WEAK,
+  WEAK_CONF_MAX,
+  weakMomentsFor,
 } from './labelCorrectionModal.js';
 import { createBlipsPanel } from './blipsPanel.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
@@ -1177,8 +1180,8 @@ export function openEventDetailModal(
       // the training data harvested from it.
       event,
       presetRemap,
-      estimateFrames: labelUuids => {
-        const { times, reasons, beyondClip } = picker(labelUuids);
+      estimateFrames: remap => {
+        const { times, reasons, beyondClip } = picker(remap);
         return {
           frames: times.length,
           hard: times.filter(t => reasons.has(t)).length,
@@ -1223,8 +1226,12 @@ export function openEventDetailModal(
    * A picker that puts the frames the detector was caught out on ahead of the even
    * spread — see `hardMomentsFor` and `pickTrainingFrames`.
    *
+   * A `WEAK` label contributes a different candidate set from a relabelled one — only
+   * the frames the detector hedged on, since the rest are frames of a label it already
+   * gets right — so the picker is given the whole remap, not just the labels in it.
+   *
    * @param {Array<Object>} blips
-   * @returns {(labelUuids: Iterable<string>) => {times: number[], reasons: Map<number, string>, beyondClip: number}}
+   * @returns {(remap: Map<string, string>) => {times: number[], reasons: Map<number, string>, beyondClip: number}}
    *   `reasons` names why a time was a hard moment; a time absent from it came from the
    *   spread. `beyondClip` counts labelled moments the clip is too short to show.
    */
@@ -1233,18 +1240,31 @@ export function openEventDetailModal(
     // selection varies between calls, so cache by that instead of re-walking every
     // frame and box from scratch on each label-picker toggle.
     const cache = new Map();
-    return labelUuids => {
-      const wanted = [...labelUuids];
+    return remap => {
+      const entries = [...remap];
+      const relabelled = entries.filter(([, to]) => to !== WEAK).map(([from]) => from);
+      const weakOnly = entries.filter(([, to]) => to === WEAK).map(([from]) => from);
       // The clip's own length is part of the key, not just the label selection:
       // `withinClip` folds it in, and an estimate can be asked for before the video has
       // reported a duration. Keying on labels alone would freeze that unfiltered answer,
       // so `beyondClip` would read 0 and the save pass would seek every out-of-range
       // moment and skip them all after the dialog had already promised the frames.
-      const key = [video?.duration, overlay?.leadSeconds?.() ?? 0, ...[...wanted].sort()].join('|');
+      const key = [
+        video?.duration,
+        overlay?.leadSeconds?.() ?? 0,
+        [...relabelled].sort().join(','),
+        [...weakOnly].sort().join(','),
+      ].join('|');
       const cached = cache.get(key);
       if (cached) return cached;
-      const hard = hardMomentsFor(overlayDoc, wanted, blips);
-      const all = framesHoldingLabels(overlayDoc, wanted);
+      const hard = [
+        ...hardMomentsFor(overlayDoc, relabelled, blips),
+        ...weakMomentsFor(overlayDoc, weakOnly, { maxConf: WEAK_CONF_MAX }),
+      ];
+      const all = [...new Set([
+        ...framesHoldingLabels(overlayDoc, relabelled),
+        ...framesHoldingLabels(overlayDoc, weakOnly, { maxConf: WEAK_CONF_MAX }),
+      ])].sort((a, b) => a - b);
       const available = withinClip(all);
       // Out-of-range hard moments need no separate filtering: pickTrainingFrames only
       // honours a priority whose time is among the ones it was given.
@@ -1412,14 +1432,14 @@ export function openEventDetailModal(
     // and it must not be conditional on eight video seeks succeeding, nor skipped
     // entirely for a clip whose sidecar yields no frames worth saving.
     if (fixEvent) await correctEventRow(remap, labels);
-    const { times, reasons, beyondClip } = picker(remap.keys());
+    const { times, reasons, beyondClip } = picker(remap);
     if (!times.length) {
       // Said out loud: a correction that ends in silence reads as a button that did
       // nothing, and "the frames were never there" is the answer to that.
       toast(beyondClip
         ? 'Every labelled moment is past the end of this recording — the clip is shorter '
           + 'than the event, so no frames could be saved'
-        : 'No frames of this clip hold the corrected labels, so nothing was saved', 6000);
+        : 'No frames of this clip match the selection, so nothing was saved', 6000);
       return;
     }
     saveBtn.disabled = true;
@@ -1434,8 +1454,16 @@ export function openEventDetailModal(
     setProgress(0, times.length, 'Capturing');
     const camera = sourceNames.get(event.sourceUuid) || 'camera';
     const nameOf = uuid => labels?.get(uuid)?.name || uuid;
+    const describeTo = to => {
+      if (to === NO_BBOX) return 'no bbox';
+      // Not a correction at all, and recorded as such: a reviewer meeting the frame
+      // later needs to know its boxes are the detector's own, kept deliberately
+      // because it was unsure, not a label someone changed.
+      if (to === WEAK) return 'kept, low confidence';
+      return nameOf(to);
+    };
     const correctedFrom = [...remap.entries()]
-      .map(([from, to]) => `${nameOf(from)} → ${to === NO_BBOX ? 'no bbox' : nameOf(to)}`)
+      .map(([from, to]) => `${nameOf(from)} → ${describeTo(to)}`)
       .join(', ');
     const saved = [];
     try {
@@ -1513,7 +1541,7 @@ export function openEventDetailModal(
       Logger.error(err);
       toast('The corrected frames were saved, but the event could not be marked reviewed', 6000, 'error');
     }
-    await offerToReview(saved);
+    await offerToReview(saved, { relabelled: [...remap.values()].some(to => to !== WEAK) });
   }
 
   /**
@@ -1530,13 +1558,15 @@ export function openEventDetailModal(
    * make the fast path the annoying one. "Not now" leaves the frame in the queue, which
    * is where it was always going.
    */
-  async function offerToReview(saved) {
+  async function offerToReview(saved, { relabelled = true } = {}) {
     if (!saved?.length) return;
     const frames = `${saved.length} frame${saved.length === 1 ? '' : 's'}`;
     const boxes = saved.reduce((sum, r) => sum + (r.boxesSaved ?? 0), 0);
     const wantsReview = await showConfirmModal({
       title: `${frames} tagged`,
-      message: `${boxes} box${boxes === 1 ? '' : 'es'} relabelled across ${frames} of this clip, `
+      // A weak-frame collection relabelled nothing, and saying it did would describe
+      // boxes the reviewer is about to see unchanged.
+      message: `${boxes} box${boxes === 1 ? '' : 'es'} ${relabelled ? 'relabelled' : 'collected'} across ${frames} of this clip, `
         + 'saved unverified. Review them now, or leave them in the annotation queue?',
       confirmText: 'Review now',
       cancelText: 'Not now',
