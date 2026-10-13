@@ -90,6 +90,9 @@ class FakeFfmpegStreamer:
     async def astop(self) -> None:
         self.astop_calls += 1
 
+    def reader_exited(self) -> bool:
+        return False
+
 
 class _NotYetReadyStreamer(FakeFfmpegStreamer):
     """A reader that has been spawned but whose source has not come up yet.
@@ -104,6 +107,17 @@ class _NotYetReadyStreamer(FakeFfmpegStreamer):
 
     async def wait_for_metadata(self) -> None:
         await asyncio.sleep(3600)
+
+
+class _DeadReaderStreamer(_NotYetReadyStreamer):
+    """A reader whose worker exited before any geometry arrived.
+
+    What a reconnect against a relay path that is briefly not-ready produces: ffmpeg
+    spawns, gets no bytes, and the worker stops immediately.
+    """
+
+    def reader_exited(self) -> bool:
+        return True
 
 
 def _frame_bytes(fill: int, size: int = 12) -> bytes:
@@ -637,6 +651,38 @@ class TestFfmpegImageProviderConnectGrace:
         monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: FakeFfmpegStreamer([]))
 
         assert provider.is_connecting() is False
+        await provider.reconnect()
+
+        assert streamer.astop_calls == 1
+        assert provider._stream is not streamer
+
+    async def test_a_reader_whose_worker_died_is_broken_not_connecting(self, monkeypatch):
+        """The grace is for a reader that is still trying, not one that has stopped.
+
+        A reconnect while the relay path is momentarily not-ready spawns ffmpeg, gets
+        no bytes, and the worker exits at once. Treating that as "still coming up" left
+        the source unread for the whole of CONNECT_GRACE_S after the path had returned.
+        """
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider._stream = _DeadReaderStreamer([])
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        provider._stream_started_at = 100.0
+        # Deep inside the grace — the only thing saying "broken" is the dead worker.
+        monkeypatch.setattr(provider, "_now", lambda: 101.0)
+
+        assert provider.is_ready() is False
+        assert provider.is_connecting() is False
+
+    async def test_a_dead_reader_inside_the_grace_is_rebuilt(self, monkeypatch):
+        """And the caller acts on it: the corpse is replaced rather than waited on."""
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        streamer = _DeadReaderStreamer([])
+        provider._stream = streamer
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        provider._stream_started_at = 100.0
+        monkeypatch.setattr(provider, "_now", lambda: 105.0)
+        monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: FakeFfmpegStreamer([]))
+
         await provider.reconnect()
 
         assert streamer.astop_calls == 1

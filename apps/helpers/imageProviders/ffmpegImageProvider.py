@@ -292,6 +292,12 @@ class FfmpegImageProvider(ImageProvider):
             return False
         if self._stream.metadata_ready():
             return False
+        # A reader whose worker has already exited cannot produce geometry no matter how
+        # much of the grace is left. Counting it as connecting is what left a camera
+        # unread for the full CONNECT_GRACE_S after the relay path had come back: the
+        # caller is told to be patient with a dead ffmpeg instead of rebuilding it.
+        if self._stream.reader_exited():
+            return False
         return (self._now() - self._stream_started_at) < self.CONNECT_GRACE_S
 
     def is_ready(self) -> bool:

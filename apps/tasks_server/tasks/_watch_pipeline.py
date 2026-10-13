@@ -125,6 +125,11 @@ class SourceHealth:
 
     BACKOFF_BASE_S = 5.0
     BACKOFF_MAX_S = 300.0
+    #: How far ahead of the downtime so far an attempt may be scheduled. The retry
+    #: interval is derived from elapsed downtime rather than the failure count, so it
+    #: cannot exceed roughly this multiple of the time the source has actually been
+    #: away.
+    BACKOFF_GROWTH = 2.0
     #: Downtime past which the source stops being "a camera that dropped" and starts
     #: being a fault worth reporting. Retries do not stop here — they continue at
     #: BACKOFF_MAX_S forever, because a camera that has been unplugged for a day is
@@ -167,12 +172,15 @@ class SourceHealth:
         self.connecting = False
         self.consecutive_failures += 1
         self.last_error = error
-        # The exponent is capped, not the failure count: retries continue indefinitely,
-        # they just settle at BACKOFF_MAX_S apart rather than growing until the next
-        # attempt is scheduled after the heat death of the universe.
+        # Scaled from elapsed downtime, not the failure count. A reconnect against a
+        # relay path that is briefly not-ready fails in milliseconds, so a counted
+        # ladder spends every rung inside a second or two of real time and then ignores
+        # a camera that is already back for the length of BACKOFF_MAX_S. Bounding the
+        # wait by the downtime so far keeps a short blip cheap to recover from while a
+        # source that really is gone still settles at BACKOFF_MAX_S apart.
         self.backoff_s = min(
             self.BACKOFF_MAX_S,
-            self.BACKOFF_BASE_S * (2 ** min(self.consecutive_failures - 1, 8)),
+            max(self.BACKOFF_BASE_S, self.downtime_s(now) * self.BACKOFF_GROWTH),
         )
         self.next_attempt_at = now + self.backoff_s
 

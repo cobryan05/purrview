@@ -122,18 +122,34 @@ class TestPacing:
 
 
 class TestSourceHealth:
-    def test_backoff_doubles_on_repeated_failures(self):
+    def test_backoff_grows_as_the_outage_lengthens(self):
+        """Growth comes from elapsed downtime, so time has to pass for it to widen."""
         health = SourceHealth()
         health.record_failure(0.0, "boom")
         first = health.backoff_s
-        health.record_failure(0.0, "boom")
-        assert health.backoff_s == first * 2
+        health.record_failure(first, "boom")
+        assert health.backoff_s > first
 
     def test_backoff_is_capped(self):
         health = SourceHealth()
+        now = 0.0
         for _ in range(50):
-            health.record_failure(0.0, "boom")
+            health.record_failure(now, "boom")
+            now = health.next_attempt_at
         assert health.backoff_s == SourceHealth.BACKOFF_MAX_S
+
+    def test_repeated_instant_failures_do_not_widen_the_backoff(self):
+        """Retries that fail immediately say nothing about how long the camera is away.
+
+        A relay path that is momentarily not-ready fails a reconnect in milliseconds;
+        counting those as rungs pinned the wait at the ceiling while the source had
+        been gone under a second, and left it unread for five minutes after it
+        returned.
+        """
+        health = SourceHealth()
+        for _ in range(50):
+            health.record_failure(0.0, "no bytes returned")
+        assert health.backoff_s == SourceHealth.BACKOFF_BASE_S
 
     def test_a_success_clears_the_backoff(self):
         """A camera that drops for a minute is normal; it must fully recover."""

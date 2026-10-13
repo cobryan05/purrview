@@ -210,6 +210,18 @@ class FFmpegStreamerIn:
         """
         return self._metadata_parsed
 
+    def reader_exited(self) -> bool:
+        """True once the worker has stopped, so no further geometry or frame can arrive.
+
+        A reader that spawned and died is broken, not slow. The two are
+        indistinguishable from `metadata_ready()` alone — both answer False — and a
+        caller that reads False as "still coming up" waits out its whole connect grace
+        on a process that is already gone.
+        """
+        if self._task is None:
+            return False
+        return self._task.done()
+
     async def wait_for_metadata(self) -> None:
         """Waits for metadata to become available"""
         await self._metadata_event.wait()

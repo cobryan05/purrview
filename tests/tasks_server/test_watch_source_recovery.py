@@ -779,3 +779,43 @@ class TestFetchBudget:
         pipeline = _pipeline()
         pipeline.provider.next_frame_expected_by = lambda: time.monotonic() - 500.0
         assert task._fetch_budget_s(pipeline) == StreamWatcherTask._FETCH_TIMEOUT_S
+
+
+class TestBackoffTracksDowntimeNotAttemptCount:
+    """The retry interval is bounded by how long the source has actually been away.
+
+    A reconnect against a relay path that is momentarily not-ready fails in
+    milliseconds, so an attempt-counted ladder reaches its ceiling while the camera
+    has been gone for under a second — and then ignores it for the ceiling's length.
+    """
+
+    def test_instant_failures_do_not_push_the_next_attempt_far_out(self):
+        health = SourceHealth()
+        now = 0.0
+        for _ in range(12):
+            health.record_failure(now, "no bytes returned")
+            now += 0.05
+
+        # Down for 0.6s: the next look-in must be seconds away, not minutes.
+        assert health.next_attempt_at - now <= SourceHealth.BACKOFF_BASE_S
+
+    def test_the_wait_never_greatly_exceeds_the_downtime_so_far(self):
+        health = SourceHealth()
+        now = 0.0
+        # Fail far faster than the backoff asks, as a failing reconnect does.
+        for _ in range(400):
+            health.record_failure(now, "no frame")
+            downtime = health.downtime_s(now)
+            wait = health.next_attempt_at - now
+            assert wait <= max(
+                SourceHealth.BACKOFF_BASE_S, downtime * 2 + 1e-6
+            ), f"after {downtime:.2f}s down the next attempt is {wait:.2f}s away"
+            now += 0.25
+
+    def test_a_source_back_after_a_brief_blip_is_retried_within_seconds(self):
+        """The laundry camera's real shape: drops, and the relay has it back in ~5s."""
+        health = SourceHealth()
+        health.record_failure(0.0, "read timed out")
+        health.record_failure(0.3, "no bytes returned")
+
+        assert health.next_attempt_at <= SourceHealth.BACKOFF_BASE_S + 0.3
