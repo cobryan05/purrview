@@ -13,7 +13,7 @@ Assistant hear about it.
 
 It runs on your own hardware, in Docker, and talks to nothing you do not point it
 at. It is the successor to
-[Yolo2Mqtt](https://github.com/cobryan05/Yolo2Mqtt), which did this job well.
+[Yolo2Mqtt](https://github.com/cobryan05/Yolo2Mqtt), which did this job well enough.
 What it did not do was make the upkeep easy, and a detection model is nearly all
 upkeep.
 
@@ -147,9 +147,7 @@ Expect the labelling to be the slow part; everything else is quick.
    snapshot URL, an MQTT image topic, or a video file. Use *Test source* to
    confirm frames arrive before going further.
 2. **Decide on labels.** Configuration → Labels & Tags. A class for each thing
-   you want to tell apart. Labels can be hierarchical, though a flat list of
-   individuals is the better-tested arrangement — see
-   [what to expect](#what-to-expect).
+   you want to tell apart. Labels can be hierarchical
 3. **Collect images.** Configuration → Overview → *Collect images* walks it in
    three steps. Point it at the source and let it run while the thing you care
    about actually happens. If you already have a labelled dataset, *Import
@@ -888,14 +886,20 @@ surprisingly few images, in the tens. Telling four similar cats apart needs a lo
 more, and getting there is what the collector, the review grid and the event
 correction dialog exist to make bearable.
 
-**Training wants a GPU, and it wants it exclusively.** A detection run defaults to
-YOLO at 640 px with a batch of 16 for up to 50 epochs. Three settings decide how
-much VRAM that takes: the architecture, the image size, and the batch size. If a
-run dies out of memory, halve the batch first — it is the cheapest of the three to
-give up, and the one with the least effect on the result. Dropping the image size
-is the next lever, and it costs you small objects. Watching a job's reported memory
-on your own hardware will tell you more than any figure here, because the answer
-changes with every one of those three.
+**Training needs a GPU, but not a big one.** A 12 GB card runs this comfortably,
+and less would very likely do. A detection run defaults to YOLO at 640 px with a
+batch of 16 for up to 50 epochs, and three settings decide the memory it takes:
+the architecture, the image size and the batch size. If a run does run out of
+memory, halve the batch first — it is the cheapest of the three to give up, and
+the one that least affects the result. Dropping the image size is the next lever,
+and it costs you small objects.
+
+The training form has a **GPU VRAM** dropdown, with tiers from 4 GB up, that
+prefills batch size and image size for the architecture you picked. Treat it as a
+starting point rather than a promise: for each architecture only one of those cells
+comes from published guidance and the rest are derived from it arithmetically, so
+none have been measured against real hardware. They only prefill — set a tier, then
+change whatever you want.
 
 Two things are worth knowing before you put training on the same box as the
 cameras. Inference holds VRAM of its own while a watcher is running, so the two
