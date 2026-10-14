@@ -8,6 +8,7 @@ an exception on the frame loop.
 
 import base64
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1466,7 +1467,9 @@ class TestCollectTrainingImagesAction:
 
         # Force the next call through the gate; it must still carry the death
         # from the skipped frame above.
-        action._last_offered["s1"] = 0.0
+        # Backdated off the live clock, not pinned to 0.0: the gate compares against
+        # time.monotonic(), which on a recently-booted host is itself near zero.
+        action._last_offered["s1"] = time.monotonic() - action._min_interval_s - 1.0
         await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1", dead_track_ids=[]))
 
         assert collector.offer.await_args.args[0].dead_track_ids == (3,)
