@@ -26,6 +26,8 @@ import json
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import requests_settle
+
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 
 LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
@@ -164,14 +166,23 @@ class TestAutoSkipOnlySkipsBlankPages:
 
         assert _shown_image_uuids(page) == [i["uuid"] for i in PAGE_2]
 
-    @pytest.mark.quarantine("a second request raced the assertion; 1 of 1 sighting")
-    def test_first_page_costs_one_request(self, page: Page, base_url: str):
-        """The skip loop fired a fetch per skipped page. Landing on page 1 should
-        take exactly one review query."""
+    def test_first_page_costs_no_forward_fetch(self, page: Page, base_url: str):
+        """The skip loop fired a fetch per skipped page, walking the cursor
+        forward until it ran out of skips. Landing on page 1 must query only
+        page 1 — every request carries the null cursor, whatever else repaints.
+
+        Counting requests instead would also fail on a harmless repaint of the
+        same page, which is what it did (FLAKY_TESTS.md 2026-09-09). The cursor
+        is what separates "rendered twice" from "walked the result set".
+        """
         requests = []
         _setup(page, base_url, requests)
+        requests_settle(page, requests)
 
-        assert len(requests) == 1, f"auto-skip re-fetched: {[r.get('afterUuid') for r in requests]}"
+        cursors = [r.get("afterUuid") for r in requests]
+        assert requests, "no review query was issued at all"
+        assert all(c is None for c in cursors), f"auto-skip walked the set: {cursors}"
+        assert _shown_image_uuids(page) == [i["uuid"] for i in PAGE_1]
 
     def test_bboxes_view_shows_only_the_annotated_image(self, page: Page, base_url: str):
         """The counterweight: in the Bboxes view a page with no boxes genuinely is

@@ -114,13 +114,19 @@ const SORT_MODES = [
  * @param {Map<string, object>} [opts.labels] - label lookup; fetched if omitted.
  * @param {() => void} [opts.onApplied] - reload the host review page after an apply.
  * @param {(counts: object) => void} [opts.onCountsChanged]
+ * @param {(run: object) => void} [opts.onRunLoaded] - called as soon as the run's own
+ *   details are known, before the candidate grid is built.
  * @returns {Promise<{refresh: () => Promise<void>, destroy: () => void}>}
  */
-export async function createPreviewPanel(container, { runUuid, labels = null, onApplied = null, onCountsChanged = null } = {}) {
+export async function createPreviewPanel(container, { runUuid, labels = null, onApplied = null, onCountsChanged = null, onRunLoaded = null } = {}) {
   const _labels = labels ?? await fetchLabels().catch(() => new Map());
   const hoverPreview = createHoverPreview();
 
   let run = await fetchPreviewRun(runUuid);
+  // Hand the run up before the grid is built: the modal's header is chrome the
+  // caller already has on screen, and building the grid costs a candidates query
+  // plus every visible thumbnail.
+  onRunLoaded?.(run);
   let page = 0;
   // Read once here rather than on every render: a stored value that is no longer on
   // offer (an older build's size) falls back rather than putting the select into a
@@ -1026,10 +1032,16 @@ export async function openPreviewRunModal({ runUuid, labels = null, onApplied = 
 
   open();
 
+  function _fillHeader(run) {
+    title.textContent = run?.name ?? 'Model run';
+    subtitle.textContent = run?.modelName ?? '';
+  }
+
   try {
-    panel = await createPreviewPanel(dialog, { runUuid, labels, onApplied });
-    title.textContent = panel.run?.name ?? 'Model run';
-    subtitle.textContent = panel.run?.modelName ?? '';
+    panel = await createPreviewPanel(dialog, { runUuid, labels, onApplied, onRunLoaded: _fillHeader });
+    // Already filled by onRunLoaded in the normal path; repeated here because a
+    // caller-supplied panel could resolve without having had a run to hand up.
+    _fillHeader(panel.run);
   } catch (err) {
     Logger.error('Failed to open model run:', err);
     title.textContent = 'Failed to load this run';

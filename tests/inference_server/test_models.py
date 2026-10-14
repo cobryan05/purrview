@@ -352,44 +352,47 @@ class TestClassMapCache:
         classes = await manager.get_models_classes(["yolo_test"])
         assert classes["yolo_test"]["cat"] == "label-uuid-abc"
 
-    @pytest.mark.quarantine("measures event-loop latency, so load is the input; 2 of 4 runs")
     async def test_sidecar_stat_does_not_block_event_loop(self, manager, monkeypatch):
         """get_models_classes() is awaited per-detection during a bulk inference
-        run; a synchronous os.stat() there would stall every other in-flight
-        request for as long as the stat takes. Assert the stat itself runs off
-        the event loop: a concurrent short timer must fire on schedule (~0.05s)
-        rather than only after the slow stat (~0.2s) finally lets the loop turn.
+        run, so file I/O it performs on the event loop stalls every other
+        in-flight request for its duration. Both halves must stay off the loop
+        thread: the sidecar stat, and the sidecar read behind
+        get_model_metadata() that only a cache miss reaches.
+
+        Asserts which thread each one ran on rather than how long anything took
+        — a latency bound here would make machine load the input.
         """
-        import asyncio
-        import time as time_module
+        import threading
+
+        loop_thread = threading.current_thread()
+        stat_threads: set = set()
+        read_threads: set = set()
 
         real_stat = os.stat
 
-        def slow_stat(path, *args, **kwargs):
+        def recording_stat(path, *args, **kwargs):
             if str(path).endswith(".json"):
-                time_module.sleep(0.2)
+                stat_threads.add(threading.current_thread())
             return real_stat(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "stat", slow_stat)
+        real_get_model_metadata = manager_module.get_model_metadata
 
-        loop = asyncio.get_running_loop()
-        start = loop.time()
-        ticker_elapsed = None
+        def recording_get_model_metadata(*args, **kwargs):
+            read_threads.add(threading.current_thread())
+            return real_get_model_metadata(*args, **kwargs)
 
-        async def ticker():
-            nonlocal ticker_elapsed
-            await asyncio.sleep(0.05)
-            ticker_elapsed = loop.time() - start
+        monkeypatch.setattr(os, "stat", recording_stat)
+        monkeypatch.setattr(manager_module, "get_model_metadata", recording_get_model_metadata)
+        # The miss path is the one that reads the sidecar; a cache warmed by an
+        # earlier call would skip it and prove nothing.
+        manager._class_map_cache.clear()
 
-        ticker_task = asyncio.create_task(ticker())
         await manager.get_models_classes(["yolo_test"])
-        await ticker_task
 
-        assert ticker_elapsed is not None and ticker_elapsed < 0.15, (
-            f"ticker (scheduled for ~0.05s) fired after {ticker_elapsed:.3f}s — the event loop "
-            "was blocked by the sidecar stat() until it finished (~0.2s) instead of letting the "
-            "timer run concurrently"
-        )
+        assert stat_threads, "no sidecar stat happened — the test no longer covers its path"
+        assert loop_thread not in stat_threads, "the sidecar stat ran on the event loop thread"
+        assert read_threads, "the cache-miss sidecar read never happened — the cache was warm"
+        assert loop_thread not in read_threads, "the sidecar read ran on the event loop thread"
 
 
 class TestSuppressionGroupsPreviewAndApply:

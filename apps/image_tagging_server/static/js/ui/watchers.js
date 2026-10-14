@@ -2723,6 +2723,13 @@ export async function renderWatchProfileManager({ target }) {
     const container = typeof target === 'string' ? document.getElementById(target) : target;
     if (!container) return;
     container.innerHTML = '';
+    // The list panel below is built synchronously, before the eight fetches this
+    // pane needs, so its presence says nothing about whether the pane can be
+    // interacted with. This flag is the pane's own readiness signal: set once the
+    // fetches have landed and the list is painted, so a caller (or a test) has
+    // something to wait on that is not already true.
+    delete container.dataset.ready;
+    const markReady = () => { container.dataset.ready = '1'; };
 
     const screen = createListEditorScreen({
       container,
@@ -3394,11 +3401,13 @@ export async function renderWatchProfileManager({ target }) {
     const wantedUuid = takePendingSelection('tab-watcher-management');
     if (wantedUuid === NEW_ITEM_SELECTION) {
       renderList(null);
+      markReady();
       openEditor(null);
       return;
     }
     const wanted = wantedUuid ? profilesMap.get(wantedUuid) ?? null : null;
     renderList(wanted?.uuid ?? null);
+    markReady();
     if (wanted) openEditor(wanted);
   } finally {
     _rendering = false;

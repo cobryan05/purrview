@@ -47,7 +47,11 @@ def test_schema_generation_does_not_import_torch_stack():
         cwd=str(REPO),
         text=True,
         capture_output=True,
-        timeout=300,
+        # A deadlock guard, not a performance assertion: this child imports five
+        # FastAPI apps, which on a loaded box has measured 172s against the old 300s
+        # budget — close enough to fail for being busy rather than for being broken
+        # (FLAKY_TESTS.md 2026-10-12). Generous enough that only a hung child trips it.
+        timeout=1800,
     )
     assert proc.returncode == 0, f"schema generation failed:\nSTDERR:\n{proc.stderr}"
     loaded = eval(proc.stdout.strip().splitlines()[-1])

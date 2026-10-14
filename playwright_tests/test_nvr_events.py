@@ -1702,6 +1702,9 @@ class TestSavingTheSameFrameTwice:
         # The event modal closes on its way to the canvas, which is the evidence that
         # Annotate went somewhere rather than silently doing nothing.
         expect(page.locator("[data-testid='event-detail-modal']")).to_have_count(0)
+        # Drain before asserting a negative: "no second upload" read the instant the
+        # modal closes is satisfied by an upload that is merely still in flight.
+        requests_settle(page, uploads)
         assert uploads == uploads[:1], f"the same frame must not be uploaded twice, saw {len(uploads)}"
 
     def test_moving_the_playhead_makes_it_a_different_frame_again(self, page: Page, base_url: str):
@@ -2508,7 +2511,6 @@ class TestTheTrackingBlipsPanel:
             ),
         )
 
-    @pytest.mark.quarantine("run modal opened with an empty title; 1 of 2 runs")
     def test_a_finished_harvest_opens_the_run_it_produced(self, page: Page, base_url: str):
         """The frames are three clicks deep in Previous Model Results, so a harvest that files
         them and says nothing is a harvest the user reports as never having finished —

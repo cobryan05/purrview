@@ -187,8 +187,12 @@ class TestAskThenRemember:
         assert not calls, "Cancelling the destination prompt must not upload"
 
 
+def _focus_and_check(page: Page, button) -> bool:
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    return button.is_enabled()
+
+
 class TestPickerDismissal:
-    @pytest.mark.quarantine("import button still disabled when read; 1 of 2 runs")
     def test_a_picker_that_fires_no_event_still_frees_the_import_button(self, page: Page, base_url: str):
         """`<input type=file>` does not fire 'cancel' everywhere, and a dismissed
         picker fires no 'change' either — without a fallback the promise never
@@ -203,9 +207,17 @@ class TestPickerDismissal:
         # Deliberately never answer the chooser: no files, no 'change', and no
         # 'cancel'. Regaining focus is all the app gets.
         expect(button).to_be_disabled()
-        page.evaluate("window.dispatchEvent(new Event('focus'))")
 
-        expect(button).to_be_enabled()
+        # Dispatch until it takes. The app attaches its focus fallback with
+        # `{ once: true }` while opening the picker, so a single synthetic focus can
+        # land before the listener exists and is then lost for good — the button
+        # stays disabled forever and the failure looks like a missing fallback.
+        # A user regaining focus more than once is the same signal.
+        wait_until(
+            page,
+            lambda: _focus_and_check(page, button),
+            "regaining window focus never freed the import button",
+        )
 
 
 class TestReporting:

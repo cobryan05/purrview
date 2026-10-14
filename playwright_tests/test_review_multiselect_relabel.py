@@ -13,7 +13,6 @@ Run with:
 
 import base64
 
-import pytest
 from playwright.sync_api import Page
 
 from playwright_tests.test_review_workflow_ui import (
@@ -28,6 +27,7 @@ from playwright_tests.test_review_workflow_ui import (
     _show_all_bboxes,
     _switch_view,
 )
+from playwright_tests.waits import wait_until
 
 PNG_16_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAGUlEQVR4nGMUERFhIAUwkaR6VMOoh"
@@ -83,11 +83,12 @@ def _open_menu_and_apply_label(page: Page, on_bbox_uuid: str, label_name: str):
     picker.fill(label_name)
     page.wait_for_timeout(150)
     page.locator(".ctx-menu div", has_text=label_name).last.click()
-    page.wait_for_timeout(500)
+    # The menu tears itself down once the apply has been dispatched. Each caller
+    # then waits on the effect it is asserting; nothing here stands in for that.
+    page.locator(".ctx-menu").first.wait_for(state="detached", timeout=5000)
 
 
 class TestMultiSelectRelabelRefreshesEveryCard:
-    @pytest.mark.quarantine("one card of several kept its old blob src; 1 of 3 runs")
     def test_every_selected_card_gets_a_fresh_crop(self, page: Page, base_url: str):
         """Applying a label to a 2-card selection re-requests BOTH crops.
 
@@ -109,16 +110,29 @@ class TestMultiSelectRelabelRefreshesEveryCard:
 
         before = _thumb_srcs(page, ["bbox-1", "bbox-3"])
         _open_menu_and_apply_label(page, "bbox-1", "Dog")
-        after = _thumb_srcs(page, ["bbox-1", "bbox-3"])
 
         # Both chips must say Dog (the part that already worked)...
         for u in ("bbox-1", "bbox-3"):
-            chip = page.locator(f"#review-root [data-bbox-uuid='{u}'] .label-chip").inner_text()
-            assert chip == "Dog", f"{u} chip should read Dog, got {chip!r}"
+            chip = page.locator(f"#review-root [data-bbox-uuid='{u}'] .label-chip")
+            wait_until(
+                page,
+                lambda chip=chip: chip.text_content() == "Dog",
+                lambda chip=chip, u=u: f"{u} chip should read Dog, got {chip.text_content()!r}",
+            )
 
-        # ...and both crops must have been re-requested.
-        for u in ("bbox-1", "bbox-3"):
-            assert after[u] != before[u], f"{u} crop was not refreshed (src unchanged: {after[u]!r})"
+        # ...and both crops must have been re-requested. Each card refreshes on its
+        # own fetch, so the srcs change one at a time: a single reading can catch the
+        # moment after the first card and before the second, which is what made the
+        # old fixed wait report "bbox-3 crop was not refreshed".
+        after = wait_until(
+            page,
+            lambda: (lambda srcs: srcs if all(srcs[u] != before[u] for u in ("bbox-1", "bbox-3")) else None)(
+                _thumb_srcs(page, ["bbox-1", "bbox-3"])
+            ),
+            lambda: "crop not refreshed for every selected card: "
+            + repr({u: (before[u], _thumb_srcs(page, [u])[u]) for u in ("bbox-1", "bbox-3")}),
+        )
+        assert after
 
     def test_parent_image_card_overlay_recolours(self, page: Page, base_url: str):
         """The image card draws each box's outline client-side from bbox.label.color.
@@ -142,5 +156,11 @@ class TestMultiSelectRelabelRefreshesEveryCard:
         # Cat is #ff0000, Dog is #00ff00 — so "any pixel greener than it is red"
         # is a reliable read of which colour the overlay was stroked with, even
         # with antialiasing.
-        dominant = page.evaluate(_DOMINANT_CHANNEL_JS, "img-1")
-        assert dominant == "green", f"image card overlay still stroked with the old label colour ({dominant})"
+        # The overlay is redrawn per card off its own refresh, so poll rather than
+        # take one reading of a canvas that may not have been repainted yet.
+        wait_until(
+            page,
+            lambda: page.evaluate(_DOMINANT_CHANNEL_JS, "img-1") == "green",
+            lambda: "image card overlay still stroked with the old label colour "
+            f"({page.evaluate(_DOMINANT_CHANNEL_JS, 'img-1')})",
+        )

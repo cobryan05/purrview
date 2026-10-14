@@ -20,6 +20,8 @@ import time
 
 from playwright.sync_api import Page, expect
 
+from playwright_tests.waits import wait_until
+
 TOUR_STATE_RE = re.compile(r"/api/settings/tour_state$")
 
 
@@ -90,6 +92,30 @@ def _route_labels(page: Page, labels: list):
             body=json.dumps({"status": "success", "labels": labels}),
         ),
     )
+
+
+def _open_help_menu(page: Page, testid: str):
+    """Open the help FAB's menu and wait until it is offering `testid`.
+
+    The FAB's click handler returns early while `offers` is empty, and nothing re-fires
+    it: a click during boot, or between a rail click and that screen's offers landing,
+    is lost for good and no menu ever opens (FLAKY_TESTS.md 2026-10-12). The same click
+    can also open the *previous* screen's menu. Clicking until the wanted item is on
+    screen covers both — the handler toggles, so a stale menu is closed and reopened.
+    """
+    wanted = page.locator(f"[data-testid='{testid}']")
+    fab = page.locator("[data-testid='tour-help-fab']")
+
+    def _offered():
+        if wanted.is_visible():
+            return True
+        try:
+            fab.click(timeout=2000)
+        except Exception:
+            return False
+        return wanted.is_visible()
+
+    wait_until(page, _offered, f"the help menu never offered {testid}")
 
 
 def _boot(page: Page, base_url: str):
@@ -357,9 +383,8 @@ class TestTheHelpButtonIsPerPage:
         page.wait_for_timeout(800)
 
         page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-        fab = page.locator("[data-testid='tour-help-fab']")
-        expect(fab).to_be_visible()
-        fab.click()
+        expect(page.locator("[data-testid='tour-help-fab']")).to_be_visible()
+        _open_help_menu(page, "tour-help-run-watch")
 
         expect(page.locator("[data-testid='tour-help-run-watch']")).to_be_visible()
         # The overview has no `pages`, so it follows you everywhere.
@@ -390,7 +415,7 @@ class TestTheHelpButtonIsPerPage:
         # page to come back to and the ? is the way in.
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
 
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-overview")
         expect(page.locator("[data-testid='tour-help-run-overview']")).to_contain_text("Resume at step 2")
         page.locator("[data-testid='tour-help-run-overview']").click()
 
@@ -404,7 +429,7 @@ class TestTheHelpButtonIsPerPage:
         page.wait_for_timeout(800)
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
 
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-restart-overview")
         page.locator("[data-testid='tour-help-restart-overview']").click()
 
         expect(_progress(page)).to_have_text("Getting started · 1 of 7")
@@ -469,7 +494,7 @@ class TestAPausedTourComesBackOnItsOwnPage:
         )
         _boot(page, base_url)
         page.wait_for_timeout(800)
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-overview")
         page.locator("[data-testid='tour-help-run-overview']").click()
         expect(_progress(page)).to_have_text("Getting started · 1 of 7")
 
@@ -490,7 +515,7 @@ class TestStepsReachTheirAnchors:
         page.locator(".main-tab-button[data-tab='tab-configuration']").click()
         page.locator("#tab-configuration [data-tab='tab-tag-management']").click()
         page.wait_for_timeout(400)
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-labels")
         page.locator("[data-testid='tour-help-run-labels']").click()
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
 
@@ -551,7 +576,7 @@ class TestStepsReachTheirAnchors:
         _boot(page, base_url)
         page.wait_for_timeout(800)
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-annotate")
         page.locator("[data-testid='tour-help-run-annotate']").click()
 
         expect(page.locator("[data-testid='tour-title']")).to_have_text("Files browses the image folder")
@@ -593,15 +618,12 @@ class TestConfigurationScreensHaveTheirOwnTours:
         """Moving between screens is not a MAIN_TAB_CHANGED, so this only works if
         every tab tier announces itself."""
         self._open_config(page, base_url, "tab-tag-management")
-        fab = page.locator("[data-testid='tour-help-fab']")
-        fab.click()
-        expect(page.locator("[data-testid='tour-help-run-labels']")).to_be_visible()
+        _open_help_menu(page, "tour-help-run-labels")
         expect(page.locator("[data-testid='tour-help-run-watch-rules']")).to_have_count(0)
-        fab.click()
+        page.locator("[data-testid='tour-help-fab']").click()
 
         page.locator("#tab-configuration [data-tab='tab-watcher-management']").click()
-        page.wait_for_timeout(400)
-        fab.click()
+        _open_help_menu(page, "tour-help-run-watch-rules")
 
         expect(page.locator("[data-testid='tour-help-run-watch-rules']")).to_be_visible()
         expect(page.locator("[data-testid='tour-help-run-labels']")).to_have_count(0)
@@ -610,7 +632,7 @@ class TestConfigurationScreensHaveTheirOwnTours:
         """All three are relevant on Watch Rules; the narrowest is the one that
         answers "what is this screen"."""
         self._open_config(page, base_url, "tab-watcher-management")
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-menu")
 
         names = page.locator("[data-testid='tour-help-menu'] .tour-help-menu__name")
         expect(names.first).to_have_text("Watch Rules")
@@ -621,7 +643,7 @@ class TestConfigurationScreensHaveTheirOwnTours:
     def test_finishing_a_screen_tour_returns_to_the_configure_walk(self, page: Page, base_url: str):
         """The same branch-and-return as the top level, one tier down."""
         self._open_config(page, base_url, "tab-config-overview")
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-configuration")
         page.locator("[data-testid='tour-help-run-configuration']").click()
         expect(_progress(page)).to_have_text("Configure · 1 of 7")
 
@@ -737,14 +759,14 @@ class TestEveryConfigurationScreenHasATour:
         _boot(page, base_url)
         page.wait_for_timeout(800)
         page.locator(".main-tab-button[data-tab='tab-configuration']").click()
-        fab = page.locator("[data-testid='tour-help-fab']")
 
         for tab, tour_id in screens.items():
             page.locator(f"#tab-configuration [data-tab='{tab}']").click()
-            page.wait_for_timeout(300)
-            fab.click()
-            expect(page.locator(f"[data-testid='tour-help-run-{tour_id}']")).to_be_visible()
-            fab.click()
+            # Opening the menu is the barrier: it reopens until this screen's own tour
+            # is the one offered, so neither the rail click nor the FAB click needs a
+            # guess at how long the offers take to refresh.
+            _open_help_menu(page, f"tour-help-run-{tour_id}")
+            page.locator("[data-testid='tour-help-fab']").click()
 
     def test_a_screen_tour_starts_on_that_screen_without_the_configure_walk(self, page: Page, base_url: str):
         _route_tour_state(page, _stored(completed=["overview"]))
@@ -754,7 +776,7 @@ class TestEveryConfigurationScreenHasATour:
         page.locator("#tab-configuration [data-tab='tab-training-management']").click()
         page.wait_for_timeout(300)
 
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-training")
         page.locator("[data-testid='tour-help-run-training']").click()
 
         expect(_progress(page)).to_have_text("Training · 1 of 3")
@@ -781,7 +803,7 @@ class TestTheTourPointsOutKeyboardShortcuts:
         page.wait_for_timeout(800)
         page.locator(".main-tab-button[data-tab='tab-settings']").click()
         page.wait_for_timeout(300)
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-settings")
         page.locator("[data-testid='tour-help-run-settings']").click()
 
         expect(_progress(page)).to_have_text("Settings · 1 of 3")
@@ -820,7 +842,7 @@ class TestTheAnnotateTourExplainsAbsenceAndVerification:
         _boot(page, base_url)
         page.wait_for_timeout(800)
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-annotate")
         page.locator("[data-testid='tour-help-run-annotate']").click()
         expect(page.locator("[data-testid='tour-title']")).to_have_text("Files browses the image folder")
 
@@ -896,7 +918,7 @@ class TestTheToursExplainDynamicLabels:
         page.locator(".main-tab-button[data-tab='tab-configuration']").click()
         page.locator("#tab-configuration [data-tab='tab-tag-management']").click()
         page.wait_for_timeout(400)
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-labels")
         page.locator("[data-testid='tour-help-run-labels']").click()
 
         self._advance_to(page, "Dynamic labels are the ones you did not plan")
@@ -914,7 +936,7 @@ class TestTheToursExplainDynamicLabels:
         _boot(page, base_url)
         page.wait_for_timeout(800)
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
-        page.locator("[data-testid='tour-help-fab']").click()
+        _open_help_menu(page, "tour-help-run-annotate")
         page.locator("[data-testid='tour-help-run-annotate']").click()
         expect(page.locator("[data-testid='tour-title']")).to_have_text("Files browses the image folder")
 

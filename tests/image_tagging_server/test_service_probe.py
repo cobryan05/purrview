@@ -45,6 +45,41 @@ def _install_slow_get(manager, delay: float, *, status_code: int = 200, payload:
     manager._test_client.get = _slow_get
 
 
+def _install_gated_get(manager, release: asyncio.Event, *, raise_timeout: bool = False):
+    """Replace manager._test_client.get with one that blocks until `release` is
+    set, then answers (or raises the timeout httpx would raise).
+
+    The probe's completion is driven by the test instead of by a sleep, so a
+    stalled scheduler can only make the test slower — it can never carry the
+    probe past a boundary the assertion depends on being on the near side of.
+    """
+
+    async def _gated_get(url, timeout=None):
+        await release.wait()
+        if raise_timeout:
+            raise httpx.TimeoutException("simulated timeout", request=httpx.Request("GET", url))
+        return httpx.Response(200, json={"service": "x"}, request=httpx.Request("GET", url))
+
+    manager._test_client.get = _gated_get
+
+
+async def _drain_probes(manager):
+    """Await every in-flight probe task, so the next poll sees a resolved probe."""
+    tasks = list(manager._probe_tasks.values())
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.fixture
+async def gate(manager):
+    """The event a gated probe blocks on. Released and drained at teardown so
+    no probe task is still pending when the event loop closes."""
+    release = asyncio.Event()
+    yield release
+    release.set()
+    await _drain_probes(manager)
+
+
 def _probed(statuses: list[dict]) -> list[dict]:
     """Only the entries that came from an HTTP probe.
 
@@ -73,12 +108,11 @@ class TestProbeSoftHardTimeouts:
         for svc in _probed(statuses):
             assert svc.get("notices", []) == []
 
-    @pytest.mark.quarantine("same soft-timeout window race; 1 of 2 runs")
-    async def test_slow_response_past_soft_timeout_reports_still_waiting(self, manager):
+    async def test_slow_response_past_soft_timeout_reports_still_waiting(self, manager, gate):
         """Once PROBE_SOFT_TIMEOUT elapses but the probe is still in flight
         (and under PROBE_HARD_TIMEOUT), report an info-level 'still waiting'
         notice — not the old 'not responding' warning."""
-        _install_slow_get(manager, delay=(_SOFT + _HARD) / 2)
+        _install_gated_get(manager, gate)
 
         # First poll starts the probe; it won't have hit the soft threshold yet.
         await manager.get_all_service_status()
@@ -92,11 +126,11 @@ class TestProbeSoftHardTimeouts:
             assert notices[0]["level"] == "info"
             assert "still waiting" in notices[0]["message"].lower()
 
-    async def test_response_beyond_hard_timeout_is_marked_unreachable(self, manager):
+    async def test_response_beyond_hard_timeout_is_marked_unreachable(self, manager, gate):
         """A probe that never resolves within PROBE_HARD_TIMEOUT is finally
         flagged unreachable (warning level) — the hard failure case still exists,
         it just takes much longer to trigger than before."""
-        _install_slow_get(manager, delay=_HARD * 5)  # never completes within a poll's patience
+        _install_gated_get(manager, gate, raise_timeout=True)
 
         await manager.get_all_service_status()  # kicks off the probe
         await asyncio.sleep(_SOFT * 1.5)
@@ -104,9 +138,10 @@ class TestProbeSoftHardTimeouts:
         for svc in _probed(statuses):
             assert svc["notices"][0]["level"] == "info"
 
-        # Wait past PROBE_HARD_TIMEOUT — httpx's own request timeout fires
-        # inside the background task, resolving it to "unreachable".
-        await asyncio.sleep(_HARD * 1.5)
+        # Release the probe into the failure httpx would raise at its own
+        # request timeout, which resolves it to "unreachable".
+        gate.set()
+        await _drain_probes(manager)
         statuses = await manager.get_all_service_status()
         for svc in _probed(statuses):
             notices = svc.get("notices", [])
@@ -131,11 +166,10 @@ class TestProbeSoftHardTimeouts:
         for statuses in results:
             assert isinstance(statuses, list)
 
-    @pytest.mark.quarantine("wall-clock race on a sleep that overshoots under load; 1 of 2 runs")
-    async def test_recovers_to_healthy_after_waiting(self, manager):
+    async def test_recovers_to_healthy_after_waiting(self, manager, gate):
         """Once a slow-but-in-flight probe finally resolves successfully, the
         next poll should reflect that — no notice."""
-        _install_slow_get(manager, delay=(_SOFT + _HARD) / 2)
+        _install_gated_get(manager, gate)
 
         await manager.get_all_service_status()
         await asyncio.sleep(_SOFT * 1.5)
@@ -143,7 +177,8 @@ class TestProbeSoftHardTimeouts:
         for svc in _probed(statuses):
             assert svc["notices"][0]["level"] == "info"
 
-        await asyncio.sleep(_HARD)  # let the in-flight probe resolve successfully
+        gate.set()
+        await _drain_probes(manager)
 
         statuses = await manager.get_all_service_status()
         for svc in _probed(statuses):

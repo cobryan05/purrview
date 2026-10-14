@@ -348,7 +348,11 @@ class TestTheCameraCarriesTheChoiceNotTheAction:
         action = self._action()
 
         action._conceal_damage({}, tmp_path / "clip.mp4", self._context(repair=True))
-        await asyncio.wait_for(started.wait(), 1)
+        # Generous on purpose: the budget only has to outlast the queue consumer being
+        # scheduled on a box running eight pytest workers. A repair that genuinely never
+        # starts then hangs until pytest's own limit instead of failing in a second that
+        # says nothing (FLAKY_TESTS.md 2026-10-09).
+        await asyncio.wait_for(started.wait(), 30)
 
         # The repair is in flight and the action has already returned — the assertion
         # that fails if it is ever awaited inline again.
@@ -362,12 +366,13 @@ class TestTheCameraCarriesTheChoiceNotTheAction:
         """Queued rather than a task per clip: a busy camera closes several events at
         once, and concurrent 1080p re-encodes are what the niceness exists to prevent.
         """
-        concurrent, peak, release = 0, 0, asyncio.Event()
+        concurrent, peak, release, entered = 0, 0, asyncio.Event(), asyncio.Event()
 
         async def _fake(path, *, enabled=True):
             nonlocal concurrent, peak
             concurrent += 1
             peak = max(peak, concurrent)
+            entered.set()
             await release.wait()
             concurrent -= 1
             return {"repaired": False}
@@ -378,7 +383,11 @@ class TestTheCameraCarriesTheChoiceNotTheAction:
 
         action._conceal_damage({}, tmp_path / "a.mp4", context)
         action._conceal_damage({}, tmp_path / "b.mp4", context)
-        await asyncio.sleep(0)
+        # Wait for the first repair to be *inside* the fake, not for a fixed number of
+        # loop iterations: releasing before the consumer got there leaves peak at 0 and
+        # nothing ever overlaps, so the test passes or fails on scheduling order
+        # (FLAKY_TESTS.md 2026-10-09).
+        await asyncio.wait_for(entered.wait(), 30)
         release.set()
         await self._settle(action)
 
@@ -388,12 +397,13 @@ class TestTheCameraCarriesTheChoiceNotTheAction:
         """Probes share the repair queue rather than getting their own: a scan that ran
         alongside a 1080p re-encode would defeat the point of serialising at all.
         """
-        concurrent, peak, release = 0, 0, asyncio.Event()
+        concurrent, peak, release, entered = 0, 0, asyncio.Event(), asyncio.Event()
 
         async def _busy(*args, **kwargs):
             nonlocal concurrent, peak
             concurrent += 1
             peak = max(peak, concurrent)
+            entered.set()
             await release.wait()
             concurrent -= 1
             return {"repaired": False}
@@ -408,7 +418,9 @@ class TestTheCameraCarriesTheChoiceNotTheAction:
 
         action._conceal_damage({}, tmp_path / "a.mp4", self._context(repair=True, source_uuid="opted-in"))
         action._conceal_damage({}, tmp_path / "b.mp4", self._context(repair=False, source_uuid="undecided"))
-        await asyncio.sleep(0)
+        # The first worker item must be inside the fake before it is released, or
+        # nothing overlaps and peak stays 0 whatever the queue does.
+        await asyncio.wait_for(entered.wait(), 30)
         release.set()
         await self._settle(action)
 
@@ -436,9 +448,10 @@ class TestTheCameraCarriesTheChoiceNotTheAction:
         backlog is bounded rather than allowed to grow without limit.
         """
         monkeypatch.setattr(repairClip, "MAX_PENDING_REPAIRS", 2)
-        release = asyncio.Event()
+        release, entered = asyncio.Event(), asyncio.Event()
 
         async def _fake(path, *, enabled=True):
+            entered.set()
             await release.wait()
             return {"repaired": False}
 
@@ -446,10 +459,11 @@ class TestTheCameraCarriesTheChoiceNotTheAction:
         worker = repairClip._RepairWorker()
         worker.retain()
 
-        # The first submission starts the worker; the yield lets it take that clip off
-        # the queue, so the two that follow fill the bound and the fourth is refused.
+        # The first submission starts the worker; waiting for it to be *in* the repair
+        # is what empties the queue slot, so the two that follow fill the bound and the
+        # fourth is refused. A bare yield only sometimes gets that far.
         assert worker.submit(tmp_path / "0.mp4") is True
-        await asyncio.sleep(0)
+        await asyncio.wait_for(entered.wait(), 30)
         accepted = [worker.submit(tmp_path / f"{n}.mp4") for n in (1, 2, 3)]
 
         assert accepted == [True, True, False]

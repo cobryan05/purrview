@@ -484,7 +484,6 @@ class TestMqttSettings:
             len(SETTINGS_RAIL_SECTIONS) - 1
         )
 
-    @pytest.mark.quarantine("a concurrent settings PUT landed first; 1 of 1 sighting")
     def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
         _mock_server_config(page)
         _mock_settings_get(page)

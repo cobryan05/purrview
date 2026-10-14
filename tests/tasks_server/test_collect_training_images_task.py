@@ -2275,7 +2275,6 @@ class TestMergePolicyLastWins:
         assert len(matching) == 2
         assert det_a in matching and det_b in matching
 
-    @pytest.mark.quarantine("xdist worker crashed under it; 1 of 2 runs")
     async def test_gather_result_order_still_follows_config_priority_not_completion_time(self):
         """Even under last_wins, results_per_model must line up with
         self._model_names (asyncio.gather preserves input order) before the
@@ -3289,7 +3288,6 @@ class TestDedupThresholdCalibration:
         assert counts[0] == 1  # only the distance-0 frame
         assert counts[-1] == len(samples)  # threshold 40 catches everything
 
-    @pytest.mark.quarantine("1 of 2 runs")
     async def test_sweep_marks_the_configured_threshold(self):
         task = await self._task(image_t=5, samples=[(1, [1])])
         rows = task._collector._dedup_sweep_rows((4, 5, 6), "image")
@@ -3303,7 +3301,6 @@ class TestDedupThresholdCalibration:
             kept = int(row["kept"].split(" ")[0])
             assert discarded + kept == len(samples)
 
-    @pytest.mark.quarantine("1 of 1 sighting")
     async def test_bbox_sweep_holds_image_threshold_fixed(self):
         """Varying the bbox threshold must not silently move the image one."""
         samples = [(30, [0]), (0, [0])]
@@ -4355,7 +4352,6 @@ class TestCollectAllStillRunsTheFilterChain:
         assert discard is False
         assert provided._filter_chain_image_tags == {"tag-x"}
 
-    @pytest.mark.quarantine("1 of 3 runs")
     async def test_a_discarded_frame_is_not_saved(self, tmp_path):
         """End-to-end counterpart: `matching` is empty either way, so the discard flag
         is the only thing that can stop the save. _run() only consults the chain when
@@ -4521,7 +4517,6 @@ class TestTaskTagsAreAppliedAtImageLevel:
         assert task._collector._task_tag_uuid is not None
         assert self._image_tags(task) == [task._collector._task_tag_uuid]
 
-    @pytest.mark.quarantine("1 of 1 sighting")
     async def test_filter_chain_image_tags_are_kept_alongside_task_tags(self, tmp_path):
         """The filter chain's own tag_image writes share this call site — neither set
         may displace the other."""
@@ -5244,7 +5239,6 @@ class TestCrossModelAmbiguity:
         )
         return frame
 
-    @pytest.mark.quarantine("1 of 4 runs")
     async def test_disagreeing_models_flag_both_boxes_naming_each_other(self):
         task = await self._task()
         cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)

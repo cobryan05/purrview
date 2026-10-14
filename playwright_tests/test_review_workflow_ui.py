@@ -260,8 +260,21 @@ def _show_all_bboxes(page: Page):
 
 
 def _switch_view(page: Page, key: str):
+    """Switch the grid's view toggle and wait for the rebuild it triggers.
+
+    The toggle re-queries (requireBboxes changes what the server returns), so every
+    card — and every chip inside it — is replaced. A fixed wait let that rebuild land
+    *after* the next interaction instead, which then operated on a chip that was about
+    to be detached: the gesture was absorbed and the state never advanced
+    (FLAKY_TESTS.md, TestVerifyChip). The cards of the kinds this view excludes going
+    away is the rebuild itself, not a guess at how long it takes.
+    """
     page.locator(f"#review-root .view-btn[data-view-key='{key}']").click()
-    page.wait_for_timeout(200)
+    excluded = {"bboxes": ["image"], "images": ["bbox"], "all": []}[key]
+    for kind in excluded:
+        expect(page.locator(f"#review-root [data-testid='review-card'][data-kind='{kind}']")).to_have_count(0)
+    if not excluded:
+        expect(page.locator("#review-root [data-testid='review-card']").first).to_be_visible()
 
 
 # ---------------------------------------------------------------------------

@@ -47,19 +47,34 @@ class TestModalLayerBand:
             result["max"] < result["bottomBars"]
         ), f"modal z-index reached {result['max']}, at or above #bottom-bars ({result['bottomBars']})"
 
-    @pytest.mark.quarantine("layer counter not back to base when read; 1 of 2 runs")
-    def test_counter_resets_once_all_modals_close(self, shared_page: Page):
-        """Every layer released means nothing is open, so the band can start over."""
-        result = shared_page.evaluate("""async () => {
+    def test_counter_resets_once_all_modals_close(self, page: Page, base_url: str):
+        """Every layer released means nothing is open, so the band can start over.
+
+        On its own page, not `shared_page`: the band is a page-global counter, and
+        `_canvas_dom_cleanup` removes a leaked overlay by deleting its DOM node
+        without releasing its layer. One earlier test leaving a modal open therefore
+        holds `_openLayers` above zero for the rest of the module and the rewind can
+        never happen — which reads here as "the band did not reset" (1010 / 1020 /
+        1030 in FLAKY_TESTS.md) while the band's own logic is fine.
+        """
+        page.goto(base_url)
+        result = page.evaluate("""async () => {
             const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
+            const { openDialogCount } = await import('/app-static/js/ui/utils/modalZIndex.js');
+            const heldBefore = openDialogCount();
             const a = createModalShell(); a.open();
             const first = parseInt(a.overlay.style.zIndex, 10);
             a.close();
             const b = createModalShell(); b.open();
             const second = parseInt(b.overlay.style.zIndex, 10);
             b.close();
-            return { first, second };
+            return { first, second, heldBefore };
         }""")
+        # Assert the premise rather than inheriting it: a dialog already open owns a
+        # layer this test never releases, and the rewind correctly does not fire.
+        assert result["heldBefore"] == 0, (
+            f"{result['heldBefore']} dialog(s) were already open, so nothing here can " "observe the band rewinding"
+        )
         assert (
             result["second"] == result["first"]
         ), f"expected the band to reset to {result['first']}, got {result['second']}"

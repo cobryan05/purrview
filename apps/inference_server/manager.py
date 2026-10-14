@@ -174,6 +174,11 @@ class Manager:
         # model_path -> (sidecar mtime_ns, class name -> label_uuid). See
         # get_models_classes(); keyed on mtime so it self-invalidates on edit.
         self._class_map_cache: Dict[str, Tuple[int, Dict[str, Optional[str]]]] = {}
+        # Serializes the cache-miss sidecar read per model_path. That read runs in a
+        # thread, so without this two concurrent misses would derive the same metadata
+        # twice and both call save_model_json_metadata(), whose plain open("w") leaves a
+        # window where a reader sees a truncated sidecar.
+        self._class_map_locks: Dict[str, asyncio.Lock] = {}
         # model_path -> (weights mtime_ns, (height, width) | None). Keyed on the
         # .onnx itself, not its sidecar — the shape lives in the graph, not the
         # JSON — and self-invalidates the same way _class_map_cache does on retrain.
@@ -233,28 +238,38 @@ class Manager:
                     ret[model_name] = cached[1]
                     continue
 
-                metadata = get_model_metadata(model_path)
-                model_classes = metadata.get("classes", [])
-                class_map = metadata.get("class_map", {})
-                # Models trained in-app already know their class -> label
-                # mapping (written positionally into the sidecar by the
-                # trainer); use it to pre-fill classes that don't yet have
-                # an explicit class_map entry, instead of making the user
-                # re-enter an assignment we already have. Evaluated per
-                # class so an explicit clear on one class (which persists
-                # as class_map[name] = None) doesn't suppress the
-                # positional fallback for every other class.
-                label_uuids = metadata.get("label_uuids") or []
-                positional_mappings = (
-                    dict(zip(model_classes, label_uuids)) if len(label_uuids) == len(model_classes) else {}
-                )
-                class_uuids: Dict[str, Optional[str]] = {
-                    name: class_map[name] if name in class_map else positional_mappings.get(name)
-                    for name in model_classes
-                }
-                ret[model_name] = class_uuids
-                if sidecar_mtime is not None:
-                    self._class_map_cache[model_path] = (sidecar_mtime, class_uuids)
+                lock = self._class_map_locks.setdefault(model_path, asyncio.Lock())
+                async with lock:
+                    # Another coroutine may have filled the cache while this one waited.
+                    cached = self._class_map_cache.get(model_path)
+                    if cached is not None and sidecar_mtime is not None and cached[0] == sidecar_mtime:
+                        ret[model_name] = cached[1]
+                        continue
+                    # In a thread: on a miss this reads the sidecar (and, with none,
+                    # loads the ONNX to derive one), which is file I/O that would
+                    # otherwise stall every in-flight request for its duration.
+                    metadata = await asyncio.to_thread(get_model_metadata, model_path)
+                    model_classes = metadata.get("classes", [])
+                    class_map = metadata.get("class_map", {})
+                    # Models trained in-app already know their class -> label
+                    # mapping (written positionally into the sidecar by the
+                    # trainer); use it to pre-fill classes that don't yet have
+                    # an explicit class_map entry, instead of making the user
+                    # re-enter an assignment we already have. Evaluated per
+                    # class so an explicit clear on one class (which persists
+                    # as class_map[name] = None) doesn't suppress the
+                    # positional fallback for every other class.
+                    label_uuids = metadata.get("label_uuids") or []
+                    positional_mappings = (
+                        dict(zip(model_classes, label_uuids)) if len(label_uuids) == len(model_classes) else {}
+                    )
+                    class_uuids: Dict[str, Optional[str]] = {
+                        name: class_map[name] if name in class_map else positional_mappings.get(name)
+                        for name in model_classes
+                    }
+                    ret[model_name] = class_uuids
+                    if sidecar_mtime is not None:
+                        self._class_map_cache[model_path] = (sidecar_mtime, class_uuids)
             except FileNotFoundError:
                 continue
         return ret

@@ -20,6 +20,7 @@ import re
 from playwright.sync_api import Page, expect
 
 from playwright_tests.test_nvr_live_view import PROFILE_UUID, TASK_UUID, _profile, _task
+from playwright_tests.waits import wait_until
 
 RULE_A = "rule-aaaa"
 RULE_B = "rule-bbbb"
@@ -122,8 +123,31 @@ def _open_live_pane(page: Page, base_url: str, *, expand_rules: bool = True):
     # thumbnails and the rule names would push them off the screen. Everything below is
     # about what is *inside* it, so open it first.
     if expand_rules:
-        page.locator("[data-testid='nvr-rule-summary']").first.click()
-        page.wait_for_selector("[data-testid='nvr-rule-row']", state="visible")
+        _expand_rules(page)
+
+
+def _expand_rules(page: Page):
+    """Open the rule disclosure, re-clicking until its rows are actually visible.
+
+    The pane rebuilds every profile card whenever any watcher changes state, so a click
+    can land on a summary that is on its way out: the `toggle` never fires, nothing is
+    persisted, and the rows sit inside a collapsed <details> for the full timeout. That
+    is the "123 x locator resolved to 2 elements" shape in FLAKY_TESTS.md — the rows
+    exist, they are just hidden, and a single lost click is never retried. The open
+    state is persisted per profile, so clicking again is idempotent.
+    """
+    rows = page.locator("[data-testid='nvr-rule-row']")
+
+    def _opened():
+        if rows.first.is_visible():
+            return True
+        try:
+            page.locator("[data-testid='nvr-rule-summary']").first.click(timeout=2000)
+        except Exception:
+            return False  # the card was mid-rebuild; the next poll finds the new one
+        return rows.first.is_visible()
+
+    wait_until(page, _opened, "the rule list never opened")
 
 
 class TestTheCardShowsArming:

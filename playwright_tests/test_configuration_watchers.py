@@ -435,7 +435,11 @@ def _navigate_to_watchers(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-watcher-management']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#watcher-management-box .wp-list-panel")
+    # Not `.wp-list-panel`: that is built synchronously, before the pane's eight
+    # fetches, so it is satisfied while "+ New watcher" still cannot open an editor
+    # — a click then lands on a dead button and the next fill waits out its full
+    # timeout (FLAKY_TESTS.md 2026-08-28). `data-ready` is set after renderList.
+    page.wait_for_selector("#watcher-management-box[data-ready='1']")
 
 
 class TestWatchersPane:
@@ -717,7 +721,6 @@ class TestWatcherEditor:
         expect(inputs.nth(3)).to_have_value("10")
         expect(inputs.nth(4)).to_have_value("300")
 
-    @pytest.mark.quarantine("POST not captured under load; 1 of 2 runs")
     def test_creating_a_watcher_posts_the_payload(self, page: Page, base_url: str):
         created = {}
         _mock_watch_apis(page, profiles=[], on_create=lambda body: created.update(body))
