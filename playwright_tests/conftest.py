@@ -141,6 +141,45 @@ def _make_preview_runs_mock():
     return handle
 
 
+def _make_watch_profiles_mock():
+    """Watch is the landing tab, so the profile list, the tracker registry and the
+    action schemas are all fetched before the first paint.
+
+    Three paths, one proxy, so the handler keys on the path the way the watch-events
+    one does. Unmocked, this is the FILTER_CHAINS_PROXY trap again: a real connection
+    to db_server, which succeeds only where a live stack happens to be listening.
+    """
+
+    async def handle(path: str, request):
+        if "trackers" in path:
+            return JSONResponse(content={"status": "success", "trackers": []})
+        if "actions" in path:
+            return JSONResponse(content={"status": "success", "actions": []})
+        return JSONResponse(content={"status": "success", "profiles": []})
+
+    return handle
+
+
+def _make_storage_mock():
+    """Settings reads usage per bucket. The keys matter: storage.js reads each one
+    with `?? {}`, so a missing key renders an empty card rather than throwing."""
+
+    async def handle(path: str, request):
+        return JSONResponse(content={"status": "success", "recordings": {}, "timelapse": {}, "thumbnailCache": {}})
+
+    return handle
+
+
+def _make_clip_repair_mock():
+    """POST-only, and nothing fetches it on load — mocked so that the set of proxies
+    left pointing at a live stack is empty rather than nearly empty."""
+
+    async def handle(path: str, request):
+        return JSONResponse(content={"status": "success"})
+
+    return handle
+
+
 def _make_watch_events_mock():
     """The NVR Events page fetches both the event list and its filter facets on mount.
 
@@ -280,6 +319,11 @@ def live_server() -> Generator[str, None, None]:
         ("WATCH_EVENTS_PROXY", _make_watch_events_mock()),
         ("EVENT_BLIPS_PROXY", _make_event_blips_mock()),
         ("RECORDINGS_PROXY", _make_recordings_mock()),
+        # Found by running this suite with no live stack behind it: the Watch tab
+        # is the default, so these 500'd on load wherever db_server was absent.
+        ("WATCH_PROFILES_PROXY", _make_watch_profiles_mock()),
+        ("STORAGE_PROXY", _make_storage_mock()),
+        ("CLIP_REPAIR_PROXY", _make_clip_repair_mock()),
     ]
     originals = []
     for attr, mock_fn in proxies_and_mocks:

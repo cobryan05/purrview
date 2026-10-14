@@ -205,7 +205,11 @@ class TestTasksResolveThroughManager:
 
     async def test_train_model_task_uses_manager_training_url(self):
         """_init resolves the base URL before it does any DB work, so the later
-        (unmocked) training-config lookup failing is irrelevant to this assertion."""
+        (unmocked) training-config lookup failing is irrelevant to this assertion.
+
+        How it fails is environment-dependent and must not be pinned: with a
+        db_server listening on the default port it is a RuntimeError, and with
+        nothing there — a CI container — urllib3 raises MaxRetryError first."""
         from apps.tasks_server.tasks.TrainModelTask import TrainModelTask
 
         manager = MagicMock()
@@ -213,7 +217,7 @@ class TestTasksResolveThroughManager:
         manager.get_training_base_url.return_value = "http://trainer-box:8005"
 
         task = TrainModelTask(task_config_uuid="cfg", params={}, manager=manager)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(Exception):
             await task._init({"training_config_uuid": "tc-uuid"}, None)
 
         manager.get_training_base_url.assert_called_once()

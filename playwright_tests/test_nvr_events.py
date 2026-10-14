@@ -4354,6 +4354,11 @@ class TestCollectingLowConfidenceFrames:
         the dialog lies."""
         self._open_modal(page, base_url, overlay=_weak_overlay())
         page.locator("[data-testid='event-detail-relabel-event']").click()
+        # relabelEvent awaits the labels and the blips before it builds anything, so the
+        # dialog is not up when the click returns. all_text_contents() takes one reading
+        # instead of retrying like expect() does, and without this barrier it reads the
+        # page that has no dialog on it yet and reports every option missing.
+        page.wait_for_selector("[data-testid='label-correction-modal']")
 
         confident = page.locator("[data-testid='label-correction-select'][data-label-uuid='lbl-1']")
         hedged = page.locator("[data-testid='label-correction-select'][data-label-uuid='lbl-2']")
