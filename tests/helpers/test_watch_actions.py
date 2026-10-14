@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import pytest
 
-from apps.helpers.actions import outputDir, saveTimelapseAction
+from apps.helpers.actions import collectTrainingImagesAction, outputDir, saveTimelapseAction
 from apps.helpers.actions.action import ActionContext, ActionResult
 from apps.helpers.actions.collectTrainingImagesAction import CollectTrainingImagesAction
 from apps.helpers.actions.mqttPublishAction import MqttPublishAction, slugify_topic
@@ -1340,6 +1340,20 @@ class TestCollectTrainingImagesAction:
         await action.run(_frame_signal(), self._full_frame_context(source_uuid="s2"))
 
         assert collector.offer.await_count == 2
+
+    async def test_the_first_offer_goes_out_on_a_freshly_booted_host(self):
+        """`time.monotonic()` counts from boot, so on a host up for less than
+        min_interval_s a source that has never been offered must still read as
+        due — otherwise collection silently never starts."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1000.0)
+
+        with patch.object(collectTrainingImagesAction.time, "monotonic", return_value=5.0):
+            result = await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1"))
+
+        assert result.ok is True
+        collector.offer.assert_awaited_once()
 
     async def test_min_interval_is_floored_not_merely_defaulted(self):
         """plan §2.4: a collector offered every analysed frame would spend the

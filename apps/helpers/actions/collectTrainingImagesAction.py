@@ -338,7 +338,11 @@ class CollectTrainingImagesAction(Action):
                 )
 
         now = time.monotonic()
-        if now - self._last_offered.get(key, 0.0) < self._min_interval_s:
+        # No default timestamp: monotonic() counts from boot, so a 0.0 stand-in
+        # for "never offered" throttles the first offer on any host whose uptime
+        # is under min_interval_s.
+        last_offered = self._last_offered.get(key)
+        if last_offered is not None and now - last_offered < self._min_interval_s:
             return ActionResult(ok=True, detail="waiting for interval")
         self._last_offered[key] = now
 
