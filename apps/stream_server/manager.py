@@ -983,9 +983,12 @@ class Manager:
                 parts.append(str(source))
             rows.append(row(name, "  ·  ".join(parts)))
 
+        # used_bytes is None whenever the buffer mount cannot be stat'd, which
+        # measure_mount_bytes treats as a supported deployment rather than a fault.
+        used = f"{usage.used_bytes / 1e6:.0f} MB" if usage.used_bytes is not None else "unmeasured"
         buffer_rows = [
             row("Committed", f"{usage.committed_bytes / 1e6:.0f} MB"),
-            row("Used on disk", f"{usage.used_bytes / 1e6:.0f} MB"),
+            row("Used on disk", used),
             row("Cap", f"{usage.cap_bytes / 1e6:.0f} MB"),
         ]
 

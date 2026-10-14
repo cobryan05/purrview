@@ -82,6 +82,18 @@ class TestRelayStatusDetails:
         assert buffer_section["title"] == "Buffer"
         assert [r["label"] for r in buffer_section["rows"]] == ["Committed", "Used on disk", "Cap"]
 
+    def test_an_unmounted_buffer_still_renders_the_section(self, manager, monkeypatch):
+        """``used_bytes`` is None whenever the /buffer tmpfs is absent — which
+        measure_mount_bytes documents as a supported deployment, not an error. The
+        dev and production compose files all mount it, so nothing local exercises
+        this and the panel is the only thing that reads the field."""
+        monkeypatch.setattr("apps.stream_server.manager.measure_mount_bytes", lambda _path: (None, None))
+
+        rows = {r["label"]: r["value"] for r in manager.get_status()["details"][1]["rows"]}
+
+        assert rows["Used on disk"] == "unmeasured"
+        assert rows["Cap"].endswith("MB")
+
     async def test_status_endpoint_serves_the_details(self, http_client, manager):
         _stream(manager, "front_door", active=True)
 
