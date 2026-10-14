@@ -17,11 +17,11 @@ uv.lock
 *.onnx.data
 *.pt
 models/
-
-# Markdown files (notes, plans, etc.) — only README is committed
+# Markdown files (notes, plans, etc.) — only the published docs are committed
 *.md
 !README.md
 !README.MD
+!docs/DEVELOPMENT.md
 
 static/js/htmx
 static/css/pico.min.css

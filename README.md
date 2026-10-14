@@ -1,6 +1,9 @@
-# PurrView
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo_dark.png">
+  <img src="docs/logo.png" alt="PurrView" width="454">
+</picture>
 
-> **Just want to get it running?** → [Getting started](#getting-started)
+# PurrView
 
 PurrView watches camera streams, tracks the objects in them, and raises an event
 when one object interacts with another. A package arriving on the porch. The mail
@@ -8,10 +11,21 @@ truck reaching the mailbox. Which bowl a specific cat eats from. If a model can
 detect it, you can write a rule about it meeting something else and have Home
 Assistant hear about it.
 
-It is the successor to [Yolo2Mqtt](https://github.com/cobryan05/Yolo2Mqtt), which
-did this job well. What it did not do was make the upkeep easy, and a detection
-model is nearly all upkeep.
+It runs on your own hardware, in Docker, and talks to nothing you do not point it
+at. It is the successor to
+[Yolo2Mqtt](https://github.com/cobryan05/Yolo2Mqtt), which did this job well.
+What it did not do was make the upkeep easy, and a detection model is nearly all
+upkeep.
 
+> **Just want to get it running?** → [Getting started](#getting-started).
+> **Here for the Home Assistant side?** → [Home Assistant](#home-assistant), and
+> [statistics](#hourly-daily-and-weekly-statistics) if you want per-day and
+> per-hour graphs of what your cameras saw.
+>
+> One thing to know before you start: **you will need to train your own model.**
+> A stock detector knows what a cat is; it does not know *which* cat, and that is
+> usually the whole point. [What to expect](#what-to-expect) is honest about what
+> that costs.
 ## The problem
 
 Four cats in one house, all free feeding. At the vet, the simple questions are
@@ -69,6 +83,188 @@ The short version of what it gives you:
 
 *Watch → Live: every camera in a running watcher, with what it is tracking right
 now.*
+
+## Getting started
+
+You need Docker with the Compose v2 plugin. For any GPU deployment you also need
+an NVIDIA GPU, current drivers, and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+CPU-only deployments need none of the NVIDIA pieces. An MQTT broker is only
+needed for the Home Assistant side.
+
+```bash
+git clone https://github.com/cobryan05/purrview.git
+cd purrview
+
+./setup.sh                     # answer a few questions, writes .env
+docker compose up -d --build
+```
+
+The UI is at **http://localhost:7999**.
+
+`setup.sh` detects whether there is a GPU and asks what this host should run
+(everything, frontend and inference only, training only, or a dev workspace), then
+writes `.env`. Even on a GPU host it offers CPU inference, which is worth taking
+if you would rather keep the frontend slim or reserve the VRAM for training.
+Compose reads `.env` automatically from then on. Re-run `./setup.sh` to change
+your mind.
+
+### Letting it see your files
+
+The app only sees what Docker hands it. By default that is five directories from
+the repo: `./data` (the database and recordings), `./models`, `./image_datasets`
+(every image the app knows about), `./conf` and `./logs`.
+
+Anything else on the host is invisible to it. A folder of photos you want to
+import, a NAS share of existing camera footage, a directory some other program
+drops images into — none of that can be read until it is bind mounted in. That
+goes in `docker-compose.override.yml`, next to the compose file. It is gitignored
+and compose merges it automatically, so it is the right home for anything
+specific to your machine:
+
+```yaml
+services:
+  mono:                                   # or app / mono-dev / app-dev,
+    volumes:                              # whichever profile you are running
+      - /mnt/nas/camera-archive:/app/image_datasets/archive:ro
+      - /srv/photos:/app/image_datasets/photos:ro
+```
+
+Mount under `/app/image_datasets` and the contents turn up where you would expect
+them: the file browser, the dataset importer, and a collector pointed at a folder.
+`:ro` is worth adding for anything you only ever import *from*.
+
+Run `docker compose up -d` again after editing it. A path that is not mounted does
+not exist as far as the app is concerned, which is the usual explanation for a
+folder picker that cannot see your images.
+
+### Your first model
+
+Once it is up, the path from empty database to something useful is roughly this.
+Expect the labelling to be the slow part; everything else is quick.
+
+1. **Add a source.** Configuration → Sources. An RTSP URL, a ring-mqtt camera, a
+   snapshot URL, an MQTT image topic, or a video file. Use *Test source* to
+   confirm frames arrive before going further.
+2. **Decide on labels.** Configuration → Labels & Tags. A class for each thing
+   you want to tell apart. Labels can be hierarchical, though a flat list of
+   individuals is the better-tested arrangement — see
+   [what to expect](#what-to-expect).
+3. **Collect images.** Configuration → Overview → *Collect images* walks it in
+   three steps. Point it at the source and let it run while the thing you care
+   about actually happens. If you already have a labelled dataset, *Import
+   dataset* takes YOLO, COCO or Pascal VOC instead.
+4. **Label them.** Annotate → Review for the bulk work, Annotate → Editor for
+   individual images. Draw boxes for what is there, and mark what is *not*
+   there — that second half matters more than it sounds like it does, and
+   [Adding a new class](#adding-a-new-class-without-ruining-your-old-data)
+   explains why.
+5. **Train.** Configuration → Training to define a run, then Jobs → Start a job
+   to launch it. A first pass on a few tens of images is enough to see whether
+   the idea works at all.
+6. **Write a watch rule.** Configuration → Watch Rules. Add the source, pick the
+   model, and write the rule as a sentence: subject, relation, target, plus how
+   long it has to hold. Draw a zone on the camera first if the rule needs one.
+7. **Attach actions.** On the same page — record a clip, publish to MQTT,
+   collect training images. Nothing happens without at least one action, or a
+   *Save event* action if you only want it to appear in the Events view.
+8. **Start it.** Jobs → Start a job → the watcher. Watch → Live shows what it is
+   seeing, and Watch → Events fills up as rules fire.
+9. **Point Home Assistant at it.** Settings → MQTT for the broker; entities
+   appear through discovery. Add
+   [purrview_ha](https://github.com/cobryan05/purrview_ha) through HACS for the
+   events browser, media source and Lovelace cards.
+
+Then the loop above: correct what it got wrong, harvest those frames, retrain.
+The first model will not be very good. That is expected, and fixing it is the
+part the app is built for.
+
+### Topologies
+
+`setup.sh` maps your answers onto these. You can also set `COMPOSE_PROFILES` in
+`.env` by hand.
+
+| Profile | Runs | Typical host |
+|---------|------|--------------|
+| `app` | frontend and inference in one container | CPU box, or GPU box for GPU inference |
+| `training` | standalone training node | remote or stronger GPU box |
+| `app,training` | frontend container plus local training container | one GPU box, two containers |
+| `mono` | everything in one container | one GPU box, one container |
+| `dev` / `dev-mono` | source-mounted dev workspaces | a dev box |
+
+A CPU-only NAS or mini-PC runs the `app` profile happily — watching and recording
+do not need a GPU. Training does not belong on that box. If you have a faster
+machine, run `training` there and point `TRAINING_SERVER_HOST` at it.
+
+### Configuration
+
+`setup.sh` generates `.env`, and `.env.example` documents every option. The ones
+worth knowing about:
+
+| Variable | Values | Purpose |
+|----------|--------|---------|
+| `COMPOSE_PROFILES` | see above | which containers run |
+| `APP_BASE` | `slim-runtime` (default) / `cuda-runtime` | CPU or GPU-inference base for the `app` image |
+| `ORT_REQUIREMENTS` | `requirements-cpu.txt` / `requirements-gpu.txt` | onnxruntime flavour; pair it with `APP_BASE` |
+| `COMPOSE_FILE` | add `:docker-compose.gpu.yaml` | give the `app` container a GPU |
+| `STREAM_BUFFER_SIZE` | e.g. `512m` | cap on the in-RAM rolling buffer. Roughly 30 MB per camera per 60 s at 4 Mbps |
+| `TRAINING_SERVER_HOST` | hostname | where the frontend reaches training |
+| `THUMB_CACHE_MAX_MB` | int | thumbnail cache cap. **`0` means unbounded**, not "no cache" |
+| `APPUSER_UID` / `APPUSER_GID` | ints | match the host user so bind-mounted files are owned sensibly |
+
+Retention for recordings, timelapse frames, model versions and training folders
+lives in the UI under Settings rather than in `.env`, because it needs changing
+without a restart.
+
+### Where recordings go
+
+Clips, snapshots and timelapses are written under `/data/recordings/`, inside the
+`./data:/data` bind mount. To keep them on another disk, move that whole mount
+(`- /mnt/nas/purrview:/data` in `docker-compose.override.yml`). Everything beneath
+it belongs to the app, so moving the whole thing is always safe.
+
+> ⚠️ **Do not mount a directory containing anything else at a recordings root.**
+> Space is reclaimed two ways. Deleting a recording's own file follows its database
+> row, so it only ever removes files the app created, which is safe anywhere. The
+> orphan sweep is the dangerous one: it walks the recordings roots and deletes
+> every file no database row points at. This runs **automatically, once an hour**,
+> and there is no switch to turn it off — it exists because rows can vanish without
+> taking their files with them (a deleted watch profile cascades away the events
+> hanging off it; a crashed ffmpeg leaves a `.part` nothing ever referenced), and
+> those files are otherwise permanent.
+>
+> It has three safety rails, and only one of them is about *your* files. Anything a
+> surviving row names is exempt, and anything newer than
+> `RECORDINGS_ORPHAN_GRACE_S` (default 900 s) is exempt — but that grace period is
+> there so the sweep cannot race a clip that is still being written, not to protect
+> unrelated data. The third rail is the one that helps you: the sweep only deletes
+> the file types the app itself writes (`.mp4`, `.jpg`, `.json`, and the `.part`,
+> `.repair`, `.txt` and `.png` scratch left beside them). A document, an archive
+> or a database under a recordings root is left alone.
+>
+> That narrows the damage; it does not prevent it. `.jpg` and `.mp4` are exactly
+> what a photo or video library is made of, so pointing a recordings root at one
+> still empties it of media, an hour later, with no prompt. The only real safety
+> argument is that these directories belong to the app alone.
+
+`RECORDINGS_CLIP_DIR`, `RECORDINGS_SNAPSHOT_DIR` and `RECORDINGS_TIMELAPSE_DIR`
+are deliberately not wired through `.env` for that reason. The safe knob is
+exposed; the dangerous one is not.
+
+### Day-to-day
+
+```bash
+docker compose up -d --build     # start or update the stack from .env
+docker compose ps                # what is running
+docker compose logs -f app       # follow a service
+docker compose down              # stop everything
+./rebuild.sh                     # down, then up --build
+```
+
+Published ports: 7999 (UI), 8005 (training API when running), 8553 (RTSP relay,
+container 8554), 9001 (supervisord dashboard). Host directories bind-mounted in:
+`./data` (database and recordings), `./models`, `./image_datasets`, `./conf`,
+`./logs`.
 
 ## Keeping the model from decaying
 
@@ -474,10 +670,23 @@ app, each watcher, each rule, each camera and each tracked subject, so states an
 counts arrive as real entities with real history: detected now, total events, last
 seen in the laundry room. Set the broker under Settings → MQTT.
 
-**A custom integration** for the things MQTT is the wrong shape for: an events
-browser with its own camera, subject, event-type and date filters, media proxied
-through Home Assistant rather than handed out as raw URLs, and live camera
-entities fed by `publish_mqtt_image` actions.
+**[A custom integration](https://github.com/cobryan05/purrview_ha)** for the
+things MQTT is the wrong shape for: an events browser with its own camera,
+subject, event-type and date filters, media proxied through Home Assistant rather
+than handed out as raw URLs, and live camera entities fed by `publish_mqtt_image`
+actions. It lives in its own repository, `cobryan05/purrview_ha`, and installs
+through HACS as a custom repository:
+
+1. HACS → Integrations → ⋮ → **Custom repositories**.
+2. Add `https://github.com/cobryan05/purrview_ha` with category **Integration**.
+3. Install **PurrView**, then restart Home Assistant.
+4. Settings → Devices & Services → **Add Integration** → *PurrView*.
+
+It needs an **API token** from Settings → Security — not the web-UI login
+password; the two are independent, and an install that sets only a password will
+lock the integration out. Its Lovelace cards (a live view, and an events
+grid/timeline) ship inside the integration, so there is no separate frontend
+plugin to add.
 
 Flagging goes the other way. Home Assistant can mark an event's labels as wrong,
 and it shows up in the Events pane as something to fix.
@@ -514,298 +723,162 @@ entity_id by slugifying the name and collapses any run of separators, so `·` or
 `__` between the slots would vanish and leave `maple_cat_using_litter_box_laundry`
 with no way to tell where the rule ends and the camera begins.
 
-### History and trends
+Each **camera** device also carries a long tail of entities that ship
+**disabled**, because a camera with five rules on it would otherwise be thirty
+entities on its own. Per rule: `last seen`, `last duration`, `peak confidence`,
+and an `event` entity. Per camera: `tracked objects`, `fps`, `frames analysed`
+and the mqtt queue counters. The occupancy sensor, the count and the health
+sensor are always on, because a camera that has stopped working should not be
+reporting that quietly.
 
-Every count above declares `state_class: total_increasing`, so Home Assistant
-keeps **long-term statistics** for it indefinitely: one row per hour, not
-subject to the recorder's purge. Raw state history still purges on the normal
-schedule (10 days by default), but the statistics behind these graphs do not.
+If you want one of the disabled ones, enable it in Home Assistant — Settings →
+Devices & Services → PurrView → the device → the entity → the cog. It starts
+recording history from the moment you enable it, not retroactively.
 
-The sensors hold lifetime totals, so graph the *change* over each bucket rather
-than the value. A Statistics Graph card does that at any grain:
+### Hourly, daily and weekly statistics
+
+This is the part worth setting up properly, because it is the thing the whole
+project was built to answer: *is each cat eating, drinking, and using the litter
+box, and has that changed?*
+
+Every count entity declares `state_class: total_increasing`, which is the single
+most important thing about them. It means Home Assistant keeps **long-term
+statistics**: one row per hour, kept indefinitely, not subject to the recorder's
+purge. Raw state history still disappears on the normal schedule (10 days by
+default), but the hourly statistics behind the graphs below survive for years.
+
+You do not have to turn anything on for that to happen. It is already recording.
+
+#### Graphing it per hour, day, week or month
+
+The counts are lifetime totals — the number only ever goes up — so graph the
+*change* within each bucket rather than the value. The built-in Statistics Graph
+card does exactly that, and the `period` key is the grain:
 
 ```yaml
 type: statistics-graph
 title: Litter box visits per day, by cat
-period: day          # hour | day | week | month
+period: day          # hour | 5minute | day | week | month
 stat_types: [change]
 chart_type: bar
 entities:
   - sensor.maple_cat_using_litter_box
   - sensor.pepper_cat_using_litter_box
+days_to_show: 30
 ```
 
-The entity ids are the breakdown. Fourth-tier ids end in the camera, so one card
-can compare cats on a single camera, one cat across every camera, or litter box
-against water bowl — change `period` for the grain, and add `state` to
-`stat_types` to overlay the lifetime total alongside the bars.
+That one card is most of what you need. Change `period` to `hour` for today's
+rhythm, `week` for "is she going less often than last month", `month` for the
+long view. Add `state` to `stat_types` to overlay the running lifetime total
+behind the bars.
 
-Statistics are stored per hour, so time-of-day patterns are available across the
-whole history, not just the recorder window. `period: hour` on the card above
-plots the series directly. For an hour-of-day aggregate or a heat map — which
-hours a cat actually drinks, rather than when it happened on a given day — Home
-Assistant ships no card; a custom one such as `apexcharts-card` or
-`plotly-graph-card` reads the same hourly statistics and can bucket them.
-
-For a number an automation or a gauge card can read ("more than six visits
-today"), add a `utility_meter` helper over the counter with a `daily`, `weekly`
-or `monthly` cycle. The graphs above need no helper.
-
-Two things to know:
-
-- **A count updates when its event ends, not when it starts.** The tally is keyed
-  on the subject the event was finally decided to be, which is only known once it
-  closes. Bind automations that need to fire *now* to the binary_sensor or the
-  event entity, which both move on the opening edge.
-
-- **Statistics begin when the entity does.** Switching on the per-camera
-  breakdown seeds each new counter with its lifetime total from the database, so
-  totals are correct immediately, but per-period bars start accruing from that
-  point. Earlier per-camera detail stays available in the app's own Events view.
-- **Do not list these under `recorder: exclude:`.** Excluding an entity stops
-  its statistics as well, and that is the part which cannot be rebuilt later.
-
-Renaming a label, rule or camera is safe — entity unique ids come from uuids, so
-statistics survive it. A rename does move the MQTT topic, which is what the
-**Home Assistant name** override beside those checkboxes is for; set it on
-anything you automate against.
-
-## Architecture
-
-One Python codebase (`apps/`) exposed as several FastAPI services, run together by
-supervisord:
-
-| Service | Port | Role |
-|---------|------|------|
-| `image_tagging_server` | 7999 | Web UI. A pure proxy and SPA host, no business logic |
-| `inference_server` | 8001 | ONNX inference (YOLOv5/v7/v8), GPU pinning with auto-unload |
-| `tasks_server` | 8002 | Long-running jobs, including the watchers |
-| `db_server` | 8003 | SQLite store, thumbnails, search |
-| `stream_server` | 8004 | Owns mediamtx: camera fan-out, leases, the buffer, clip extraction |
-| `training_server` | 8005 | Training. Optional, GPU |
-
-Those collapse into two images. **`app`** is the frontend plus inference, built
-slim and CPU-only by default — no CUDA, no torch, inference is pure ONNX at
-runtime — and optionally built on a CUDA base for GPU inference. **`training`** is
-the heavy torch/ultralytics node: optional, always GPU, and standalone, since it
-talks to the frontend only over HTTP and can therefore live on another box.
-
-## Getting started
-
-You need Docker with the Compose v2 plugin. For any GPU deployment you also need
-an NVIDIA GPU, current drivers, and the
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-CPU-only deployments need none of the NVIDIA pieces. An MQTT broker is only
-needed for the Home Assistant side.
-
-```bash
-git clone https://github.com/cobryan05/purrview.git
-cd purrview
-
-./setup.sh                     # answer a few questions, writes .env
-docker compose up -d --build
-```
-
-The UI is at **http://localhost:7999**.
-
-`setup.sh` detects whether there is a GPU and asks what this host should run
-(everything, frontend and inference only, training only, or a dev workspace), then
-writes `.env`. Even on a GPU host it offers CPU inference, which is worth taking
-if you would rather keep the frontend slim or reserve the VRAM for training.
-Compose reads `.env` automatically from then on. Re-run `./setup.sh` to change
-your mind.
-
-### Letting it see your files
-
-The app only sees what Docker hands it. By default that is five directories from
-the repo: `./data` (the database and recordings), `./models`, `./image_datasets`
-(every image the app knows about), `./conf` and `./logs`.
-
-Anything else on the host is invisible to it. A folder of photos you want to
-import, a NAS share of existing camera footage, a directory some other program
-drops images into — none of that can be read until it is bind mounted in. That
-goes in `docker-compose.override.yml`, next to the compose file. It is gitignored
-and compose merges it automatically, so it is the right home for anything
-specific to your machine:
+The entity ids are your breakdown, so the same card shape answers quite different
+questions depending on which ones you list:
 
 ```yaml
-services:
-  mono:                                   # or app / mono-dev / app-dev,
-    volumes:                              # whichever profile you are running
-      - /mnt/nas/camera-archive:/app/image_datasets/archive:ro
-      - /srv/photos:/app/image_datasets/photos:ro
+# One cat, every camera — where is she drinking?
+entities:
+  - sensor.maple_cat_drinking_cam_kitchen
+  - sensor.maple_cat_drinking_cam_laundry
+
+# One camera, every cat — who uses this litter box?
+entities:
+  - sensor.maple_cat_using_litter_box_cam_laundry
+  - sensor.pepper_cat_using_litter_box_cam_laundry
+
+# One cat, every behaviour — the vet visit summary
+entities:
+  - sensor.maple_cat_eating
+  - sensor.maple_cat_drinking
+  - sensor.maple_cat_using_litter_box
 ```
 
-Mount under `/app/image_datasets` and the contents turn up where you would expect
-them: the file browser, the dataset importer, and a collector pointed at a folder.
-`:ro` is worth adding for anything you only ever import *from*.
+#### A number you can automate on
 
-Run `docker compose up -d` again after editing it. A path that is not mounted does
-not exist as far as the app is concerned, which is the usual explanation for a
-folder picker that cannot see your images.
+A graph is for you to look at. For an automation, a gauge, or a badge — "alert me
+if Maple has not used the litter box today", "more than six visits is worth
+noticing" — you want a helper that resets on a cycle. That is a
+**utility meter**, and it takes about thirty seconds in the UI:
 
-### Your first model
+Settings → Devices & Services → **Helpers** → **Create helper** → **Utility
+meter**. Pick the count sensor as the input, set the **meter reset cycle** to
+daily, weekly or monthly, and leave everything else alone.
 
-Once it is up, the path from empty database to something useful is roughly this.
-Expect the labelling to be the slow part; everything else is quick.
+In YAML, one meter per cycle you care about:
 
-1. **Add a source.** Configuration → Sources. An RTSP URL, a ring-mqtt camera, a
-   snapshot URL, an MQTT image topic, or a video file. Use *Test source* to
-   confirm frames arrive before going further.
-2. **Decide on labels.** Configuration → Labels & Tags. A class for each thing
-   you want to tell apart. Labels can be hierarchical, though a flat list of
-   individuals is the better-tested arrangement — see
-   [what to expect](#what-to-expect).
-3. **Collect images.** Configuration → Overview → *Collect images* walks it in
-   three steps. Point it at the source and let it run while the thing you care
-   about actually happens. If you already have a labelled dataset, *Import
-   dataset* takes YOLO, COCO or Pascal VOC instead.
-4. **Label them.** Annotate → Review for the bulk work, Annotate → Editor for
-   individual images. Draw boxes for what is there, and mark what is *not*
-   there — that second half matters more than it sounds like it does, and
-   [Adding a new class](#adding-a-new-class-without-ruining-your-old-data)
-   explains why.
-5. **Train.** Configuration → Training to define a run, then Jobs → Start a job
-   to launch it. A first pass on a few tens of images is enough to see whether
-   the idea works at all.
-6. **Write a watch rule.** Configuration → Watch Rules. Add the source, pick the
-   model, and write the rule as a sentence: subject, relation, target, plus how
-   long it has to hold. Draw a zone on the camera first if the rule needs one.
-7. **Attach actions.** On the same page — record a clip, publish to MQTT,
-   collect training images. Nothing happens without at least one action, or a
-   *Save event* action if you only want it to appear in the Events view.
-8. **Start it.** Jobs → Start a job → the watcher. Watch → Live shows what it is
-   seeing, and Watch → Events fills up as rules fire.
-9. **Point Home Assistant at it.** Settings → MQTT for the broker; entities
-   appear through discovery.
-
-Then the loop above: correct what it got wrong, harvest those frames, retrain.
-The first model will not be very good. That is expected, and fixing it is the
-part the app is built for.
-
-### Topologies
-
-`setup.sh` maps your answers onto these. You can also set `COMPOSE_PROFILES` in
-`.env` by hand.
-
-| Profile | Runs | Typical host |
-|---------|------|--------------|
-| `app` | frontend and inference in one container | CPU box, or GPU box for GPU inference |
-| `training` | standalone training node | remote or stronger GPU box |
-| `app,training` | frontend container plus local training container | one GPU box, two containers |
-| `mono` | everything in one container | one GPU box, one container |
-| `dev` / `dev-mono` | source-mounted dev workspaces | a dev box |
-
-A CPU-only NAS or mini-PC runs the `app` profile happily — watching and recording
-do not need a GPU. Training does not belong on that box. If you have a faster
-machine, run `training` there and point `TRAINING_SERVER_HOST` at it.
-
-### Configuration
-
-`setup.sh` generates `.env`, and `.env.example` documents every option. The ones
-worth knowing about:
-
-| Variable | Values | Purpose |
-|----------|--------|---------|
-| `COMPOSE_PROFILES` | see above | which containers run |
-| `APP_BASE` | `slim-runtime` (default) / `cuda-runtime` | CPU or GPU-inference base for the `app` image |
-| `ORT_REQUIREMENTS` | `requirements-cpu.txt` / `requirements-gpu.txt` | onnxruntime flavour; pair it with `APP_BASE` |
-| `COMPOSE_FILE` | add `:docker-compose.gpu.yaml` | give the `app` container a GPU |
-| `STREAM_BUFFER_SIZE` | e.g. `512m` | cap on the in-RAM rolling buffer. Roughly 30 MB per camera per 60 s at 4 Mbps |
-| `TRAINING_SERVER_HOST` | hostname | where the frontend reaches training |
-| `THUMB_CACHE_MAX_MB` | int | thumbnail cache cap. **`0` means unbounded**, not "no cache" |
-| `APPUSER_UID` / `APPUSER_GID` | ints | match the host user so bind-mounted files are owned sensibly |
-
-Retention for recordings, timelapse frames, model versions and training folders
-lives in the UI under Settings rather than in `.env`, because it needs changing
-without a restart.
-
-### Where recordings go
-
-Clips, snapshots and timelapses are written under `/data/recordings/`, inside the
-`./data:/data` bind mount. To keep them on another disk, move that whole mount
-(`- /mnt/nas/purrview:/data` in `docker-compose.override.yml`). Everything beneath
-it belongs to the app, so moving the whole thing is always safe.
-
-> ⚠️ **Do not mount a directory containing anything else at a recordings root.**
-> Space is reclaimed two ways. Deleting a recording's own file follows its database
-> row, so it only ever removes files the app created, which is safe anywhere. The
-> orphan sweep is the dangerous one: it walks the recordings roots and deletes
-> every file no database row points at. This runs **automatically, once an hour**,
-> and there is no switch to turn it off — it exists because rows can vanish without
-> taking their files with them (a deleted watch profile cascades away the events
-> hanging off it; a crashed ffmpeg leaves a `.part` nothing ever referenced), and
-> those files are otherwise permanent.
->
-> It has three safety rails, and only one of them is about *your* files. Anything a
-> surviving row names is exempt, and anything newer than
-> `RECORDINGS_ORPHAN_GRACE_S` (default 900 s) is exempt — but that grace period is
-> there so the sweep cannot race a clip that is still being written, not to protect
-> unrelated data. The third rail is the one that helps you: the sweep only deletes
-> the file types the app itself writes (`.mp4`, `.jpg`, `.json`, and the `.part`,
-> `.repair`, `.txt` and `.png` scratch left beside them). A document, an archive
-> or a database under a recordings root is left alone.
->
-> That narrows the damage; it does not prevent it. `.jpg` and `.mp4` are exactly
-> what a photo or video library is made of, so pointing a recordings root at one
-> still empties it of media, an hour later, with no prompt. The only real safety
-> argument is that these directories belong to the app alone.
-
-`RECORDINGS_CLIP_DIR`, `RECORDINGS_SNAPSHOT_DIR` and `RECORDINGS_TIMELAPSE_DIR`
-are deliberately not wired through `.env` for that reason. The safe knob is
-exposed; the dangerous one is not.
-
-### Day-to-day
-
-```bash
-docker compose up -d --build     # start or update the stack from .env
-docker compose ps                # what is running
-docker compose logs -f app       # follow a service
-docker compose down              # stop everything
-./rebuild.sh                     # down, then up --build
+```yaml
+utility_meter:
+  maple_litter_daily:
+    source: sensor.maple_cat_using_litter_box
+    name: Maple litter box today
+    cycle: daily
+  maple_litter_weekly:
+    source: sensor.maple_cat_using_litter_box
+    name: Maple litter box this week
+    cycle: weekly
 ```
 
-Published ports: 7999 (UI), 8005 (training API when running), 8553 (RTSP relay,
-container 8554), 9001 (supervisord dashboard). Host directories bind-mounted in:
-`./data` (database and recordings), `./models`, `./image_datasets`, `./conf`,
-`./logs`.
+You get `sensor.maple_litter_box_today`, which reads 0 at midnight and climbs as
+she goes. An automation on it is then the obvious thing:
 
-## Development
-
-Run `./setup.sh` and pick the development workspace. There are two layouts:
-single container (`COMPOSE_PROFILES=dev-mono`, service `mono-dev`) and split
-(`COMPOSE_PROFILES=dev`, services `app-dev` and `training-dev`). The repo is
-bind-mounted at `/project`, so code changes are live.
-
-```bash
-scripts/test.sh                  # unit and integration tests
-scripts/test.sh playwright       # browser tests
-scripts/test.sh both             # both; non-zero if either fails
+```yaml
+automation:
+  - alias: Maple hasn't used the litter box today
+    triggers:
+      - trigger: time
+        at: "21:00:00"
+    conditions:
+      - condition: numeric_state
+        entity_id: sensor.maple_litter_box_today
+        below: 1
+    actions:
+      - action: notify.mobile_app_phone
+        data:
+          message: No litter box visits from Maple today.
 ```
 
-`scripts/test.sh` runs pytest inside the container under `nice` and `ionice`,
-which matters if the same box is also serving the live app.
+The graphs in the previous section need no helper. Only the live number does.
 
-```bash
-# Format. From the repo root inside the container, never from /app
-docker exec -w /project purrview_mono_dev \
-  sh -c 'black apps/ tests/ playwright_tests/ tests_training/ && isort apps/ tests/ playwright_tests/ tests_training/'
+#### Time-of-day patterns
 
-bash generate_openapi_modules.sh              # regenerate and install the API clients
-./generate_alembic_revision.sh "describe it"  # after a DB schema change
-./scripts/install-git-hooks.sh                # pre-commit formatting checks
-```
+Because statistics are stored per hour from the beginning, "which hours does she
+actually drink" is answerable across your whole history rather than the last ten
+days. `period: hour` on the card above plots the series directly.
 
-The dev images bundle the toolchain: formatters, pytest, Playwright and Chromium.
-Machine-specific mounts go in `docker-compose.override.yml` as described
-[above](#letting-it-see-your-files), pointed at `mono-dev` or `app-dev` rather
-than the production service.
+For a genuine hour-of-day aggregate or a heat map — all the 3am buckets added
+together, rather than each 3am in sequence — Home Assistant ships no card for it.
+A custom one such as `apexcharts-card` or `plotly-graph-card` reads the same
+hourly statistics and can bucket them that way.
 
-One build-host note: the slim `app` image is CUDA-free to pull and run, but
-*building* the training or `mono` images compiles the CUDA and torch wheelhouse.
-For a CPU-only target, build elsewhere and pull, rather than building the GPU
-images on the lean box.
+#### Four things that will otherwise catch you out
 
+- **A count updates when an event *ends*, not when it starts.** The tally is keyed
+  on the subject the event was finally decided to be, and that is only known once
+  it closes. So bind anything that must fire *now* to the `binary_sensor` or the
+  `event` entity instead — both move on the opening edge.
+- **Statistics begin when the entity does.** Switching on the per-camera breakdown
+  seeds each new counter with its lifetime total from the database, so the totals
+  are right immediately, but per-period bars only start accruing from that moment.
+  The earlier per-camera detail is still in the app's own Events view.
+- **Never put these under `recorder:` → `exclude:`.** Excluding an entity stops its
+  long-term statistics too, and that is the part that cannot be rebuilt afterwards.
+  If you are trying to save database space, note that the chatty diagnostic
+  sensors are already disabled by default — leave the counts alone.
+- **A count can go down once, legitimately.** `total_increasing` is the right class
+  because it tolerates that: deleting a pile of events in the app lowers the total,
+  and Home Assistant treats the drop as a meter reset rather than a huge negative
+  spike.
+
+Not every PurrView sensor is a counter. `tracked objects`, `last duration` and
+`peak confidence` are `measurement` sensors: their statistics are mean, min and
+max per hour rather than a change, so graph them with `stat_types: [mean, max]`
+and do not put a utility meter on them. All three are among the disabled-by-default
+entities above, so enable them first if you want the history.
+
+Renaming a label, rule or camera is safe: entity unique ids come from uuids, so
+statistics survive it. What a rename *does* move is the MQTT topic, which is what
+the **Home Assistant name** override beside those checkboxes is for. Set it on
+anything you automate against.
 ## What to expect
 
 This is young software. It is in daily use and it does the job it was built for,
@@ -828,6 +901,12 @@ One path is better worn than the other: a flat list of classes, one per
 individual, is what has actually been used in anger. A label hierarchy refined by
 sub-models works and is supported, but it has had much less exposure.
 
+## Development
+
+Contributing, or want to run it from source? The dev workspace, the test
+commands, the service layout and the build-host notes are in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). None of it is needed to run
+PurrView.
 ## License
 
 PurrView — event-driven camera watching, tracking and annotation.
