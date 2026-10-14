@@ -728,14 +728,17 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   .nvr-profile-card--multi-source { grid-column: span 1; }
 }
 
-/* A *fixed* 3-up grid, not auto-fit. auto-fit sized the tiles to how many were on the
-   page, so a seven-camera profile showed four big thumbnails on page one and three
+/* A *fixed* column count, not auto-fit. auto-fit sized the tiles to how many were on
+   the page, so a seven-camera profile showed four big thumbnails on page one and three
    bigger ones on page two — the pictures changed scale as you paged, which is exactly
    what makes a camera wall unreadable. Fixed columns leave a gap on a partial page
-   instead, and every tile is the same size on every page. */
+   instead, and every tile is the same size on every page.
+
+   `--nvr-preview-cols` is set per strip from the configured tiles-per-page, so the
+   count still never varies between pages of one card. The fallback is the default 3. */
 .nvr-preview-strip {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(var(--nvr-preview-cols, 3), 1fr);
   gap: var(--space-2);
   margin-bottom: var(--space-2);
 }

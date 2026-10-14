@@ -633,3 +633,68 @@ class TestPollScheduling:
             lambda: len(calls) > before,
             "no frame was fetched after returning to the NVR tab",
         )
+
+
+def _route_tiles_setting(page: Page, value):
+    """Answer the tiles-per-card setting lookup with *value* (None = never stored)."""
+    page.route(
+        lambda url: url.split("?")[0].rstrip("/").endswith("/api/settings/ui_live_tiles_per_card"),
+        lambda route: (
+            route.fulfill(status=404, content_type="application/json", body="{}")
+            if value is None
+            else route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"value": str(value)}),
+            )
+        ),
+    )
+
+
+class TestTilesPerCardIsConfigurable:
+    """The number of thumbnails one card shows at a time is a user setting.
+
+    The failure this guards against is the one this shape of feature ships with: the
+    value saves, the Settings pane reads it back, and the grid goes on showing the
+    default — because the pane rendered before the lookup resolved, or because nothing
+    ever passed it down. So the assertions are on *rendered tiles*, against a value
+    deliberately different from the default.
+    """
+
+    def test_fewer_tiles_are_shown_when_the_setting_asks_for_fewer(self, page: Page, base_url: str):
+        cams = _cams(6)
+        _route_tiles_setting(page, 4)
+        _mock(page, profiles=[_multi_source_profile()], sources=cams)
+        _open_live_pane(page, base_url)
+
+        # Six cameras, a page of four: the default of nine would show all six.
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(4)
+
+    def test_more_tiles_are_shown_when_the_setting_asks_for_more(self, page: Page, base_url: str):
+        """The direction that matters for a wall of cameras — and the one the default
+        hides, since twelve cameras page at nine whether or not the setting is read."""
+        cams = _cams(12)
+        _route_tiles_setting(page, 12)
+        _mock(page, profiles=[_multi_source_profile()], sources=cams)
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(12)
+
+    def test_the_grid_widens_with_the_count_rather_than_only_growing_taller(self, page: Page, base_url: str):
+        """A raised count must add columns too. Sixteen tiles in three columns is a
+        ribbon six rows deep, which is not what asking for more cameras means."""
+        _route_tiles_setting(page, 16)
+        _mock(page, profiles=[_multi_source_profile()], sources=_cams(16))
+        _open_live_pane(page, base_url)
+
+        strip = page.locator("[data-testid='nvr-preview-strip']").first
+        columns = strip.evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length")
+        assert columns == 4, f"16 tiles should lay out 4 columns, got {columns}"
+
+    def test_an_unset_setting_leaves_the_default_in_place(self, page: Page, base_url: str):
+        """A 404 from the settings store means "never configured", not "zero"."""
+        _route_tiles_setting(page, None)
+        _mock(page, profiles=[_multi_source_profile()], sources=_cams(12))
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(TILES_PER_PAGE)

@@ -30,6 +30,7 @@ import {
   REFRESH_RATES,
   attachCardPreviews,
   levelFromHealthLabel,
+  loadConfiguredMaxTiles,
   stopAllCardPreviews,
 } from '/app-static/js/app/nvr/cardPreview.js';
 
@@ -345,6 +346,11 @@ async function renderLive({ target = 'nvr-live-box' } = {}) {
       showPaneError(container, 'Could not load watch profiles');
       return;
     }
+
+    // Before any card is built: a card made while this is still in flight would use the
+    // default tile count, which reads as the setting having been ignored. Memoised, so
+    // this costs one request for the life of the page.
+    await loadConfiguredMaxTiles();
 
     const running = await fetchRunningWatchers();
     const taskUuids = [...running.values()].map(t => t.taskUuid);

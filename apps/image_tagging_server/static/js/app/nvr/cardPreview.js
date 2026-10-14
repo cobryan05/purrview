@@ -20,6 +20,7 @@
  *    re-renders — a card that has scrolled out of the DOM must not keep a timer alive.
  */
 import { fetchTaskLivePreview } from '/app-static/js/shared/api/tasks.js';
+import { getSetting } from '/app-static/js/shared/api/settings.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import {
   DETECTION_COLOUR,
@@ -55,22 +56,84 @@ export const REFRESH_RATES = [
 export const DEFAULT_REFRESH_MS = 5000;
 
 /**
- * Thumbnails shown per card at once — one page of the profile's sources.
+ * Default thumbnails per card — one page of the profile's sources. Overridable by the
+ * user; see `TILES_PER_CARD_SETTING_KEY`.
  *
- * A profile can watch a dozen cameras; a card showing all twelve would be a wall of
- * postage stamps that answers nothing. Four fits two-up on a narrow card and still shows
- * a multi-source profile as the multi-source thing it is. The rest are a page away
- * rather than merely counted, and which ones land on page one is the user's to decide
- * (see `onReorder`).
+ * A profile can watch a dozen cameras, and a card showing all twelve at this size is a
+ * wall of postage stamps that answers nothing. The rest are a page away rather than
+ * merely counted, and which ones land on page one is the user's to decide (see
+ * `onReorder`). Nine is what fits in a 3×3 before the tiles stop being worth looking at.
  *
- * Nine, in a 3×3 grid whose columns are fixed by CSS. Both halves of that matter: a
- * page of four on a seven-camera profile meant every other page was a *different size*,
- * because the grid was `auto-fit` and three tiles shared the width four had — the
- * pictures changed scale as you paged, which is the one thing a wall of cameras must
- * not do. A fixed 3-up grid makes a partial page leave a gap instead of stretching, and
- * nine is what fits before the tiles stop being worth looking at.
+ * Whatever the count, the column track count is fixed for the life of a card (CSS reads
+ * `--nvr-preview-cols`, set from the setting). That is what stops a partial last page
+ * stretching its tiles: the pictures must not change scale as you page, which is the one
+ * thing a wall of cameras cannot do and stay readable.
  */
 export const MAX_TILES = 9;
+
+/** Bounds on the configured value. One tile is a legitimate wall of one camera; past
+ *  the upper end the tiles are too small to answer the question the strip exists for,
+ *  and the poll rate — one request per tile per interval — stops being free. */
+export const MIN_CONFIGURABLE_TILES = 1;
+export const MAX_CONFIGURABLE_TILES = 36;
+
+export const TILES_PER_CARD_SETTING_KEY = 'ui_live_tiles_per_card';
+
+/** Live value behind `maxTiles`'s default, so a saved setting applies without a reload. */
+let _configuredMaxTiles = MAX_TILES;
+
+/** @returns {number} tiles per page, as configured. */
+export function getConfiguredMaxTiles() {
+  return _configuredMaxTiles;
+}
+
+/**
+ * Columns the fixed grid uses for a page of `n` tiles.
+ *
+ * Square-ish rather than a constant 3, so raising the count adds columns instead of
+ * only rows — a 16-tile page is 4×4, not a 3-wide column five rows deep. What must not
+ * change is the column count *between pages of one card*, which is why this is derived
+ * from the setting and never from how many tiles a given page happens to hold.
+ */
+export function tileColumns(n) {
+  return Math.max(1, Math.ceil(Math.sqrt(Math.max(1, n))));
+}
+
+export function setConfiguredMaxTiles(n) {
+  _configuredMaxTiles = n;
+}
+
+/** @type {?Promise<number>} Memoised so N cards on one render cost one request. */
+let _loadPromise = null;
+
+/**
+ * Resolve the stored tiles-per-page, once.
+ *
+ * Awaited by the Live pane before it builds any card: reading this as a module-load
+ * side effect alone would let the first render use the default and only pick the real
+ * value up on a later tick, which looks exactly like the setting not working.
+ */
+export function loadConfiguredMaxTiles() {
+  if (_loadPromise) return _loadPromise;
+  _loadPromise = (async () => {
+    try {
+      const stored = await getSetting(TILES_PER_CARD_SETTING_KEY);
+      if (stored !== null) {
+        const n = parseInt(stored, 10);
+        if (Number.isFinite(n) && n >= MIN_CONFIGURABLE_TILES && n <= MAX_CONFIGURABLE_TILES) {
+          _configuredMaxTiles = n;
+        }
+      }
+    } catch (_) {
+      // A settings endpoint that is down must not cost you the Live pane.
+    }
+    return _configuredMaxTiles;
+  })();
+  return _loadPromise;
+}
+
+// Warm it at import so the await in the pane is usually already settled.
+loadConfiguredMaxTiles();
 
 /** Lower than the drill-down's: this is a thumbnail scaled down by CSS anyway. */
 const THUMB_QUALITY = 45;
@@ -241,7 +304,7 @@ export function attachCardPreviews(host, {
   taskUuid,
   sources = [],
   refreshMs = DEFAULT_REFRESH_MS,
-  maxTiles = MAX_TILES,
+  maxTiles = _configuredMaxTiles,
   onHealth = null,
   onOpenSource = null,
   onReorder = null,
@@ -265,6 +328,9 @@ export function attachCardPreviews(host, {
   const strip = document.createElement('div');
   strip.className = 'nvr-preview-strip';
   strip.dataset.testid = 'nvr-preview-strip';
+  // The CSS grid reads this; it must track `maxTiles` rather than the page's own tile
+  // count, or a partial last page would widen its tiles instead of leaving a gap.
+  strip.style.setProperty('--nvr-preview-cols', String(tileColumns(maxTiles)));
   host.appendChild(strip);
 
   const nav = document.createElement('div');

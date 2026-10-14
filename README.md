@@ -360,6 +360,8 @@ right now, which rules are open, and how the stream is being ingested. Each
 camera has a switch for whether it is being watched, and turning it off while
 the watcher runs hands back its stream lease rather than just skipping it.
 Changing which sources a watcher *has* is a config edit, and needs a restart.
+A card shows nine cameras at a time by default and pages through the rest;
+Settings → Interface changes that if you would rather see a whole wall at once.
 If the watcher is running a collector, the card is also where you reach that
 collector's statistics and the queue of frames it has kept.
 

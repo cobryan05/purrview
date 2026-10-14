@@ -17,6 +17,14 @@ import { createServiceStatusPanel } from '/app-static/js/ui/serviceStatus.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { promptRestartWatchersUsingMqtt } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import {
+  MAX_CONFIGURABLE_TILES,
+  MAX_TILES,
+  MIN_CONFIGURABLE_TILES,
+  TILES_PER_CARD_SETTING_KEY,
+  getConfiguredMaxTiles,
+  setConfiguredMaxTiles,
+} from '/app-static/js/app/nvr/cardPreview.js';
 import { readTourState, resetTourState, runTour, setNeverShowTours, TOURS } from '/app-static/js/ui/tour/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import {
@@ -1521,8 +1529,62 @@ async function _buildUiSettingsSection() {
   });
 
   body.appendChild(row);
+  body.appendChild(await _buildLiveTilesRow());
   body.appendChild(await _buildToursRow());
   return section;
+}
+
+/**
+ * How many cameras one Live card shows at once.
+ *
+ * Per page, not in total: a watcher with more sources than this pages through them, so
+ * raising it is the difference between paging and not. The grid grows in columns as
+ * well as rows (see `tileColumns`), which is what keeps a large value square rather
+ * than a tall ribbon.
+ */
+async function _buildLiveTilesRow() {
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = String(MIN_CONFIGURABLE_TILES);
+  input.max = String(MAX_CONFIGURABLE_TILES);
+  input.step = '1';
+  input.className = 'settings-server-input settings-server-input--narrow';
+  input.dataset.testid = 'settings-live-tiles';
+  input.value = String(getConfiguredMaxTiles());
+
+  const unit = document.createElement('span');
+  unit.className = 'settings-input-unit';
+  unit.textContent = 'cameras';
+
+  const saveBtn = _rowButton('Save');
+
+  const { row, setStatus } = _buildRow({
+    label: 'Cameras per Live card',
+    description:
+      `How many camera thumbnails one watcher's card shows at a time; the rest are a `
+      + `page away. Each visible thumbnail is polled on the card's refresh interval, so `
+      + `a high number on many cards is more work for the server. Default: ${MAX_TILES}.`,
+    controls: [input, unit, saveBtn],
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const val = parseInt(input.value, 10);
+    if (!Number.isFinite(val) || val < MIN_CONFIGURABLE_TILES || val > MAX_CONFIGURABLE_TILES) {
+      setStatus(`Value must be between ${MIN_CONFIGURABLE_TILES} and ${MAX_CONFIGURABLE_TILES}.`, 'error');
+      return;
+    }
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        await setSetting(TILES_PER_CARD_SETTING_KEY, String(val));
+        setConfiguredMaxTiles(val);
+        setStatus(`Saved: ${val}`, 'info');
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
+  });
+
+  return row;
 }
 
 /**
