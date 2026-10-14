@@ -213,7 +213,9 @@ AUTH_COOKIE_NAME = "pv_auth"
 
 #: `/login` itself must stay reachable while logged out, or a wrong token becomes a
 #: permanent lockout with no way to even see the form again.
-_AUTH_EXEMPT_PATHS = frozenset({"/login"})
+# The two brand images /login renders are exempt so they load before a cookie exists.
+# They are static artwork, and /login already names the app in its title.
+_AUTH_EXEMPT_PATHS = frozenset({"/login", "/app-static/img/favicon.png", "/app-static/img/wordmark.png"})
 
 
 class AuthGate:

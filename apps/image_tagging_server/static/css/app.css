@@ -57,6 +57,27 @@ input[type='radio'] {
   transition: transform 0.18s ease;
 }
 
+/* Brand mark at the head of the tab strip. flex: 0 0 auto so it keeps its own
+   width and the buttons go on splitting what is left; purely decorative, so it
+   is hidden from assistive tech and is not a pointer target. Dropped on narrow
+   viewports, where the tab labels need every pixel. */
+.main-tab-mark {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 34px;
+  height: 34px;
+  margin-right: var(--space-3);
+  opacity: 0.95;
+  pointer-events: none;
+  user-select: none;
+}
+
+@media (max-width: 560px) {
+  .main-tab-mark {
+    display: none;
+  }
+}
+
 /* ===== Auto-hiding chrome =====
    Together the tab strip and the Review toolbar block cost a large slice of the
    viewport, so they slide away while scrolling down and come back the moment

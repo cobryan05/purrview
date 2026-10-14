@@ -116,6 +116,20 @@ class TestAuthOn:
         resp = await http_client.get("/login")
         assert resp.status_code == 200
 
+    @pytest.mark.parametrize("path", ["/app-static/img/favicon.png", "/app-static/img/wordmark.png"])
+    async def test_the_brand_images_stay_reachable_so_the_login_page_can_show_them(self, http_client, manager, path):
+        """login.html links both, and the login page renders before any cookie exists."""
+        _enable(manager)
+        resp = await http_client.get(path, follow_redirects=False)
+        assert resp.status_code == 200
+
+    @pytest.mark.parametrize("path", ["/app-static/css/app.css", "/app-static/img/icon.png"])
+    async def test_the_brand_exemption_does_not_open_the_rest_of_app_static(self, http_client, manager, path):
+        """The exemption is two exact paths, not an /app-static or /app-static/img prefix."""
+        _enable(manager)
+        resp = await http_client.get(path, follow_redirects=False)
+        assert resp.status_code != 200
+
     async def test_toggling_require_auth_off_reopens_the_app_without_a_token(self, http_client, manager):
         """require_auth is a Manager property, not a one-time snapshot — flipping it
         (e.g. after a Settings save) must take effect on the very next request, not
