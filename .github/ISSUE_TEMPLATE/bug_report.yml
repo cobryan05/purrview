@@ -1,0 +1,70 @@
+name: Bug report
+description: Something does not work the way the README says it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Detection accuracy is not a bug — a stock model does not know your cats, and
+        telling individuals apart needs a model you trained. See "What to expect" in
+        the README before filing. A model that was *better* before a change is a bug.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - Watching / events / clips
+        - Annotation (Editor, Review, filters)
+        - Training or a job
+        - Sources and streams (RTSP, ring-mqtt, MQTT images)
+        - MQTT entities in Home Assistant
+        - Install, Docker or setup.sh
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit you are running — `git rev-parse --short HEAD`.
+    validations:
+      required: true
+
+  - type: input
+    id: profile
+    attributes:
+      label: COMPOSE_PROFILES
+      description: From your .env — app, mono, app,training, dev…
+      placeholder: mono
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Inference hardware
+      options:
+        - CPU (APP_BASE=slim-runtime)
+        - GPU (APP_BASE=cuda-runtime)
+        - Not relevant to this bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        The relevant part of logs/<service>.log — the service is named in the README's
+        table. Please redact camera URLs, tokens and anything else you would not post.
+      render: shell

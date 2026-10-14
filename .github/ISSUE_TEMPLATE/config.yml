@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Home Assistant integration
+    url: https://github.com/cobryan05/purrview_ha/issues
+    about: Cards, the events browser, the media source or the config flow live in the purrview_ha repo. MQTT entities are this repo.
+  - name: Question or idea
+    url: https://github.com/cobryan05/purrview/discussions
+    about: Anything that is not a defect — setup help, model training advice, or what to try next.
