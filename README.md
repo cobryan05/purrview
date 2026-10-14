@@ -881,16 +881,46 @@ the **Home Assistant name** override beside those checkboxes is for. Set it on
 anything you automate against.
 ## What to expect
 
-This is young software. It is in daily use and it does the job it was built for,
-but it is new, it is changing quickly, and it has the rough edges of something
-written to solve one house's problem and then generalised.
-
-The most important thing to know going in: **you will need to train your own
-model.** A stock detector knows what a cat is. It does not know which cat, and
+For this to be useful to you, **you will need to train your own model.**
+A stock detector knows what a cat is. It does not know which cat, and
 telling two similar animals apart is the entire point. Basic recognition needs
 surprisingly few images, in the tens. Telling four similar cats apart needs a lot
 more, and getting there is what the collector, the review grid and the event
 correction dialog exist to make bearable.
+
+**Training wants a GPU, and it wants it exclusively.** A detection run defaults to
+YOLO at 640 px with a batch of 16 for up to 50 epochs. Three settings decide how
+much VRAM that takes: the architecture, the image size, and the batch size. If a
+run dies out of memory, halve the batch first — it is the cheapest of the three to
+give up, and the one with the least effect on the result. Dropping the image size
+is the next lever, and it costs you small objects. Watching a job's reported memory
+on your own hardware will tell you more than any figure here, because the answer
+changes with every one of those three.
+
+Two things are worth knowing before you put training on the same box as the
+cameras. Inference holds VRAM of its own while a watcher is running, so the two
+compete, and a training run that fits on an idle card may not fit on a busy one.
+And VRAM is only fully returned when the job's process exits, so back-to-back runs
+on a tight card behave differently from the first run after a restart.
+
+**This is the main reason to run training somewhere else.** The training server
+talks to the rest of the app over HTTP and nothing else, so it can sit on whatever
+machine has the better card — the NVR box can train, but a desktop with a real GPU
+will do it in a fraction of the time. Point `TRAINING_SERVER_HOST` at it, run the
+`training` profile there, and the rest of the stack neither knows nor cares.
+
+Shipping the images to it is less painful than it sounds. The training server keeps
+a persistent cache keyed by image UUID, and images are immutable, so each job sends
+only what that machine has not already seen. The first run after pointing at a new
+box transfers the dataset; the ones after it transfer the handful of frames you
+labelled since. `TRAINING_CACHE_MAX_MB` and `TRAINING_CACHE_MAX_AGE_DAYS` bound that
+cache, and images needed by a queued or running job are never evicted out from
+under it.
+
+If a job silently lands on the CPU — a driver that did not come back, a container
+that lost its GPU — the app raises a standing notice rather than letting you
+discover it from the clock. That warning is on unless `TRAINING_EXPECTS_GPU=0`,
+including on deployments that have never set the variable.
 
 Accuracy on individuals is good but not perfect. Expect false detections, and
 expect the occasional confident wrong answer. Because every event keeps its video
@@ -921,6 +951,3 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the [GNU Affero General Public License](LICENSE) for
 more details.
-
-AGPL-3.0 is not a free choice here: PurrView imports `ultralytics`, which is
-itself AGPL-3.0, so a permissive licence is not available to this project.
