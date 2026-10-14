@@ -474,6 +474,70 @@ class TestTheSizeCap:
         assert result == {"events": 0, "recordings": 0, "bytes": 0}
         assert theirs.exists()
 
+    async def test_transient_spool_over_the_cap_evicts_nothing(self, manager, db_client, recording_roots, profile_uuid):
+        """The watcher's drained chunks are counted but must not be evicted against.
+
+        Nothing this sweep deletes can free them — the watcher drops them when the event
+        closes — so shedding events to offset them destroys durable history to chase a
+        buffer that frees itself. And when the spool alone exceeds the cap, shedding
+        every event still never gets under it.
+        """
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+
+        drain = clips / ".drain" / "cam-1"
+        drain.mkdir(parents=True)
+        chunk = drain / "20261014-025335-371014.mp4"
+        chunk.write_bytes(b"x" * (3 * 1024 * 1024))
+
+        clip = clips / "keeper.mp4"
+        clip.write_bytes(b"x" * 1024)
+        event = await db_client.create_watch_event(
+            WatchEvent(profile_uuid=profile_uuid, started_at=_ago(30), rule_name="oldest")
+        )
+        await db_client.create_recording(
+            Recording(file_path=str(clip), started_at=_ago(30), event_uuid=event.uuid, status="complete")
+        )
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result == {"events": 0, "recordings": 0, "bytes": 0}
+        assert await db_client.get_watch_event(event.uuid) is not None
+        assert chunk.exists()
+
+    async def test_an_event_whose_files_are_already_gone_is_not_deleted(
+        self, manager, db_client, recording_roots, profile_uuid
+    ):
+        """Deleting it cannot move the total, so it would be pure data loss.
+
+        It is also the oldest, so it is first in line every pass — without the guard it
+        goes while the bytes actually over the cap stay exactly where they are.
+        """
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+
+        gone = await db_client.create_watch_event(
+            WatchEvent(
+                profile_uuid=profile_uuid,
+                started_at=_ago(60),
+                rule_name="files already gone",
+                snapshot_path=str(clips / "removed-long-ago.jpg"),
+            )
+        )
+        fat_clip = clips / "fat.mp4"
+        fat_clip.write_bytes(b"x" * (2 * 1024 * 1024))
+        fat = await db_client.create_watch_event(
+            WatchEvent(profile_uuid=profile_uuid, started_at=_ago(30), rule_name="owns the bytes")
+        )
+        await db_client.create_recording(
+            Recording(file_path=str(fat_clip), started_at=_ago(30), event_uuid=fat.uuid, status="complete")
+        )
+
+        await manager.enforce_recording_size_cap()
+
+        assert await db_client.get_watch_event(gone.uuid) is not None
+        assert await db_client.get_watch_event(fat.uuid) is None
+
 
 class TestTheWholePass:
     async def test_all_three_phases_report_together(self, manager, db_client, tmp_path, recording_roots, profile_uuid):

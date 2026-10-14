@@ -5214,21 +5214,53 @@ class Manager:
         initial_total = sum(size for _p, size, _m in entries)
         if initial_total <= max_bytes:
             return {"events": 0, "recordings": 0, "bytes": 0}
+
+        # Transient spool is counted above and must not be evicted against. Nothing this
+        # sweep can delete will free it: the watcher owns those chunks and drops them
+        # when the event closes, so eviction here would shed clips and events to offset
+        # bytes that are about to free themselves — and if the spool outgrows the cap on
+        # its own, that sheds *everything* and still never gets under.
+        transient = sum(size for path, size, _m in entries if self._in_watcher_scratch(path))
+        if initial_total - transient <= max_bytes:
+            logger.warning(
+                "Recordings occupy %.1f MB, over the %s MB cap, but %.1f MB of that is "
+                "transient spool held by open events — evicting nothing. Durable "
+                "recordings are %.1f MB, under the cap.",
+                initial_total / 1048576,
+                max_mb,
+                transient / 1048576,
+                (initial_total - transient) / 1048576,
+            )
+            return {"events": 0, "recordings": 0, "bytes": 0}
+
         size_by_path = {os.path.realpath(path): size for path, size, _m in entries}
         total = initial_total
 
         events = 0
         recordings = 0
+        # Events that would free nothing. Held across passes so they neither get deleted
+        # nor consume the batch budget — the query pages oldest-first with no offset, so
+        # a run of byte-free events at the head would otherwise refill the same batch
+        # every pass and wedge the sweep short of the events that do own bytes.
+        skipped: Set[str] = set()
         for _ in range(SIZE_EVICTION_MAX_PASSES):
             if total <= max_bytes:
                 break
             deleted_this_pass = 0
             now = datetime.now(timezone.utc)
 
-            for uuid in await self._db_client.watch_event_uuids_before(now, limit=SIZE_EVICTION_BATCH):
+            batch = await self._db_client.watch_event_uuids_before(now, limit=SIZE_EVICTION_BATCH + len(skipped))
+            for uuid in batch:
                 if total <= max_bytes:
                     break
+                if uuid in skipped:
+                    continue
                 freed = await self._event_disk_usage(uuid, size_by_path)
+                if freed <= 0:
+                    # Deleting it cannot move the total by a byte, so it would be pure
+                    # data loss for no reclaim.
+                    skipped.add(uuid)
+                    continue
                 try:
                     if await self.delete_watch_event(uuid):
                         events += 1

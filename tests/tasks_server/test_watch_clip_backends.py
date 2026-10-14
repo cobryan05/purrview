@@ -16,6 +16,7 @@ allocate none, which is what most of these tests are guarding.
 
 import base64
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -468,10 +469,17 @@ class _RecordingRelay:
         return {"path": str(dest), "sizeBytes": 3}
 
 
-def _clip_row(preroll_s=0, sources=None):
-    """An in-scope clip action row — the thing that makes drained chunks worth keeping."""
+def _clip_row(preroll_s=0, sources=None, rules=None):
+    """An in-scope clip action row — the thing that makes drained chunks worth keeping.
+
+    `rules=None` leaves the rule scope empty, which means every rule.
+    """
     return (
-        SimpleNamespace(kind="record_clip", source_uuids_json=sources if sources is not None else []),
+        SimpleNamespace(
+            kind="record_clip",
+            source_uuids_json=sources if sources is not None else [],
+            rule_uuids_json=rules,
+        ),
         RecordClipAction(preroll_s=preroll_s),
     )
 
@@ -566,6 +574,66 @@ class TestClipDrainIsDriven:
         await task._service_drain(pipeline)
 
         assert task._clip_drains == {}
+
+    async def test_a_clip_action_scoped_to_another_rule_drains_nothing(self, tmp_path):
+        """An action carries a rule scope as well as a source scope. This event belongs
+        to a rule no clip action names — a timelapse rule, say — so nothing will ever
+        read its chunks, and those are the events that run for hours."""
+        pipeline = _open_event_pipeline(buffered=True)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path, actions=[_clip_row(rules=["some-other-rule"])])
+
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains == {}
+
+    async def test_a_clip_action_scoped_to_the_open_rule_still_drains(self, tmp_path):
+        """The counterpart: rule scoping must gate the drain, not disable it."""
+        pipeline = _open_event_pipeline(buffered=True)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path, actions=[_clip_row(rules=["r1"])])
+
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains["src-1"].active is True
+
+    async def test_draining_stops_once_no_open_event_can_read_another_chunk(self, tmp_path):
+        """A clip spans `max_length_s` from its pre-roll however long the event runs, so
+        past that instant every further chunk is written, held for the life of the event
+        and deleted unread. An event with no end of its own must not cost unbounded disk."""
+        pipeline = _open_event_pipeline(buffered=True, started_at=time.monotonic() - 10_000)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path)
+        drain = task._drain_for(pipeline)
+        task._clip_drains["src-1"] = drain
+        calls = []
+
+        async def _record(now):
+            calls.append(now)
+
+        drain.drain = _record
+
+        await task._service_drain(pipeline)
+
+        assert calls == []
+
+    async def test_an_event_inside_the_clip_window_still_drains(self, tmp_path):
+        """The bound must not break the long-event case the drain exists for."""
+        pipeline = _open_event_pipeline(buffered=True, started_at=time.monotonic() - 60)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path)
+        drain = task._drain_for(pipeline)
+        task._clip_drains["src-1"] = drain
+        calls = []
+
+        async def _record(now):
+            calls.append(now)
+
+        drain.drain = _record
+
+        await task._service_drain(pipeline)
+
+        assert len(calls) == 1
 
     async def test_the_event_closing_discards_the_chunks(self, tmp_path):
         """Chunks are full-rate video; a drain that outlived its event is a disk leak."""

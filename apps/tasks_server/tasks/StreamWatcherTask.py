@@ -1214,10 +1214,10 @@ class StreamWatcherTask(Task):
         Called every pass for every source. The common case — no event open — costs one
         dict lookup and returns.
         """
-        starts = self._open_event_starts(pipeline)
+        starts = self._clip_chunk_event_starts(pipeline)
         drain = self._clip_drains.get(pipeline.source_uuid)
 
-        if not starts or not self._wants_clip_chunks(pipeline.source_uuid):
+        if not starts:
             if drain is not None:
                 drain.note_idle()
             return
@@ -1230,25 +1230,67 @@ class StreamWatcherTask(Task):
         earliest = datetime.fromtimestamp(min(starts) + self._wallclock_offset, tz=timezone.utc)
         drain.note_open(earliest)
 
-        now_wall = datetime.fromtimestamp(time.monotonic() + self._wallclock_offset, tz=timezone.utc)
+        now_epoch = time.monotonic() + self._wallclock_offset
+        # A clip spans `max_length_s` from its pre-roll however long the event runs, so
+        # past that instant no open event can read another chunk: draining on would spool
+        # full-rate video that is written, held for the life of the event and deleted
+        # unread. The deadline `_service_ring_hold` holds the frame ring to, for the same
+        # reason — an event with no end of its own (a static false positive, a dwell) must
+        # not cost unbounded disk.
+        max_length = self._max_clip_length_for(pipeline.source_uuid)
+        if max_length > 0:
+            deadline = (
+                max(starts)
+                + self._wallclock_offset
+                - self._max_preroll_for(pipeline.source_uuid)
+                + max_length
+                + SPOOL_DEADLINE_SLACK_S
+            )
+            if now_epoch >= deadline:
+                return
+
+        now_wall = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
         if drain.due(now_wall):
             await drain.drain(now_wall)
 
-    def _wants_clip_chunks(self, source_uuid: Optional[str]) -> bool:
-        """Whether anything on this source would read drained chunks.
+    def _clip_chunk_event_starts(self, pipeline: WatchPipeline) -> List[float]:
+        """Monotonic starts of the open events a clip could actually be cut from.
 
-        `context.clip_chunks` is consumed by the clip action alone. A timelapse builds
-        from sampled frames and writes its own sidecar, so a source whose only rule is a
-        timelapse spools full-rate video that is written, held for the life of the
-        event, and deleted unread — and timelapse events are the long ones.
+        Only these may arm the drain, and only these may set its window. An event whose
+        rule no clip action names is not entitled to chunks, so draining for it spools
+        full-rate video that is written, held for the life of the event and deleted
+        unread. A timelapse rule is the case that bites: `context.clip_chunks` is read by
+        the clip action alone, and timelapse events are the long ones — so one static
+        false positive becomes unbounded disk.
 
-        A manual recording counts even though it is not the engine's event, for the same
-        reason it does in `_max_preroll_for`: it cuts a real clip and needs the chunks.
+        A manual recording counts even though it is nobody's rule, for the same reason it
+        does in `_open_event_starts`: it cuts a real clip and needs the chunks.
         """
-        if (getattr(self, "_manual_open", None) or {}).get(source_uuid or ""):
-            return True
+        starts = [
+            event["startedAt"]
+            for event in pipeline.engine.open_events()
+            if event.get("startedAt") is not None
+            and self._wants_clip_chunks(pipeline.source_uuid, event.get("ruleUuid"))
+        ]
+        open_recordings: Dict[str, ManualRecording] = getattr(self, "_manual_open", None) or {}
+        recording = open_recordings.get(pipeline.source_uuid or "")
+        if recording is not None:
+            starts.append(recording.started_at)
+        return starts
+
+    def _wants_clip_chunks(self, source_uuid: Optional[str], rule_uuid: Optional[str] = None) -> bool:
+        """Whether a clip action here would read chunks drained for `rule_uuid`.
+
+        Scoped on both axes because an action carries both. Matching the source alone let
+        every event on a camera that has any clip action arm the drain, whatever rule
+        opened it and whatever that rule's own actions were.
+
+        `rule_uuid=None` asks the looser question — does anything here cut clips at all.
+        """
         return any(
-            row.kind == CLIP_ACTION_KIND and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
+            row.kind == CLIP_ACTION_KIND
+            and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
+            and (rule_uuid is None or in_scope(getattr(row, "rule_uuids_json", None), rule_uuid))
             for row, _action in self._actions
         )
 
