@@ -374,7 +374,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 #  Dev overlay on the `app` image. Inherits whatever base `app` was built on
 #  (slim for CPU dev, cuda for GPU dev).
 # =========================================================
-FROM app AS dev
+FROM app AS dev-base
 
 USER root
 
@@ -395,17 +395,66 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     playwright install-deps chromium
 
+USER appuser
+
+# Browser engine for Playwright. Installed on the shared base because CI needs it
+# as much as a workstation does.
+RUN playwright install chromium
+
+
+# =========================================================
+#  Dev Layer (workstation)
+#  dev-base plus the interactive CLI tooling. Split out so the CI image can take
+#  the test toolchain without the several gigabytes of editor/agent tooling that
+#  only a human workspace uses — a GitHub-hosted runner ships 14 GB of disk.
+# =========================================================
+FROM dev-base AS dev
+
 # Pull in prebuilt CLI tooling (claude, nvm/node, uv, serena) from the shared devtools stage
 COPY --from=devtools --chown=appuser:appuser /home/appuser/.local /home/appuser/.local
 COPY --from=devtools --chown=appuser:appuser /home/appuser/.nvm /home/appuser/.nvm
 
-USER appuser
-
 ENV NVM_DIR="/home/appuser/.nvm"
 ENV PATH="/home/appuser/.local/bin:$PATH"
 
-# Browser engine for Playwright (app-dev-specific, not part of the shared toolchain)
-RUN playwright install chromium
+
+# =========================================================
+#  CI Layer (GitHub Actions, CPU-only)
+#  Both suites in one image, with no CUDA anywhere: ten files under tests/ import
+#  torch or ultralytics, so a plain `dev` image cannot collect them, and the CUDA
+#  wheelhouse that `combined-dev` uses is far too large for a hosted runner.
+#
+#  requirements-training.txt stays the single source of what the training stack
+#  is. The two substitutions are mechanical, so a package added there reaches CI
+#  without a second list to remember:
+#    * torch/torchvision come from PyTorch's CPU index at the pins that file sets.
+#    * onnxruntime-gpu is dropped; the app layer already installed the CPU build,
+#      and both provide the same `onnxruntime` module.
+# =========================================================
+FROM dev-base AS ci
+
+USER root
+
+COPY requirements-training.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    grep -E '^(torch|torchvision)==' requirements-training.txt > /tmp/torch-pins.txt \
+  && pip install --index-url https://download.pytorch.org/whl/cpu -r /tmp/torch-pins.txt \
+  && grep -vE '^(torch==|torchvision==|onnxruntime-gpu)' requirements-training.txt > /tmp/train-cpu.txt \
+  && pip install -r /tmp/train-cpu.txt \
+  && rm -f /tmp/torch-pins.txt /tmp/train-cpu.txt
+
+# ultralytics writes a settings file on first import and warns, every run, when it
+# cannot reach ~/.config. Naming a writable directory is cheaper than making one.
+ENV YOLO_CONFIG_DIR=/tmp/Ultralytics
+
+# compose grants these to every runtime profile as bind mounts, so the suite has
+# never had to ask for them. A `docker run` has no compose file, and the thumbnail
+# cache writes under /data at import-time defaults — baking them in keeps the CI
+# invocation to one mount (the checkout) instead of three.
+RUN mkdir -p /data /app/image_datasets \
+  && chown appuser:appuser /data /app/image_datasets
+
+USER appuser
 
 
 # =========================================================

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The exact pins from requirements-dev.txt, read from the file rather than
+      # repeated here: black and isort disagreeing with the container is the whole
+      # failure mode this job exists to catch.
+      - name: Install the pinned formatters
+        run: |
+          pip install \
+            "$(grep -E '^black==' requirements-dev.txt)" \
+            "$(grep -E '^isort==' requirements-dev.txt)"
+
+      - run: black --check apps/ tests/ playwright_tests/ tests_training/
+      - run: isort --check-only apps/ tests/ playwright_tests/ tests_training/
+
+  tests:
+    name: pytest tests/
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite runs against a bind mount, as it does on a workstation, so the
+      # image's appuser has to be the runner's uid or every write into the
+      # checkout fails. APPUSER_UID exists for exactly this.
+      - name: Match the image user to the runner
+        run: |
+          echo "APPUSER_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "APPUSER_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the CI image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ci
+          load: true
+          tags: purrview-ci:${{ github.sha }}
+          build-args: |
+            APPUSER_UID=${{ env.APPUSER_UID }}
+            APPUSER_GID=${{ env.APPUSER_GID }}
+          # One shared scope across both workflows: the image is ~4 GB and the
+          # repo's Actions cache is 10 GB, so two independent entries would evict
+          # each other and neither would ever be warm.
+          cache-from: type=gha,scope=ci-image
+          cache-to: type=gha,mode=max,scope=ci-image
+
+      # Not scripts/test.sh: that pins the run to cores 0-5,8-13 and renices it,
+      # which is right on the box serving the live app and wrong on a 4-vCPU
+      # runner that has nothing else to do and no core 8.
+      - name: Run the suite
+        run: |
+          docker run --rm \
+            -v "$PWD:/project" -w /project \
+            purrview-ci:${{ github.sha }} \
+            pytest tests/ -n 4

@@ -1,0 +1,57 @@
+name: Playwright
+
+# Not on pull_request: the browser suite is an order of magnitude slower than
+# tests/ and would queue behind itself on a busy day. Nightly catches the
+# regressions; the dispatch button covers a change that warrants it sooner.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: playwright-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright:
+    name: playwright_tests/
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Match the image user to the runner
+        run: |
+          echo "APPUSER_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "APPUSER_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the CI image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ci
+          load: true
+          tags: purrview-ci:${{ github.sha }}
+          build-args: |
+            APPUSER_UID=${{ env.APPUSER_UID }}
+            APPUSER_GID=${{ env.APPUSER_GID }}
+          # One shared scope across both workflows: the image is ~4 GB and the
+          # repo's Actions cache is 10 GB, so two independent entries would evict
+          # each other and neither would ever be warm.
+          cache-from: type=gha,scope=ci-image
+          cache-to: type=gha,mode=max,scope=ci-image
+
+      # The suite starts its own uvicorn on an ephemeral port, so there is no
+      # compose stack to bring up — only a browser, which the image already has.
+      # --shm-size matches the compose services' 2gb. Chromium puts its renderer
+      # shared memory in /dev/shm, and a plain `docker run` grants 64 MB, which
+      # several parallel browsers exhaust — it surfaces as tab crashes, not as an
+      # out-of-space error.
+      - name: Run the suite
+        run: |
+          docker run --rm --shm-size=2g \
+            -v "$PWD:/project" -w /project \
+            purrview-ci:${{ github.sha }} \
+            pytest playwright_tests/ -p no:asyncio -n 4
