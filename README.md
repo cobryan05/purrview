@@ -77,7 +77,8 @@ The short version of what it gives you:
 - **Training data that collects itself.** While the cameras are watching, a
   collector keeps a capped, deduplicated queue of frames that are actually worth
   labelling — the ones the model was unsure about, or where it nearly confused
-  one label for another.
+  one label for another. Because it is capped, there is always something useful
+  waiting and never a backlog you have to face.
 - **Training wherever it is fastest.** The training server can run on a different
   machine from the one watching the cameras. An NVR box can train; a gaming PC
   will do it faster.
@@ -628,10 +629,15 @@ continuously in the background:
   the whole problem in a multi-cat house.
 - **Perceptual-hash dedup** on the whole image and on each box, so hours of a cat
   asleep in the same spot do not become hours of near-identical frames.
-- A **capped review queue**, so it cannot quietly fill the disk. Over the cap it
-  evicts the oldest, the least visually unique, or whatever keeps the labels
-  balanced — but frames the model was confused about, and frames nobody has looked
-  at yet, are given up last, because those are the scarcest thing in the queue.
+- A **capped review queue**, which is the part that makes this sustainable. A
+  collector left running for a month does not hand you forty thousand images and
+  a guilty conscience. The queue holds a fixed number of the most useful frames it
+  has seen, so there is always something worth labelling in it and never more than
+  you agreed to. Over the cap it evicts the oldest, the least visually unique, or
+  whatever keeps the labels balanced — but frames the model was confused about, and
+  frames nobody has looked at yet, are given up last, because those are the
+  scarcest thing in there. Label for twenty minutes whenever you feel like it, and
+  what you find will still be the frames most worth your time.
 
 > ⚠️ Eviction deletes images. The cap is a real ceiling on how much unreviewed
 > data a collector will keep, not a pause. Review what you want to keep, or raise
