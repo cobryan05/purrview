@@ -11,13 +11,12 @@ truck reaching the mailbox. Which bowl a specific cat eats from. If a model can
 detect it, you can write a rule about it meeting something else and have Home
 Assistant hear about it.
 
-Getting a model that can detect *your* things is the other half, and it is a
-first-class part of the app rather than homework. Collecting training images,
-annotating them, and training and deploying a detection model all happen here —
-the cameras gather their own candidate frames while they watch, labelling them is
-quick enough to keep up with, and a trained model goes straight back to the
-watchers. That loop — watch, collect, label, train, deploy — is what PurrView is
-really about.
+Getting a model that can detect *your* things is the other half, and the app is
+built to do that part too. Collecting training images, annotating them, and
+training and deploying a detection model all happen here — the cameras gather
+their own candidate frames while they watch, labelling them is quick enough to
+keep up with, and a trained model goes straight back to the watchers. That loop
+— watch, collect, label, train, deploy — is what PurrView is really about.
 
 It runs on your own hardware, in Docker, and talks to nothing you do not point it
 at. It is the successor to
@@ -278,7 +277,7 @@ container 8554), 9001 (supervisord dashboard). Host directories bind-mounted in:
 This is the part that matters, and the rest of the app is arranged around it.
 
 1. A **watcher** runs a model — or an ordered stack of them — over a camera
-   stream and tracks what it finds.
+   stream and tracks what it finds while a **collector** saves images for annotation.
 2. A **rule** turns tracked objects into an **event** ("cat overlaps the litter
    box for at least 2 seconds"), which cuts a clip out of the rolling buffer.
 3. The clip replays with per-frame boxes drawn on it, so you can see what the
@@ -384,7 +383,8 @@ where most annotating actually happens.
 **Review** is. It is the bulk surface, and the one that makes a large database
 usable. Filter by label, tag, confidence range, source or filename pattern, and
 by whether a label is present, confirmed absent, or has never been looked at —
-that last one is how you find the gaps a new class left behind. Find visually
+that last one is how you find the gaps a new class left behind. The filters can
+also be prefilled by several other flows, such as using a collector. Find visually
 similar images by perceptual hash, or deliberately dissimilar ones. Run a model,
 a classifier or a filter chain over the results. Promote a search into a dataset.
 
@@ -540,7 +540,9 @@ it.
 
 **Model Shapes** are the other axis: which model owns which label, hierarchically,
 so a coarse detector can find "cat" and a second-level model can then say which
-cat. It works, but it is the less travelled path. In practice a single flat list
+cat. That is, you could have a top-level YOLO model pass a crop of a cat detection
+to a cat-specific classifier, rather than having a single YOLO model pick the cat.
+It works, but it is the less travelled path. In practice a single flat list
 of classes — one per individual cat, rather than a `Cat` parent refined by a
 sub-model — trained better and was simpler to maintain, so that is the arrangement
 actually in use. The nested case is correspondingly less well tested.
@@ -661,6 +663,7 @@ too close to call, and the ones where the detector missed something it should ha
 found. Those are different problems with different fixes, and sorting them is most
 of the work of acting on them.
 
+To run a collector on a watcher you add it as an action that triggers on every frame.
 A collector running as a watcher action stays reachable while it works. The
 **Collector…** button on the watcher's card in Watch → Live opens its tuning
 surface: live dedup statistics and the sweep tables for picking a threshold, how
@@ -707,8 +710,9 @@ and it shows up in the Events pane as something to fix.
 
 ![PurrView entities and an events browser inside Home Assistant](docs/screenshots/screen9.webp)
 
-*Maple can't keep it in the box. Last-seen sensors and pre-filtered events browser on a page in
- Home Assistant let us know when it's been too long since the last time Maple used the litter.*
+*Kitty can't keep the pee in the box. Last-seen sensors and pre-filtered events browser on a page in
+ Home Assistant let us know when it's been too long since the last time she used the litter and must
+ be escorted.*
 
 ### What gets an entity
 
@@ -719,13 +723,13 @@ by default; the fourth is opted into per label.
 |---|---|---|---|
 | Rule | **PurrView Rules** | Did this happen at all, to anyone, anywhere | `sensor.purrview_rules_cat_using_litter_box_count` |
 | Camera × rule | one per camera | Did it happen on *this camera* | `sensor.laundry_cat_using_litter_box_count` |
-| Label × rule | one per label | Did it happen to *this cat* | `sensor.maple_cat_using_litter_box` |
-| Label × rule × camera | one per label | Which cat, doing what, on which camera | `sensor.maple_cat_using_litter_box_cam_laundry` |
+| Label × rule | one per label | Did it happen to *this cat* | `sensor.kitty_cat_using_litter_box` |
+| Label × rule × camera | one per label | Which cat, doing what, on which camera | `sensor.kitty_cat_using_litter_box_cam_laundry` |
 
 To turn on the fourth tier, tick **Per-camera breakdown** beside **Publish to
 Home Assistant** on the label, under Configuration → Vocabulary → Labels. It
 also gives the label a presence sensor per camera
-(`binary_sensor.maple_cam_laundry`), which needs no rule — it reads the
+(`binary_sensor.kitty_cam_laundry`), which needs no rule — it reads the
 tracker, so it answers "is this cat in the laundry room right now".
 
 This tier multiplies out — labels × rules × cameras. Four cat labels, five rules
@@ -734,7 +738,7 @@ and seven cameras is roughly 120 entities, which is why it is off by default.
 
 The `cam_` in those ids is a deliberate marker. Home Assistant builds an
 entity_id by slugifying the name and collapses any run of separators, so `·` or
-`__` between the slots would vanish and leave `maple_cat_using_litter_box_laundry`
+`__` between the slots would vanish and leave `kitty_cat_using_litter_box_laundry`
 with no way to tell where the rule ends and the camera begins.
 
 Each **camera** device also carries a long tail of entities that ship
@@ -776,8 +780,8 @@ period: day          # hour | 5minute | day | week | month
 stat_types: [change]
 chart_type: bar
 entities:
-  - sensor.maple_cat_using_litter_box
-  - sensor.pepper_cat_using_litter_box
+  - sensor.kitty_cat_using_litter_box
+  - sensor.mina_cat_using_litter_box
 days_to_show: 30
 ```
 
@@ -792,25 +796,25 @@ questions depending on which ones you list:
 ```yaml
 # One cat, every camera — where is she drinking?
 entities:
-  - sensor.maple_cat_drinking_cam_kitchen
-  - sensor.maple_cat_drinking_cam_laundry
+  - sensor.kitty_cat_drinking_cam_kitchen
+  - sensor.kitty_cat_drinking_cam_laundry
 
 # One camera, every cat — who uses this litter box?
 entities:
-  - sensor.maple_cat_using_litter_box_cam_laundry
-  - sensor.pepper_cat_using_litter_box_cam_laundry
+  - sensor.kitty_cat_using_litter_box_cam_laundry
+  - sensor.mina_cat_using_litter_box_cam_laundry
 
 # One cat, every behaviour — the vet visit summary
 entities:
-  - sensor.maple_cat_eating
-  - sensor.maple_cat_drinking
-  - sensor.maple_cat_using_litter_box
+  - sensor.kitty_cat_eating
+  - sensor.kitty_cat_drinking
+  - sensor.kitty_cat_using_litter_box
 ```
 
 #### A number you can automate on
 
 A graph is for you to look at. For an automation, a gauge, or a badge — "alert me
-if Maple has not used the litter box today", "more than six visits is worth
+if Kitty has not used the litter box today", "more than six visits is worth
 noticing" — you want a helper that resets on a cycle. That is a
 **utility meter**, and it takes about thirty seconds in the UI:
 
@@ -822,33 +826,33 @@ In YAML, one meter per cycle you care about:
 
 ```yaml
 utility_meter:
-  maple_litter_daily:
-    source: sensor.maple_cat_using_litter_box
-    name: Maple litter box today
+  kitty_litter_daily:
+    source: sensor.kitty_cat_using_litter_box
+    name: Kitty litter box today
     cycle: daily
-  maple_litter_weekly:
-    source: sensor.maple_cat_using_litter_box
-    name: Maple litter box this week
+  kitty_litter_weekly:
+    source: sensor.kitty_cat_using_litter_box
+    name: Kitty litter box this week
     cycle: weekly
 ```
 
-You get `sensor.maple_litter_box_today`, which reads 0 at midnight and climbs as
+You get `sensor.kitty_litter_box_today`, which reads 0 at midnight and climbs as
 she goes. An automation on it is then the obvious thing:
 
 ```yaml
 automation:
-  - alias: Maple hasn't used the litter box today
+  - alias: Kitty hasn't used the litter box today
     triggers:
       - trigger: time
         at: "21:00:00"
     conditions:
       - condition: numeric_state
-        entity_id: sensor.maple_litter_box_today
+        entity_id: sensor.kitty_litter_box_today
         below: 1
     actions:
       - action: notify.mobile_app_phone
         data:
-          message: No litter box visits from Maple today.
+          message: No litter box visits from Kitty today.
 ```
 
 The graphs in the previous section need no helper. Only the live number does.
@@ -903,7 +907,7 @@ more, and getting there is what the collector, the review grid and the event
 correction dialog exist to make bearable.
 
 **Training needs a GPU, but not a big one.** A 12 GB card runs this comfortably,
-and less would very likely do. A detection run defaults to YOLO at 640 px with a
+and less would very likely do. A training run defaults to YOLO at 640 px with a
 batch of 16 for up to 50 epochs, and three settings decide the memory it takes:
 the architecture, the image size and the batch size. If a run does run out of
 memory, halve the batch first — it is the cheapest of the three to give up, and
@@ -946,10 +950,6 @@ Accuracy on individuals is good but not perfect. Expect false detections, and
 expect the occasional confident wrong answer. Because every event keeps its video
 and its frames, a wrong answer is also a labelled training example, which is the
 mechanism by which this gets better over time instead of worse.
-
-One path is better worn than the other: a flat list of classes, one per
-individual, is what has actually been used in anger. A label hierarchy refined by
-sub-models works and is supported, but it has had much less exposure.
 
 ## Development
 
