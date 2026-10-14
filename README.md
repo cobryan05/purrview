@@ -16,8 +16,8 @@ first-class part of the app rather than homework. Collecting training images,
 annotating them, and training and deploying a detection model all happen here —
 the cameras gather their own candidate frames while they watch, labelling them is
 quick enough to keep up with, and a trained model goes straight back to the
-watchers. That is the part this kind of project usually leaves to you, and it is
-the part PurrView is really about.
+watchers. That loop — watch, collect, label, train, deploy — is what PurrView is
+really about.
 
 It runs on your own hardware, in Docker, and talks to nothing you do not point it
 at. It is the successor to
