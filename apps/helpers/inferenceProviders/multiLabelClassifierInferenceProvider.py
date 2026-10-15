@@ -28,12 +28,9 @@ class MultiLabelClassifierInferenceProvider(InferenceProvider):
     _INPUT_SIZE = (224, 224)
 
     def __init__(self, model_path: str, label_uuids: List[str], providers: Optional[List[str]] = None):
-        import onnxruntime as ort
+        from apps.helpers.onnxSession import create_session
 
-        self._session = ort.InferenceSession(
-            model_path,
-            providers=providers or ["CUDAExecutionProvider", "CPUExecutionProvider"],
-        )
+        self._session, self.device_fallback = create_session(model_path, providers)
         self._input_name: str = self._session.get_inputs()[0].name
         self._label_uuids = label_uuids
 

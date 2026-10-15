@@ -39,14 +39,27 @@
 # ---------------------------------------------------------------------
 # =====================================================================
 
+# Which GPUs a container may use is `GPU_DEVICES` (a CUDA_VISIBLE_DEVICES list,
+# e.g. "0" or "0,1"), not this reservation. Compose interpolates into scalars
+# only, so `device_ids` cannot be driven by one env var — the reservation
+# therefore grants every GPU the host has and GPU_DEVICES narrows it per
+# service. Reservations are not exclusive, so granting all of them takes nothing
+# away from other containers.
+#
+# GPU_DEVICES must never be set to the empty string: unset means "all GPUs" to
+# CUDA, but empty means "no GPUs", and that reads as a container that silently
+# lost its GPU. setup.sh always writes an explicit index list.
 x-gpu: &gpu
   deploy:
     resources:
       reservations:
         devices:
           - driver: nvidia
-            device_ids: ["0"]
+            count: all
             capabilities: [gpu]
+
+x-gpu-env: &gpu-env
+  CUDA_VISIBLE_DEVICES: ${GPU_DEVICES:-0}
 
 x-build-args: &build-args
   APP_BASE: ${APP_BASE:-slim-runtime}
@@ -79,6 +92,7 @@ services:
       target: app
       args: *build-args
     environment:
+      <<: *gpu-env
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
       # Corrects a timing offset between a recorded clip and its overlaid
       # detection boxes: the clip is cut on the relay's record clock while
@@ -146,6 +160,7 @@ services:
       target: training-app
       args: *build-args
     environment:
+      <<: *gpu-env
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
       # 1 when this deployment was set up expecting a training GPU, 0 when the
@@ -181,6 +196,7 @@ services:
       target: combined
       args: *build-args
     environment:
+      <<: *gpu-env
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
       # Corrects a timing offset between a recorded clip and its overlaid
       # detection boxes: the clip is cut on the relay's record clock while
@@ -241,6 +257,7 @@ services:
       target: dev
       args: *build-args
     environment:
+      <<: *gpu-env
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
       # Corrects a timing offset between a recorded clip and its overlaid
       # detection boxes: the clip is cut on the relay's record clock while
@@ -296,6 +313,7 @@ services:
       target: training-dev
       args: *build-args
     environment:
+      <<: *gpu-env
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
       # 1 when this deployment was set up expecting a training GPU, 0 when the
@@ -342,6 +360,7 @@ services:
       target: combined-dev
       args: *build-args
     environment:
+      <<: *gpu-env
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
       # Corrects a timing offset between a recorded clip and its overlaid
       # detection boxes: the clip is cut on the relay's record clock while

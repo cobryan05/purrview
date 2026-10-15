@@ -1100,7 +1100,7 @@ class Manager:
             top_k=top_k,
         )
         if not unit.sub_models:
-            return results, unit, notes
+            return results, unit, notes + self._device_fallback_notes(unit)
 
         # Ancestry from the artifacts themselves: a sub-model's classes are exactly its
         # boundary's descendants, so its own class list reconstructs the tree.
@@ -1164,7 +1164,37 @@ class Manager:
                     # label_uuid beside it, which reads as the cascade not having run.
                     detection.bbox.class_str = None
 
-        return results, unit, notes
+        return results, unit, notes + self._device_fallback_notes(unit)
+
+    def device_fallback_for(self, model_name: str) -> Optional[str]:
+        """Why *model_name*'s loaded session is on the CPU, or None.
+
+        None also means "not loaded" — a model that is not in memory has no
+        device to report, and claiming the GPU for it would be a guess.
+        """
+        model = self._pinned_models.get(model_name)
+        if not model or not model.inference:
+            return None
+        return getattr(model.inference, "device_fallback", None)
+
+    def _device_fallback_notes(self, unit: ModelUnit) -> List[str]:
+        """One note per model in *unit* whose session had to land on the CPU.
+
+        Collected at return time rather than at load time: a model stays loaded
+        across calls, so the run that pays the CPU cost is usually not the run
+        that loaded it, and a notice raised only on the loading call would be
+        seen once and never again while the slowdown continued.
+
+        `notes` is the channel the UI already surfaces (detect-unit's response
+        feeds them straight to the log panel), which is why this reports there
+        rather than inventing a second one.
+        """
+        out: List[str] = []
+        for name in list(unit.detector_names) + [s.model_name for s in unit.sub_models]:
+            reason = self.device_fallback_for(name)
+            if reason:
+                out.append(f"'{name}' is running on the CPU: {reason}")
+        return out
 
     def _cleanup_expired_pins(self):
         """

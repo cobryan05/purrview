@@ -31,12 +31,9 @@ class ImageClassifierInferenceProvider(InferenceProvider):
     _INPUT_SIZE = (224, 224)
 
     def __init__(self, model_path: str, label_uuid: str, class_names: List[str], providers: Optional[List[str]] = None):
-        import onnxruntime as ort
+        from apps.helpers.onnxSession import create_session
 
-        self._session = ort.InferenceSession(
-            model_path,
-            providers=providers or ["CUDAExecutionProvider", "CPUExecutionProvider"],
-        )
+        self._session, self.device_fallback = create_session(model_path, providers)
         self._input_name: str = self._session.get_inputs()[0].name
         self._label_uuid = label_uuid
         self._present_idx: int = class_names.index("present") if "present" in class_names else 1

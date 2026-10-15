@@ -16,11 +16,11 @@ from uuid import uuid4
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 
 import apps.helpers.yoloUtils as YoloUtils
 from apps.helpers.bboxUtils import BBox
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.onnxSession import create_session
 from apps.helpers.types import BoundingBoxMetadata, ClassScore, DetectionResult, InferenceResult
 
 from .inferenceProvider import InferenceProvider
@@ -58,9 +58,7 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         class_group_iou_thresholds: Optional[List[Optional[float]]] = None,
         providers: Optional[List[str]] = None,
     ):
-        self.session = ort.InferenceSession(
-            model_path, providers=providers or ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        )
+        self.session, self.device_fallback = create_session(model_path, providers)
         active_providers = self.session.get_providers()
         logger.info(f"ONNX providers active: {active_providers}")
 

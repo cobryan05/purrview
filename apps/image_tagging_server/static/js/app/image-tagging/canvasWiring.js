@@ -96,7 +96,11 @@ async function _runInference(runtime, { modelNames, unitUuids = [], confThresh, 
     // observable, and a hierarchy's verdict is the more specific one, so it should
     // land on top of a loose detector's rather than under it.
     for (const result of [loose, ...units]) {
-      for (const note of result.notes || []) Logger.warn(`${logPrefix}${note}`);
+      // notify, not warn: every note the unit emits is something the run did
+      // differently from what was asked — a sub-model that failed, an artifact
+      // skipped, a model that had to run on the CPU — and Logger.warn only
+      // reaches the console, and only with debug logging on.
+      for (const note of result.notes || []) Logger.notify(`${logPrefix}${note}`);
       outcomes.push(...result.outcomes);
     }
   } catch (err) {

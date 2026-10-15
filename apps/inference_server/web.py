@@ -217,6 +217,12 @@ class ModelMetaResponse(StatusResponse):
     model_config_uuid: Optional[str] = None
     role: Optional[str] = None
     device: str = "auto"
+    # Set when this model is loaded right now AND its session had to fall back to
+    # the CPU because CUDA could not initialize (see
+    # apps.helpers.onnxSession.create_session). None when the model is not loaded,
+    # which is not the same as "running on the GPU" — a model is only known to
+    # have fallen back while it is in memory.
+    device_fallback: Optional[str] = None
     # (height, width) the model's ONNX graph declares; None if the model isn't
     # found or its graph declares a dynamic shape. Lets a caller compute
     # send_width = min(source_native_width, model_input_width) instead of
@@ -668,6 +674,7 @@ class WebApp:
                     model_config_uuid=config.get("model_config_uuid"),
                     role=config.get("role"),
                     device=config.get("device", "auto"),
+                    device_fallback=self._manager.device_fallback_for(model_name),
                     input_shape=input_shape,
                 )
             except Exception as e:

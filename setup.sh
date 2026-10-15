@@ -120,6 +120,51 @@ choose_gpu_inference() {
   fi
 }
 
+# Ask which of the host's GPUs the containers may use. Echoes a
+# CUDA_VISIBLE_DEVICES index list ("0", "0,1", ...).
+#
+# Asked only when the host reports more than one GPU: with a single card the
+# answer is always "0" and the question is noise. A card left out is invisible to
+# both torch and onnxruntime, which is how a GPU gets reserved for something else
+# on a shared box — and it is worth asking about, because a trainer filling the
+# one card it can see is what makes a concurrent inference load fail to
+# initialize.
+#
+# Never echoes an empty list: empty means "no GPUs" to CUDA, not "all of them".
+choose_gpu_devices() {
+  local all="" reply
+  # Unquoted on purpose: word-splitting collapses GPU_INDICES' trailing space,
+  # which `tr` would otherwise turn into a trailing comma.
+  # shellcheck disable=SC2086
+  all="$(echo $GPU_INDICES | tr ' ' ',')"
+  [ "$GPU_COUNT" -le 1 ] && { echo "${all:-0}"; return 0; }
+
+  echo >&2
+  echo "-- GPU selection --" >&2
+  echo "   This host reports $GPU_COUNT GPUs:" >&2
+  printf '%s\n' "$GPU_NAMES" >&2
+  echo "   Leave a GPU out to keep it for something else; PurrView will not see it." >&2
+  while true; do
+    read -r -p "  Which GPUs may PurrView use? (comma-separated indices, or 'all') [all] " reply >&2 || true
+    reply="${reply:-all}"
+    [ "$reply" = "all" ] && { echo "$all"; return 0; }
+    # Validated against the indices this host actually reported: a stray index
+    # is not an error at `compose up` time — the container starts and the GPU
+    # simply never appears, which is indistinguishable from a driver problem.
+    reply="$(printf '%s' "$reply" | tr -d '[:space:]')"
+    if printf '%s' "$reply" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
+      local bad="" idx
+      for idx in $(printf '%s' "$reply" | tr ',' ' '); do
+        printf ' %s ' "$GPU_INDICES" | grep -q " $idx " || bad="$bad $idx"
+      done
+      [ -z "$bad" ] && { echo "$reply"; return 0; }
+      echo "  !! This host has no GPU$bad (indices: $all)." >&2
+      continue
+    fi
+    echo "  !! Expected comma-separated indices like '0' or '0,1' — got '$reply'." >&2
+  done
+}
+
 # Resolve APP_BASE/ORT_REQUIREMENTS/COMPOSE_FILE (globals) from a GPU-inference
 # y/n answer, for a topology where the app container is a separate, CPU-buildable
 # service (split layouts): GPU inference pulls in the CUDA base + gpu overlay,
@@ -145,8 +190,19 @@ ort_requirements_for() {  # ort_requirements_for "$GI" -> echoes filename
 
 # ---- detect environment ---------------------------------------------------
 GPU_DEFAULT="n"
+# Indices and display names of the host's GPUs, parsed from `nvidia-smi -L`
+# ("GPU 0: NVIDIA GeForce RTX 3060 (UUID: ...)"). The index list drives
+# choose_gpu_devices; it is empty whenever detection failed, which is the same
+# state as a host with no GPU as far as the questionnaire is concerned.
+GPU_INDICES=""
+GPU_NAMES=""
+GPU_COUNT=0
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
   GPU_DEFAULT="y"
+  GPU_INDICES="$(nvidia-smi -L | sed -n 's/^GPU \([0-9]\+\):.*/\1/p' | tr '\n' ' ')"
+  GPU_NAMES="$(nvidia-smi -L | sed -e 's/ (UUID:.*)//' -e 's/^/     /')"
+  # shellcheck disable=SC2086
+  GPU_COUNT="$(printf '%s\n' $GPU_INDICES | grep -c .)"
 fi
 UID_VAL="$(id -u)"
 GID_VAL="$(id -g)"
@@ -306,6 +362,19 @@ case "$ROLE" in
     ;;
 esac
 
+# ---- which GPUs ------------------------------------------------------------
+# Derived from the resolved topology rather than tracked through the branches
+# above: a GPU is reserved either by a profile that always needs one (training /
+# mono / the dev workspaces) or by the gpu overlay the inference choice merges
+# into COMPOSE_FILE. Asking on a deployment that reserves no GPU would write a
+# variable nothing reads.
+GPU_DEVICES=""
+case "$COMPOSE_PROFILES" in *training*|*mono*|*dev*) RESERVES_GPU="y" ;; *) RESERVES_GPU="n" ;; esac
+case "$COMPOSE_FILE" in *docker-compose.gpu.yaml*) RESERVES_GPU="y" ;; esac
+if [ "$RESERVES_GPU" = "y" ]; then
+  GPU_DEVICES="$(choose_gpu_devices)"
+fi
+
 # ---- sizing (RAM + disk caches) -------------------------------------------
 # Every knob has a working default in docker-compose.yaml, so the whole section
 # is opt-in and the common path stays one question long. Each prompt is gated on
@@ -415,6 +484,9 @@ fi
   echo "ORT_REQUIREMENTS=$ORT_REQUIREMENTS"
   echo
   [ -n "$TRAINING_EXPECTS_GPU" ] && echo "TRAINING_EXPECTS_GPU=$TRAINING_EXPECTS_GPU"
+  # Only ever an explicit index list — an empty GPU_DEVICES means "no GPUs" to
+  # CUDA, so the variable is omitted rather than written blank.
+  [ -n "$GPU_DEVICES" ] && echo "GPU_DEVICES=$GPU_DEVICES"
   [ -n "$TRAINING_SERVER_HOST" ] && echo "TRAINING_SERVER_HOST=$TRAINING_SERVER_HOST"
   [ -n "$TRAINING_SERVER_PORT" ] && echo "TRAINING_SERVER_PORT=$TRAINING_SERVER_PORT"
   echo "APPUSER_UID=$UID_VAL"
