@@ -44,7 +44,15 @@ from typing import Any, Callable, Optional
 from ..augmentation import resolve_yolo_augmentation_kwargs
 from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
-from .base import STOP_CANCELLED, STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
+from .base import (
+    STOP_CANCELLED,
+    STOP_COMPLETED,
+    STOP_EARLY,
+    Trainer,
+    device_kwarg,
+    image_manifest_fields,
+    stop_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +292,7 @@ class UltralyticsDetectionTrainer(Trainer):
                         name=model_name,
                         exist_ok=True,
                         **augmentation_kwargs,
+                        **device_kwarg(config),
                     )
                     # results.results_dict has keys like "metrics/mAP50(B)".
                     results_dict = dict(getattr(results, "results_dict", None) or {})

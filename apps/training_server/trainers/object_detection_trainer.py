@@ -25,7 +25,7 @@ from typing import Any, Callable, Optional
 
 from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
-from .base import STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
+from .base import STOP_COMPLETED, STOP_EARLY, Trainer, device_kwarg, image_manifest_fields, stop_summary
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,7 @@ class ObjectDetectionTrainer(Trainer):
                     imgsz=imgsz,
                     batch=batch_size,
                     patience=patience,
+                    device=device_kwarg(config).get("device", "auto"),
                 )
                 results: dict = await asyncio.to_thread(
                     model.train,
@@ -225,6 +226,7 @@ class ObjectDetectionTrainer(Trainer):
                     name=model_name,
                     exist_ok=True,
                     callbacks=[_epoch_cb, start_announcer],
+                    **device_kwarg(config),
                 )
 
                 best_map50: float = float(results.get("best_mAP50", 0.0))

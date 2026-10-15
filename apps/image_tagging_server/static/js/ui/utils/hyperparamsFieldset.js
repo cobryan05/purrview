@@ -35,6 +35,7 @@
  * (classifiers), the select is omitted entirely rather than guessing.
  */
 
+import { fetchTrainingGpus } from '/app-static/js/shared/api/trainingGpus.js';
 import { makeFieldRow } from '/app-static/js/ui/utils/index.js';
 import { VRAM_TIERS_GB, getVramTableForArchitecture } from '/app-static/js/ui/utils/vramHyperparams.js';
 
@@ -146,6 +147,51 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
     onChange?.();
   });
 
+  // ── GPU select (per-run override of the deployment's TRAINING_GPU) ────────
+  // Hidden unless the training host exposes more than one card: with one card there
+  // is nothing to choose, and the deployment default already points at it. Like
+  // `record_image_manifest` this is not a hyperparameter — it changes nothing about
+  // the model — but it rides hyperparams_json because that is the training config's
+  // only free-form blob (the trainers read it as `gpu_device`).
+  const gpuSelect = document.createElement('select');
+  gpuSelect.style.cssText = 'width: auto; flex-shrink: 0;';
+  gpuSelect.dataset.testid = 'hyperparams-gpu-device';
+  const gpuDefaultOpt = document.createElement('option');
+  gpuDefaultOpt.value = '';
+  gpuDefaultOpt.textContent = '— deployment default —';
+  gpuSelect.appendChild(gpuDefaultOpt);
+  if (onChange) gpuSelect.addEventListener('change', onChange);
+
+  const gpuRow = makeFieldRow('GPU', gpuSelect);
+  gpuRow.title =
+    'Which GPU this run trains on. Leave at the default unless you want to keep a card '
+    + 'free — a long run and a concurrent inference load on the same card is what makes '
+    + 'inference fall back to the CPU.';
+  gpuRow.style.display = 'none'; // shown below only if the host has a choice to offer
+
+  // Deliberately not awaited: the fieldset is synchronous (its rows are appended by
+  // the caller immediately), so the options fill in when the training host answers.
+  // A host that is down or has no cards leaves the row hidden, which is the same
+  // outcome as having nothing to choose.
+  fetchTrainingGpus().then(({ gpus, defaultCudaOrdinal }) => {
+    if (gpus.length < 2) return;
+    const fallback = gpus.find(g => g.cuda_ordinal === defaultCudaOrdinal);
+    if (fallback) gpuDefaultOpt.textContent = `— deployment default (${fallback.label}) —`;
+    for (const gpu of gpus) {
+      const o = document.createElement('option');
+      // The CUDA ordinal, not the physical id: CUDA_VISIBLE_DEVICES renumbers from
+      // zero, so the label a human reads and the value a trainer needs differ.
+      o.value = String(gpu.cuda_ordinal);
+      o.textContent = gpu.label;
+      gpuSelect.appendChild(o);
+    }
+    const preselect = initial.gpu_device;
+    if (preselect !== undefined && preselect !== null && String(preselect) !== '') {
+      gpuSelect.value = String(preselect);
+    }
+    gpuRow.style.display = '';
+  });
+
   const vramRow = makeFieldRow('GPU VRAM', vramSelect);
   vramRow.title = 'Pick your GPU VRAM to prefill batch size / image size with a suggested starting point. Fields stay editable.';
   vramRow.style.display = 'none'; // shown by _refreshVramVisibility() once an architecture resolves
@@ -166,6 +212,7 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
   }
 
   const rows = [
+    gpuRow,
     vramRow,
     makeFieldRow('Batch size', batchSizeInput),
     makeFieldRow('Image size', imgszInput),
@@ -192,6 +239,9 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
     // every already-saved config (and the trainers' own default) means today.
     if (!recordManifestInput.checked) hyperparamsJson.record_image_manifest = false;
     hyperparamsJson.augmentation = augmentationSelect.value;
+    // Only written when a card is actually chosen — an absent key means "use the
+    // deployment default", which is what every already-saved config means.
+    if (gpuSelect.value !== '') hyperparamsJson.gpu_device = gpuSelect.value;
     return hyperparamsJson;
   }
 

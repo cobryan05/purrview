@@ -19,9 +19,11 @@ from pydantic.alias_generators import to_camel
 
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.curatedModels import CURATED_BASE_MODELS
+from apps.helpers.gpuDevices import list_gpus
 from apps.helpers.imageUtils import base64_decode_image
 from apps.helpers.landingPage import action, render_landing_page
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.metadataUtils import default_inference_ordinal
 from apps.helpers.modelVersions import is_version_preview
 from apps.helpers.types import (
     InferenceResult,
@@ -236,6 +238,34 @@ class SetModelDevicePayload(Payload):
 
 class SetModelDeviceResponse(StatusResponse):
     device_set: bool = False
+
+
+class GpuDeviceModel(Payload):
+    """One GPU this service's host can see.
+
+    Carries both numbering schemes because they are different numbers: `index` is what
+    the driver and `nvidia-smi` report (what a human recognizes), `cuda_ordinal` is the
+    position within CUDA_VISIBLE_DEVICES that a device setting must store. See
+    apps.helpers.gpuDevices.
+    """
+
+    index: int
+    name: str
+    # PCI bus id — the only short field that distinguishes two identical cards, which
+    # have the same name and the same memory.
+    bus_id: str
+    memory_mb: Optional[int] = None
+    uuid: str = ""
+    # None when this card is not exposed to this container, so it cannot be selected.
+    cuda_ordinal: Optional[int] = None
+    label: str = ""
+
+
+class GpuDevicesResponse(StatusResponse):
+    gpus: List[GpuDeviceModel] = Field(default_factory=list)
+    # What `auto`/`gpu` resolve to here (INFERENCE_GPU), or None when unconfigured —
+    # in which case onnxruntime picks, which is ordinal 0 in practice.
+    default_cuda_ordinal: Optional[int] = None
 
 
 class LabelTreeEntry(Payload):
@@ -679,6 +709,47 @@ class WebApp:
                 )
             except Exception as e:
                 return ModelMetaResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/models/gpus",
+            response_model=GpuDevicesResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="list_inference_gpus",
+        )
+        async def list_inference_gpus_api() -> GpuDevicesResponse:
+            """The GPUs on the host running *this* inference service.
+
+            Served per-service rather than globally: inference and training may be
+            different machines with different cards (see the split-container
+            topology), so a single shared GPU list would be wrong on one of them.
+
+            Under /api/models rather than a bare /api/gpus because that prefix is what
+            image_tagging_server proxies to this service; a new top-level path would
+            not reach it. Registered before the `/api/models/{model_name}` routes for
+            the same reason detect-batch is — FastAPI matches in declaration order and
+            would otherwise read "gpus" as a model name.
+            """
+            try:
+                devices = await asyncio.to_thread(list_gpus)
+                return GpuDevicesResponse(
+                    status=JsonValues.SUCCESS,
+                    gpus=[
+                        GpuDeviceModel(
+                            index=d.index,
+                            name=d.name,
+                            bus_id=d.bus_id,
+                            memory_mb=d.memory_mb,
+                            uuid=d.uuid,
+                            cuda_ordinal=d.cuda_ordinal,
+                            label=d.label,
+                        )
+                        for d in devices
+                    ],
+                    default_cuda_ordinal=default_inference_ordinal(),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return GpuDevicesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/{model_name}/device",

@@ -5,6 +5,10 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
+#: The device-resolution helpers below are module-level functions, not methods, so they
+#: have no trainer's logger to borrow — the other helpers here take one as a parameter.
+logger = logging.getLogger(__name__)
+
 #: Job-config key for the per-training-run "remember exact image list" opt-out.
 #: Absent means ON — every trainer has always recorded the manifest, so the
 #: default must preserve that. Threaded explicitly by TrainModelTask rather than
@@ -32,6 +36,94 @@ def image_manifest_fields(
         "train_image_uuids": list(train_image_uuids),
         "val_image_uuids": list(val_image_uuids),
     }
+
+
+#: Job-config key for the per-run GPU override, set by the training UI's GPU select.
+#: Absent or "auto" means "use this deployment's default", which is TRAINING_GPU_ENV
+#: and, failing that, whatever torch picks. Like RECORD_IMAGE_MANIFEST_KEY this is not
+#: a hyperparameter — it changes nothing about the model — but it rides the same
+#: hyperparams blob because that is the training config's only free-form field.
+GPU_DEVICE_KEY = "gpu_device"
+
+#: Which CUDA device a training run uses when the job names none.
+#:
+#: A CUDA *ordinal*, not a physical card id — CUDA_VISIBLE_DEVICES renumbers from zero.
+#: See apps.helpers.gpuDevices for the translation; setup.sh writes the ordinal.
+TRAINING_GPU_ENV = "TRAINING_GPU"
+
+
+def resolve_gpu_ordinal(config: dict[str, Any]) -> int | None | str:
+    """The device this run should use: an ordinal, ``"cpu"``, or None for "you choose".
+
+    Resolution order is job override, then deployment default, then None. None is
+    distinct from 0: it leaves device selection to torch/libreyolo exactly as before
+    this setting existed, so a deployment that configures nothing is unaffected.
+
+    An unparseable value resolves to None rather than raising — a bad setting must not
+    be able to stop training outright, and the run still happens on the default card.
+    """
+    import os
+
+    raw = config.get(GPU_DEVICE_KEY)
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get(TRAINING_GPU_ENV, "")
+    token = str(raw).strip().lower()
+    if token in ("", "auto"):
+        return None
+    if token == "cpu":
+        return "cpu"
+    # Accept "cuda:1" and "gpu:1" as well as "1": the UI stores a bare ordinal, but
+    # these are the spellings a human puts in an env var.
+    if ":" in token:
+        token = token.split(":", 1)[1]
+    try:
+        ordinal = int(token)
+    except ValueError:
+        logger.warning("Ignoring GPU selection %r: expected a CUDA ordinal like 0 or 1", raw)
+        return None
+    if ordinal < 0:
+        logger.warning("Ignoring GPU selection %r: a CUDA ordinal cannot be negative", raw)
+        return None
+    return ordinal
+
+
+def torch_device(config: dict[str, Any]):
+    """``torch.device`` for this run, honouring the job/deployment GPU selection.
+
+    Replaces the bare ``torch.device("cuda" if available else "cpu")`` the classifier
+    trainers used: that always meant ordinal 0, so a second card could never be used.
+    Falls back to CPU when CUDA is unavailable, and to the default card when the
+    requested ordinal does not exist — a selection pointing at a missing card is a
+    stale setting, not a reason to fail the run.
+    """
+    import torch
+
+    selected = resolve_gpu_ordinal(config)
+    if selected == "cpu" or not torch.cuda.is_available():
+        return torch.device("cpu")
+    if isinstance(selected, int):
+        if selected < torch.cuda.device_count():
+            return torch.device(f"cuda:{selected}")
+        logger.warning(
+            "GPU ordinal %d was selected but this host exposes %d CUDA device(s); using the default",
+            selected,
+            torch.cuda.device_count(),
+        )
+    return torch.device("cuda")
+
+
+def device_kwarg(config: dict[str, Any]) -> dict[str, Any]:
+    """``{"device": ...}`` for trainers that take one, or ``{}`` to leave it alone.
+
+    libreyolo and Ultralytics both accept a ``device=`` on ``train()``; libreyolo
+    documents ``"auto"``/``""``, ``"cpu"``, an index, ``"cuda:0"``, or a list for DDP
+    (``libreyolo/training/config.py``). Returning ``{}`` rather than ``device="auto"``
+    keeps the call identical to before when nothing is configured.
+    """
+    selected = resolve_gpu_ordinal(config)
+    if selected is None:
+        return {}
+    return {"device": selected if selected == "cpu" else str(selected)}
 
 
 #: Machine tokens for why a training run stopped. Kept short and stable — the

@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from apps.helpers.logUtils import LOG_LEVEL
 
@@ -35,7 +35,17 @@ def is_gpu_exhaustion(exc: BaseException) -> bool:
     return any(marker in text for marker in _OOM_MARKERS)
 
 
-def create_session(model_path: str, providers: Optional[List[str]] = None) -> Tuple["object", Optional[str]]:
+def _names(providers: List[Any]) -> List[str]:
+    """Provider names, whether each entry is a bare name or a ``(name, options)`` pair.
+
+    onnxruntime accepts both forms in one list, and a card-pinned CUDA entry is always
+    the tuple form (see metadataUtils.providers_for_device), so no check on this list
+    may assume strings.
+    """
+    return [p[0] if isinstance(p, (tuple, list)) else p for p in providers]
+
+
+def create_session(model_path: str, providers: Optional[List[Any]] = None) -> Tuple["object", Optional[str]]:
     """Build an ``ort.InferenceSession``, falling back to CPU if the GPU is full.
 
     Returns ``(session, fallback_reason)`` — the reason is None on the normal
@@ -60,7 +70,7 @@ def create_session(model_path: str, providers: Optional[List[str]] = None) -> Tu
     try:
         return ort.InferenceSession(model_path, providers=requested), None
     except Exception as exc:
-        if "CUDAExecutionProvider" not in requested or not is_gpu_exhaustion(exc):
+        if "CUDAExecutionProvider" not in _names(requested) or not is_gpu_exhaustion(exc):
             raise
         logger.warning(
             "CUDA could not initialize for %s (%s); retrying on CPU",

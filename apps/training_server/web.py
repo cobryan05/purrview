@@ -16,11 +16,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
+from apps.helpers.gpuDevices import list_gpus
 from apps.helpers.landingPage import action, render_landing_page
 from apps.helpers.logUtils import LOG_LEVEL
 
 from .manager import Manager
 from .trainers import TRAINER_REGISTRY
+from .trainers.base import resolve_gpu_ordinal
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -85,6 +87,32 @@ class ListJobsResponse(BaseModel):
 class HyperparamDefaultsResponse(BaseModel):
     trainer_type: str
     defaults: Dict[str, Any]
+
+
+class TrainingGpuModel(BaseModel):
+    """One GPU on the host running this training service.
+
+    `index` is the driver's physical id (what a human recognizes from nvidia-smi);
+    `cudaOrdinal` is what a job's `gpu_device` must carry, because
+    CUDA_VISIBLE_DEVICES renumbers from zero. See apps.helpers.gpuDevices.
+    """
+
+    index: int
+    name: str
+    # PCI bus id: two identical cards share a name and a size, so this is the only
+    # short field that tells them apart.
+    bus_id: str
+    memory_mb: Optional[int] = None
+    uuid: str = ""
+    cuda_ordinal: Optional[int] = None
+    label: str = ""
+
+
+class TrainingGpusResponse(BaseModel):
+    gpus: List[TrainingGpuModel] = Field(default_factory=list)
+    # What a job with no `gpu_device` will use (TRAINING_GPU), or None when
+    # unconfigured — in which case torch picks, which is ordinal 0 in practice.
+    default_cuda_ordinal: Optional[int] = None
 
 
 class CancelJobResponse(BaseModel):
@@ -153,6 +181,16 @@ class ArtifactsEvictResponse(BaseModel):
     bytes: int = 0
 
 
+def _default_training_ordinal() -> Optional[int]:
+    """TRAINING_GPU as an ordinal, or None when unset or unparseable.
+
+    Resolved through the trainers' own helper so the value this endpoint reports and
+    the value a job actually runs on can never disagree.
+    """
+    resolved = resolve_gpu_ordinal({})
+    return resolved if isinstance(resolved, int) else None
+
+
 def _job_to_info(job) -> JobInfo:
     d = job.to_dict()
     return JobInfo(**d)
@@ -210,6 +248,36 @@ class WebApp:
         async def list_jobs() -> ListJobsResponse:
             jobs = self._manager.list_jobs()
             return ListJobsResponse(jobs=[_job_to_info(j) for j in jobs])
+
+        @self._app.get(
+            "/api/training/gpus",
+            operation_id="list_training_gpus",
+            response_model=TrainingGpusResponse,
+            tags=["training"],
+        )
+        async def list_training_gpus() -> TrainingGpusResponse:
+            """The GPUs on the host running *this* training service.
+
+            Separate from the inference service's list on purpose: training can be a
+            remote GPU node with entirely different cards, so one shared list would be
+            wrong on at least one of the two hosts.
+            """
+            devices = await asyncio.to_thread(list_gpus)
+            return TrainingGpusResponse(
+                gpus=[
+                    TrainingGpuModel(
+                        index=d.index,
+                        name=d.name,
+                        bus_id=d.bus_id,
+                        memory_mb=d.memory_mb,
+                        uuid=d.uuid,
+                        cuda_ordinal=d.cuda_ordinal,
+                        label=d.label,
+                    )
+                    for d in devices
+                ],
+                default_cuda_ordinal=_default_training_ordinal(),
+            )
 
         @self._app.get(
             "/api/training/trainers/{trainer_type}/hyperparams",

@@ -162,7 +162,36 @@ export async function fetchModelDevice(modelName) {
 }
 
 /**
- * Set the device preference ("auto" | "gpu" | "cpu") for a model, persisted to its sidecar JSON.
+ * The GPUs the inference host can see, for the per-model device dropdown.
+ *
+ * Served by inference_server under /api/models (the prefix the frontend proxies), and
+ * distinct from the training host's list — the two can be different machines.
+ *
+ * @returns {Promise<{ gpus: Array<{index:number,name:string,cuda_ordinal:number,label:string}>, defaultCudaOrdinal: ?number }>}
+ *   Empty `gpus` on a CPU-only host, or if the inference service cannot be reached —
+ *   the caller then offers only auto/gpu/cpu rather than a choice of nothing.
+ */
+export async function fetchInferenceGpus() {
+  try {
+    const res = await apiFetch('/api/models/gpus');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'failure') return { gpus: [], defaultCudaOrdinal: null };
+    return {
+      // A card left out of GPU_DEVICES has no CUDA ordinal and cannot be selected:
+      // pinning a model to it would silently land on a different card.
+      gpus: (data.gpus || []).filter(g => g.cudaOrdinal !== null && g.cudaOrdinal !== undefined),
+      defaultCudaOrdinal: data.defaultCudaOrdinal ?? null,
+    };
+  } catch {
+    return { gpus: [], defaultCudaOrdinal: null };
+  }
+}
+
+/**
+ * Set the device preference for a model, persisted to its sidecar JSON.
+ *
+ * "auto" | "gpu" | "cpu", or "gpu:<cudaOrdinal>" to pin it to one card regardless of
+ * the deployment's INFERENCE_GPU default.
  * @param {string} modelName
  * @param {string} device
  * @returns {Promise<boolean>}

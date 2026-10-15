@@ -165,6 +165,58 @@ choose_gpu_devices() {
   done
 }
 
+# Translate a physical GPU id (what nvidia-smi calls it, and what the operator just
+# picked from) into the CUDA ordinal that config must store.
+#
+# These are different numbers whenever GPU_DEVICES is not the full list:
+# CUDA_VISIBLE_DEVICES renumbers from zero, so with GPU_DEVICES=1 the host's second
+# card is ordinal 0. Storing the physical id would name a device that does not exist
+# and the service would fall back or fail — so the questions below ask in physical ids
+# and write ordinals. Echoes nothing if the id is not exposed.
+cuda_ordinal_for() {  # cuda_ordinal_for <physical_id> <exposed_csv>
+  local want="$1" ordinal=0 entry
+  for entry in $(printf '%s' "$2" | tr ',' ' '); do
+    [ "$entry" = "$want" ] && { echo "$ordinal"; return 0; }
+    ordinal=$((ordinal+1))
+  done
+  return 1
+}
+
+# Ask which of the exposed cards a service should use by default. Echoes a CUDA
+# ordinal, or nothing for "let the runtime choose".
+#
+# Only asked when more than one card is exposed: with a single card there is nothing
+# to choose and the runtime's own default is already that card. "Either" is offered and
+# is the default, because leaving it unset is meaningfully different from naming
+# ordinal 0 — it keeps the pre-existing behaviour exactly rather than pinning.
+choose_default_card() {  # choose_default_card "<what>" "<exposed_csv>" -> echoes ordinal or ""
+  local what="$1" exposed="$2" reply ordinal count
+  # wc, not `grep -c .`: grep exits 1 on no match and `set -e` would abort the whole
+  # script on a host with no exposed cards.
+  count="$(printf '%s\n' "$exposed" | tr ',' '\n' | sed '/^$/d' | wc -l)"
+  if [ "$count" -le 1 ]; then echo ""; return 0; fi
+
+  echo >&2
+  echo "  Which card should $what use by default?" >&2
+  printf '%s\n' "$GPU_NAMES" | while IFS= read -r line; do
+    case "$line" in *"GPU "*) echo "$line" >&2 ;; esac
+  done
+  echo "     (or press enter for 'either' — the runtime picks, as it does today)" >&2
+  while true; do
+    read -r -p "  GPU id for $what [either] " reply >&2 || true
+    reply="$(printf '%s' "$reply" | tr -d '[:space:]')"
+    [ -z "$reply" ] || [ "$reply" = "either" ] && { echo ""; return 0; }
+    if printf '%s' "$reply" | grep -Eq '^[0-9]+$'; then
+      if ordinal="$(cuda_ordinal_for "$reply" "$exposed")"; then
+        echo "$ordinal"; return 0
+      fi
+      echo "  !! GPU $reply is not one of the cards you exposed ($exposed)." >&2
+      continue
+    fi
+    echo "  !! Expected one of the GPU ids above — got '$reply'." >&2
+  done
+}
+
 # Resolve APP_BASE/ORT_REQUIREMENTS/COMPOSE_FILE (globals) from a GPU-inference
 # y/n answer, for a topology where the app container is a separate, CPU-buildable
 # service (split layouts): GPU inference pulls in the CUDA base + gpu overlay,
@@ -200,9 +252,19 @@ GPU_COUNT=0
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
   GPU_DEFAULT="y"
   GPU_INDICES="$(nvidia-smi -L | sed -n 's/^GPU \([0-9]\+\):.*/\1/p' | tr '\n' ' ')"
-  GPU_NAMES="$(nvidia-smi -L | sed -e 's/ (UUID:.*)//' -e 's/^/     /')"
+  # Names carry the PCI bus id, not just the model: two identical cards report the
+  # same name and the same memory, so the model alone cannot tell them apart and an
+  # operator picking "the second 3060" would have nothing to go on. Falls back to
+  # bare `nvidia-smi -L` output if the query form is unavailable.
+  GPU_NAMES="$(
+    nvidia-smi --query-gpu=index,name,pci.bus_id,memory.total \
+               --format=csv,noheader,nounits 2>/dev/null \
+      | awk -F', *' '{printf "     GPU %s: %s  (bus %s, %d GB)\n", $1, $2, $3, $4/1024}' \
+      || true
+  )"
+  [ -z "$GPU_NAMES" ] && GPU_NAMES="$(nvidia-smi -L | sed -e 's/ (UUID:.*)//' -e 's/^/     /')"
   # shellcheck disable=SC2086
-  GPU_COUNT="$(printf '%s\n' $GPU_INDICES | grep -c .)"
+  GPU_COUNT="$(printf "%s\n" $GPU_INDICES | sed "/^$/d" | wc -l)"
 fi
 UID_VAL="$(id -u)"
 GID_VAL="$(id -g)"
@@ -369,10 +431,18 @@ esac
 # into COMPOSE_FILE. Asking on a deployment that reserves no GPU would write a
 # variable nothing reads.
 GPU_DEVICES=""
+INFERENCE_GPU=""
+TRAINING_GPU=""
 case "$COMPOSE_PROFILES" in *training*|*mono*|*dev*) RESERVES_GPU="y" ;; *) RESERVES_GPU="n" ;; esac
 case "$COMPOSE_FILE" in *docker-compose.gpu.yaml*) RESERVES_GPU="y" ;; esac
 if [ "$RESERVES_GPU" = "y" ]; then
   GPU_DEVICES="$(choose_gpu_devices)"
+  # Asked only about the cards just exposed, and only where the service in question is
+  # part of this deployment — a training-only node has no inference service, and a
+  # frontend-only host has no trainer to point at a card. Keyed off $ROLE because the
+  # HAS_* flags are not derived until the sizing section below.
+  [ "$ROLE" = "3" ] || INFERENCE_GPU="$(choose_default_card "inference" "$GPU_DEVICES")"
+  [ "$ROLE" = "2" ] || TRAINING_GPU="$(choose_default_card "training (per-run override stays available)" "$GPU_DEVICES")"
 fi
 
 # ---- sizing (RAM + disk caches) -------------------------------------------
@@ -487,6 +557,10 @@ fi
   # Only ever an explicit index list — an empty GPU_DEVICES means "no GPUs" to
   # CUDA, so the variable is omitted rather than written blank.
   [ -n "$GPU_DEVICES" ] && echo "GPU_DEVICES=$GPU_DEVICES"
+  # CUDA ordinals, not physical ids (see cuda_ordinal_for). Omitted for "either",
+  # which leaves onnxruntime/torch to pick exactly as they did before these existed.
+  [ -n "$INFERENCE_GPU" ] && echo "INFERENCE_GPU=$INFERENCE_GPU"
+  [ -n "$TRAINING_GPU" ] && echo "TRAINING_GPU=$TRAINING_GPU"
   [ -n "$TRAINING_SERVER_HOST" ] && echo "TRAINING_SERVER_HOST=$TRAINING_SERVER_HOST"
   [ -n "$TRAINING_SERVER_PORT" ] && echo "TRAINING_SERVER_PORT=$TRAINING_SERVER_PORT"
   echo "APPUSER_UID=$UID_VAL"

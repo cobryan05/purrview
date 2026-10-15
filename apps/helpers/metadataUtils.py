@@ -18,7 +18,20 @@ logger = logging.getLogger(__file__)
 logger.setLevel(LOG_LEVEL)
 
 DEFAULT_MODEL_DEVICE = "auto"
+#: The device values that name no particular card. A model may also be pinned to one
+#: with "gpu:<n>" — see parse_model_device.
 VALID_MODEL_DEVICES = ("auto", "gpu", "cpu")
+
+#: Which CUDA device "auto"/"gpu" resolve to when a model names no card of its own.
+#:
+#: A CUDA *ordinal*, not a physical card id: CUDA_VISIBLE_DEVICES renumbers from zero,
+#: so with GPU_DEVICES=1 the host's second card is ordinal 0 and asking for 1 would name
+#: a device that does not exist. setup.sh asks in physical ids and writes the ordinal.
+#:
+#: Unset means "say nothing about the device", which is how a deployment that never
+#: configured this keeps onnxruntime's own default (ordinal 0) and the exact provider
+#: list it had before this setting existed.
+INFERENCE_GPU_ENV = "INFERENCE_GPU"
 
 
 def validate_bare_model_name(model_name: str) -> None:
@@ -72,11 +85,68 @@ def available_providers() -> Tuple[str, ...]:
     return _available_providers
 
 
-def providers_for_device(device: str) -> List[str]:
+def parse_model_device(device: str) -> Tuple[str, Optional[int]]:
+    """Split a device preference into ``(kind, cuda_ordinal)``.
+
+    ``kind`` is one of VALID_MODEL_DEVICES. The ordinal is set only by the explicit
+    ``gpu:<n>`` form — a per-model pin to one card — and is None otherwise, including
+    for a malformed ``gpu:x`` (treated as a bare ``gpu``, not an error: a bad sidecar
+    value must not stop the model loading).
+    """
+    if device.startswith("gpu:"):
+        suffix = device.split(":", 1)[1]
+        try:
+            return "gpu", int(suffix)
+        except ValueError:
+            logger.warning(f"Unparseable device {device!r}; using the default GPU")
+            return "gpu", None
+    return device, None
+
+
+def validate_model_device(device: str) -> None:
+    """Raise ValueError unless *device* is a device preference this app accepts."""
+    kind, ordinal = parse_model_device(device)
+    if kind not in VALID_MODEL_DEVICES:
+        raise ValueError(f"Invalid device {device!r}; must be one of {VALID_MODEL_DEVICES} or 'gpu:<n>'")
+    if device.startswith("gpu:") and ordinal is None:
+        raise ValueError(f"Invalid device {device!r}: 'gpu:' must be followed by a CUDA ordinal, e.g. 'gpu:1'")
+    if ordinal is not None and ordinal < 0:
+        raise ValueError(f"Invalid device {device!r}: a CUDA ordinal cannot be negative")
+
+
+def default_inference_ordinal() -> Optional[int]:
+    """The CUDA ordinal ``auto``/``gpu`` resolve to, or None when unconfigured.
+
+    None is not "device 0" — it means *say nothing* about the device, so the provider
+    list stays exactly the plain-string list this function returned before the setting
+    existed. A deployment that never sets INFERENCE_GPU therefore cannot be affected by
+    it, and onnxruntime keeps picking its own default.
+    """
+    raw = os.environ.get(INFERENCE_GPU_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        ordinal = int(raw)
+    except ValueError:
+        logger.warning(f"Ignoring {INFERENCE_GPU_ENV}={raw!r}: expected a CUDA ordinal like 0 or 1")
+        return None
+    if ordinal < 0:
+        logger.warning(f"Ignoring {INFERENCE_GPU_ENV}={raw!r}: a CUDA ordinal cannot be negative")
+        return None
+    return ordinal
+
+
+def providers_for_device(device: str) -> List[Any]:
     """Map a model's device preference to an ordered list of ONNX execution providers.
 
     `auto` and `gpu` both prefer CUDA with a CPU fallback (so a GPU-less box still
     runs); `cpu` forces CPU-only. Unknown values fall back to `auto`'s behavior.
+    `gpu:<n>` pins this model to one CUDA ordinal, overriding INFERENCE_GPU.
+
+    The CUDA entry is a plain string unless a card is actually named — by the model or
+    by INFERENCE_GPU — in which case it becomes the ``(name, {"device_id": n})`` tuple
+    onnxruntime takes for provider options. Keeping the unconfigured case a bare string
+    means this returns byte-identical output to before the setting existed.
 
     Filtered against what this build actually has. A CPU-only image is a supported
     configuration (`APP_BASE=slim-runtime` + `requirements-cpu.txt`), and naming a
@@ -84,13 +154,22 @@ def providers_for_device(device: str) -> List[str]:
     on *every* model load — which reads like a broken GPU on a machine that was never
     meant to have one, and buries the real errors around it.
     """
-    if device == "cpu":
+    kind, pinned_ordinal = parse_model_device(device)
+    if kind == "cpu":
         return ["CPUExecutionProvider"]
-    if device not in VALID_MODEL_DEVICES:
+    if kind not in VALID_MODEL_DEVICES:
         logger.warning(f"Unknown model device {device!r}; falling back to 'auto'")
     have = available_providers()
-    usable = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in have]
-    if "CUDAExecutionProvider" not in usable and device == "gpu":
+    ordinal = pinned_ordinal if pinned_ordinal is not None else default_inference_ordinal()
+    usable: List[Any] = []
+    for provider in ("CUDAExecutionProvider", "CPUExecutionProvider"):
+        if provider not in have:
+            continue
+        if provider == "CUDAExecutionProvider" and ordinal is not None:
+            usable.append((provider, {"device_id": ordinal}))
+        else:
+            usable.append(provider)
+    if "CUDAExecutionProvider" not in have and kind == "gpu":
         # Said once, and only when the model *asked* for the GPU: under `auto` running
         # on CPU is the documented fallback and not worth a line per load.
         global _warned_missing_cuda

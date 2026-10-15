@@ -29,11 +29,11 @@ from apps.helpers.inferenceProviders.inferenceProvider import (
 )
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import (
-    VALID_MODEL_DEVICES,
     atomic_write_bytes,
     get_model_metadata,
     save_model_json_metadata,
     validate_bare_model_name,
+    validate_model_device,
     write_onnx_with_sidecar,
 )
 from apps.helpers.modelFormat import (
@@ -352,9 +352,12 @@ class Manager:
         return True
 
     async def set_model_device(self, model_name: str, device: str) -> bool:
-        """Set a model's device preference (auto/gpu/cpu), persisted to its sidecar JSON."""
-        if device not in VALID_MODEL_DEVICES:
-            raise ValueError(f"Invalid device {device!r}; must be one of {VALID_MODEL_DEVICES}")
+        """Set a model's device preference, persisted to its sidecar JSON.
+
+        Accepts auto/gpu/cpu, or `gpu:<n>` to pin this model to one CUDA ordinal
+        regardless of the deployment's INFERENCE_GPU default.
+        """
+        validate_model_device(device)
 
         if model_name in self._avail_models:
             model_path = self._avail_models[model_name]

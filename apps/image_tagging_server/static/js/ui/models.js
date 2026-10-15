@@ -12,6 +12,7 @@ import {
   importModelUpload,
   isTrainingServerReachable,
   notifyModelsChanged,
+  fetchInferenceGpus,
   setModelDevice,
   stageSourceModel,
 } from '/app-static/js/shared/api/models.js';
@@ -132,16 +133,28 @@ export function renderModelLabelAssignments({
   deviceDiv.style.alignItems = 'center';
   deviceDiv.style.gap = '0.5em';
   container.appendChild(deviceDiv);
-  fetchModelDevice(preselectedModel).then(async device => {
+  Promise.all([fetchModelDevice(preselectedModel), fetchInferenceGpus()]).then(async ([device, gpuInfo]) => {
     const label = document.createElement('span');
     label.textContent = 'Device:';
     label.style.fontWeight = 'bold';
     deviceDiv.appendChild(label);
 
+    // One option per card, but only where there is more than one to choose between:
+    // on a single-GPU host "auto" already means that card, and `gpu:0` beside it would
+    // be a distinction without a difference. `auto` stays first so the common case is
+    // to leave this alone — the deployment's INFERENCE_GPU decides, and this dropdown
+    // is only opened to deliberately pin one model elsewhere.
+    // {key, text} rather than bare strings so the stored value stays the terse
+    // `gpu:<ordinal>` while the menu shows the card's name and bus id — two identical
+    // cards are indistinguishable by name alone (see helpers/gpuDevices.py).
+    const cardOptions = gpuInfo.gpus.length > 1
+      ? gpuInfo.gpus.map(g => ({ key: `gpu:${g.cudaOrdinal}`, text: g.label }))
+      : [];
+
     const dropdown = new DropDownField({
       value: device,
       editMode: true,
-      options: ['auto', 'gpu', 'cpu'],
+      options: ['auto', 'gpu', 'cpu', ...cardOptions],
       onChange: async value => {
         if (!value || value === device) return;
         try {

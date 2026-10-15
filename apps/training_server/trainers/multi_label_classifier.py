@@ -30,7 +30,15 @@ from typing import Any, Callable, Optional
 from . import register_trainer
 from ._backbone import create_classifier_backbone
 from ._two_phase import build_phase_optimizer_and_scheduler, phase_for_epoch
-from .base import STOP_CANCELLED, STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
+from .base import (
+    STOP_CANCELLED,
+    STOP_COMPLETED,
+    STOP_EARLY,
+    Trainer,
+    image_manifest_fields,
+    stop_summary,
+    torch_device,
+)
 from .onnx_validation import export_and_validate_onnx
 
 logger = logging.getLogger(__name__)
@@ -178,7 +186,7 @@ class MultiLabelClassifier(Trainer):
         )
 
         # ── Model ────────────────────────────────────────────────────────────
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch_device(config)
         logger.info("Training on device: %s (timm model: %s)", device, timm_model)
         self.warn_if_cpu(logger, progress_cb)
 

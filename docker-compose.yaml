@@ -60,6 +60,16 @@ x-gpu: &gpu
 
 x-gpu-env: &gpu-env
   CUDA_VISIBLE_DEVICES: ${GPU_DEVICES:-0}
+  # Which of the exposed cards each service uses by default, as a CUDA ordinal —
+  # a position within GPU_DEVICES, NOT a physical card id (CUDA_VISIBLE_DEVICES
+  # renumbers from zero). setup.sh asks in physical ids and writes ordinals.
+  #
+  # Empty means "let onnxruntime/torch choose", which is the behaviour these
+  # services had before the setting existed. A model's own sidecar `device`
+  # (auto/gpu/cpu/gpu:<n>) still overrides INFERENCE_GPU, and a training job's
+  # own `gpu_device` still overrides TRAINING_GPU.
+  INFERENCE_GPU: ${INFERENCE_GPU:-}
+  TRAINING_GPU: ${TRAINING_GPU:-}
 
 x-build-args: &build-args
   APP_BASE: ${APP_BASE:-slim-runtime}
