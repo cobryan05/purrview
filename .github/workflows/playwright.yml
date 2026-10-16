@@ -50,8 +50,36 @@ jobs:
       # several parallel browsers exhaust — it surfaces as tab crashes, not as an
       # out-of-space error.
       - name: Run the suite
+        id: suite
         run: |
           docker run --rm --shm-size=2g \
             -v "$PWD:/project" -w /project \
             purrview-ci:${{ github.sha }} \
             pytest playwright_tests/ -p no:asyncio -n 4
+
+      # Only on failure, and deliberately *after* the run rather than inside it: the
+      # standing hypothesis for a dead Playwright driver is a kernel OOM kill of `node`
+      # (four chromiums and four uvicorns on a 4-vCPU runner), and nothing in the job
+      # log could confirm or refute it — the kill happens inside the container, so
+      # `docker run` reports only pytest's own exit code. `dmesg` is the host kernel's
+      # ring buffer and does record a kill inside a container, which is what makes it
+      # worth reading here. The suite's own guard prints the memory reading taken at the
+      # moment of death; this is the other half of the same question.
+      #
+      # `|| true` on each: a runner that forbids dmesg must not turn a test failure into
+      # a confusing second failure in the diagnostics step.
+      - name: Say what the machine looked like
+        if: failure() && steps.suite.outcome == 'failure'
+        run: |
+          echo "::group::memory"
+          free -m || true
+          cat /proc/meminfo | head -5 || true
+          echo "::endgroup::"
+          echo "::group::kernel ring buffer — OOM kills land here, container or not"
+          (sudo dmesg -T | tail -80) 2>/dev/null || dmesg -T 2>/dev/null | tail -80 || echo "dmesg unavailable on this runner"
+          echo "::endgroup::"
+          echo "::group::oom kills only"
+          (sudo dmesg -T | grep -iE "out of memory|oom-kill|killed process") 2>/dev/null \
+            || dmesg -T 2>/dev/null | grep -iE "out of memory|oom-kill|killed process" \
+            || echo "no OOM lines found — if the suite reported a dead driver, it was not the kernel"
+          echo "::endgroup::"

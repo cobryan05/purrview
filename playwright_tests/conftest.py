@@ -18,6 +18,7 @@ import uvicorn
 from fastapi.responses import JSONResponse
 
 from apps.helpers.training.collectorSpec import collector_params_schema
+from playwright_tests.driver_health import abort_banner, is_dead_driver, report_says_dead_driver
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -421,6 +422,65 @@ _TOURS_OFF_SCRIPT = (
 )
 
 
+def _note_if_driver_died(exc: BaseException, where: str) -> None:
+    """Say, once and loudly, that this worker's Playwright driver has gone.
+
+    Only reports. The exception is still raised by the caller, and the *stop* is the
+    controller's job — see `pytest_runtest_logreport` below, and `report_says_dead_driver`
+    for why a worker must not try to exit the session itself.
+
+    The banner is printed here rather than assembled on the controller because the
+    memory reading has to be taken on the worker, in the moment: a run that has already
+    collapsed has released whatever it was holding.
+    """
+    if not is_dead_driver(exc):
+        return
+    print(abort_banner(where, exc), flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Stopping the run at the first dead driver, from the controller
+# ---------------------------------------------------------------------------
+
+_session = None
+
+
+def pytest_sessionstart(session):
+    """Stash the session so `pytest_runtest_logreport` can stop it.
+
+    Both hooks run on the xdist *controller* as well as in each worker, and it is the
+    controller's copy that matters: setting `shouldstop` there is what xdist's
+    `loop_once` reads to shut every worker down gracefully — the same mechanism `-x`
+    uses, as opposed to a worker killing itself mid-test.
+    """
+    global _session
+    _session = session
+
+
+def pytest_runtest_logreport(report):
+    """Stop the run the first time any worker reports a dead driver.
+
+    Checked on every report rather than only on setup, because the first sighting is
+    routinely a *teardown* — in CI run 38898595092 it was `p.close()` on a test that had
+    just passed, and only then did 1100 setups fail behind it.
+
+    `shouldstop` rather than an exception: it lets the tests already in flight on the
+    healthy workers finish and be reported, which is the difference between stopping a
+    run and losing it.
+    """
+    if _session is None or getattr(_session, "shouldstop", False):
+        return
+    if report.passed or not report.longreprtext:
+        return
+    if not report_says_dead_driver(report.longreprtext):
+        return
+    _session.shouldstop = (
+        f"Playwright driver died on the worker running {report.nodeid} "
+        f"({report.when}); stopping rather than failing every remaining test "
+        "identically — see FLAKY_TESTS.md"
+    )
+
+
 def _block_sse(page) -> None:
     """
     Intercept the two SSE endpoints so they return empty closed responses.
@@ -452,9 +512,22 @@ def shared_context(browser, browser_context_args):
     `add_cookies`, `storage_state` or context-level init scripts. The two things that
     would leak — cookies and this origin's localStorage — are cleared per test below.
     """
-    ctx = browser.new_context(**browser_context_args)
+    try:
+        ctx = browser.new_context(**browser_context_args)
+    except Exception as e:
+        _note_if_driver_died(e, "shared_context setup (browser.new_context)")
+        raise
     yield ctx
-    ctx.close()
+    try:
+        ctx.close()
+    except Exception as e:
+        # The banner goes out — a teardown is routinely where the death is first seen —
+        # but the run is not aborted from one. A context that cannot close because the
+        # driver is gone has nothing left to leak, and the next setup will stop the run
+        # anyway, having first let the other workers keep the results they already have.
+        if is_dead_driver(e):
+            print(abort_banner("shared_context teardown (ctx.close)", e), flush=True)
+        raise
 
 
 @pytest.fixture()
@@ -463,7 +536,13 @@ def page(shared_context, base_url):  # noqa: F811
     Override pytest-playwright's page fixture to block SSE endpoints.
     All tests that receive a `page: Page` argument get this version.
     """
-    p = shared_context.new_page()
+    # The exact call that failed 1100 times in CI run 38898595092, once per remaining
+    # test on a worker whose driver had already exited.
+    try:
+        p = shared_context.new_page()
+    except Exception as e:
+        _note_if_driver_died(e, "page setup (shared_context.new_page)")
+        raise
     p.add_init_script(_TOURS_OFF_SCRIPT)
     _block_sse(p)
     # -n auto runs many workers per host; under contention (many chromium
@@ -483,8 +562,17 @@ def page(shared_context, base_url):  # noqa: F811
         p.evaluate("try { localStorage.clear(); sessionStorage.clear(); } catch (_) {}")
     except Exception:
         pass  # navigated away, closed, or never reached the origin
-    p.close()
-    shared_context.clear_cookies()
+    try:
+        p.close()
+        shared_context.clear_cookies()
+    except Exception as e:
+        # The first sighting in run 38898595092 was exactly here, on `p.close()` — the
+        # driver had already gone during the test that just passed. Named in the log for
+        # that reason; the abort is left to the next setup, so a worker does not take
+        # the run down over a page it was finished with anyway.
+        if is_dead_driver(e):
+            print(abort_banner("page teardown (p.close)", e), flush=True)
+        raise
 
 
 @pytest.fixture(scope="module")
