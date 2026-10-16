@@ -2095,6 +2095,217 @@ class TestBulkHarvestFromTheGrid:
         assert sorted(params["blip_uuids"]) == ["blip-uuid-0001", "blip-uuid-0002"], params
 
 
+class TestBulkWrongLabelFromTheGrid:
+    """ "The watcher called all of these the wrong thing."
+
+    A night of a miscalibrated watcher is one mistake repeated sixty times, and the
+    per-event dialog is sixty clips to open for one decision. Three things have to hold,
+    and none of them raises when it breaks:
+
+    * **The dialog's unit is events, not boxes.** Nothing has read a sidecar at this
+      point, so a row counting boxes would be a number the page cannot know.
+    * **A group's checkbox stands for every event behind it.** The run must carry the
+      resolved rows, not the one card representing them — which looks identical on
+      screen and is discoverable only by the events that stay wrong.
+    * **Only labels are offered.** A zone-kind rule stores the *zone's* uuid in
+      `targetRef`, and a remap keyed on one would rewrite that slot from a zone to a
+      label.
+    """
+
+    def _mock_launch(self, page: Page, calls: list):
+        def handle_create(route):
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "tc-correct-bulk"}),
+            )
+
+        page.route("**/api/tasks/configs/create", handle_create)
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-correct-bulk"}),
+            ),
+        )
+
+    def _labels(self):
+        """`label-cat` and `label-other` are the fixtures' two subjects; the zones they
+        act on are deliberately absent, because a zone is not a label."""
+        return [
+            _label("label-cat", "Tabby"),
+            _label("label-other", "Clover"),
+            _label("label-luna", "Luna"),
+        ]
+
+    def test_the_rows_count_events_not_boxes(self, page: Page, base_url: str):
+        """Four events of Tabby and two of Clover is two decisions, sized. A row
+        counting boxes would state a number no request on this page has asked for."""
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+
+        rows = page.locator("[data-testid='label-correction-row']")
+        expect(rows).to_have_count(2)
+        expect(rows.first).to_contain_text("Tabby — 4 events")
+        expect(rows.nth(1)).to_contain_text("Clover — 2 events")
+
+    def test_the_counts_follow_the_selection(self, page: Page, base_url: str):
+        """The conditional half of the test above: fewer cards ticked, smaller numbers,
+        and the label nobody selected gone from the dialog entirely."""
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        boxes = page.locator("[data-testid='event-card-select']")
+        boxes.nth(0).check()
+        boxes.nth(1).check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+
+        rows = page.locator("[data-testid='label-correction-row']")
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_contain_text("Tabby — 2 events")
+
+    def test_a_zone_target_is_not_offered_as_a_correctable_label(self, page: Page, base_url: str):
+        """`targetRef` is `zone-bowl` on every one of these events. Offered a row, a
+        remap keyed on it would rewrite `target_ref` from a zone to a label."""
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+
+        dialog = page.locator("[data-testid='label-correction-modal']")
+        expect(dialog).to_be_visible()
+        expect(dialog).not_to_contain_text("zone-bowl")
+        expect(dialog).not_to_contain_text("water bowl")
+
+    def test_a_selection_carrying_no_known_label_opens_no_dialog(self, page: Page, base_url: str):
+        """The negative that carries the weight: a dialog whose every row would be a
+        zone is a dialog that should never have opened. Said out loud, because a button
+        that silently does nothing gets reported as broken."""
+        _mock(page, events=_two_identities())
+        _route_labels(page, [_label("label-luna", "Luna")])
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+
+        expect(page.locator("[data-testid='label-correction-modal']")).to_have_count(0)
+        expect(page.locator("#toast-container")).to_contain_text("recorded a label to correct")
+
+    def test_the_launched_run_carries_the_remap_and_every_selected_event(self, page: Page, base_url: str):
+        calls = []
+        self._mock_launch(page, calls)
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        boxes = page.locator("[data-testid='event-card-select']")
+        boxes.nth(0).check()
+        boxes.nth(1).check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+        page.locator("[data-testid='label-correction-select']").first.select_option("label-luna")
+        page.locator("[data-testid='label-correction-confirm']").click()
+
+        wait_until(page, lambda: len(calls) >= 1, "the correction never reached the task API")
+        params = calls[0]["params"]
+        assert params["remap"] == {"label-cat": "label-luna"}, params
+        assert sorted(params["event_uuids"]) == ["drink-0000", "drink-0001"], params
+
+    def test_a_grouped_selection_corrects_every_event_behind_the_card(self, page: Page, base_url: str):
+        """The gesture this feature is for. A group card stands for four rows, and a run
+        carrying only its representative leaves three of them still wrong — which looks
+        identical on screen."""
+        calls = []
+        self._mock_launch(page, calls)
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="groups")
+
+        page.locator("[data-testid='event-group-card-select']").first.click()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+        page.locator("[data-testid='label-correction-select']").first.select_option("label-luna")
+        page.locator("[data-testid='label-correction-confirm']").click()
+
+        wait_until(page, lambda: len(calls) >= 1, "the correction never reached the task API")
+        uuids = calls[0]["params"]["event_uuids"]
+        assert len(uuids) > 1, f"the group was reduced to its representative: {uuids}"
+        assert all(u.startswith("drink-") or u.startswith("litter-") for u in uuids), uuids
+
+    def test_the_row_fix_is_offered_and_carried_through(self, page: Page, base_url: str):
+        """The half the user sees immediately. Without it the rows keep reading, grouping
+        and filtering as the mistake that was just corrected."""
+        calls = []
+        self._mock_launch(page, calls)
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+        page.locator("[data-testid='label-correction-select']").first.select_option("label-luna")
+
+        fix_row = page.locator("[data-testid='label-correction-fix-event']")
+        expect(fix_row).to_be_visible()
+        expect(fix_row).to_contain_text("Also fix 4 of the 6 selected events")
+
+        page.locator("[data-testid='label-correction-confirm']").click()
+        wait_until(page, lambda: len(calls) >= 1, "the correction never reached the task API")
+        assert calls[0]["params"]["fix_events"] is True, calls[0]["params"]
+
+    def test_unticking_the_row_fix_leaves_the_rows_alone(self, page: Page, base_url: str):
+        """The conditional: same remap, same frames, and the grid keeps its labels."""
+        calls = []
+        self._mock_launch(page, calls)
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+        page.locator("[data-testid='label-correction-select']").first.select_option("label-luna")
+        page.locator("[data-testid='label-correction-fix-event-box']").uncheck()
+        page.locator("[data-testid='label-correction-confirm']").click()
+
+        wait_until(page, lambda: len(calls) >= 1, "the correction never reached the task API")
+        assert calls[0]["params"]["fix_events"] is False, calls[0]["params"]
+
+    def test_the_estimate_promises_a_ceiling_rather_than_a_count(self, page: Page, base_url: str):
+        """No sidecar has been read, so a stated frame count would be invented. "Up to"
+        is the honest answer, and it is worth knowing before agreeing to it."""
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+        page.locator("[data-testid='label-correction-select']").first.select_option("label-luna")
+
+        estimate = page.locator("[data-testid='label-correction-estimate']")
+        expect(estimate).to_contain_text("Up to")
+        expect(estimate).to_contain_text("each of 6 events")
+
+    def test_the_weak_frames_option_is_not_offered_in_bulk(self, page: Page, base_url: str):
+        """Whether a label has hedged frames is a per-sidecar fact. Offered here, the
+        option could only ever promise a harvest it cannot size."""
+        _mock(page, events=_two_identities())
+        _route_labels(page, self._labels())
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        page.locator("[data-testid='event-search-wrong-label']").click()
+
+        options = page.locator("[data-testid='label-correction-select']").first.locator("option")
+        assert not any("low-confidence" in t for t in options.all_text_contents()), options.all_text_contents()
+
+
 class TestTheSwitchReviewQueue:
     """Identity switches, decided across a selection rather than one event at a time.
 

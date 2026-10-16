@@ -269,6 +269,54 @@ export function labelTallyAcrossClip(doc, labels, { weakConfMax = WEAK_CONF_MAX 
 }
 
 /**
+ * Tally the labels a *selection* of events was recorded under.
+ *
+ * The bulk counterpart to `labelTallyAcrossClip`, and deliberately a different source:
+ * a clip's tally comes from its sidecar, but a selection has no single sidecar and
+ * reading N of them to populate a dialog would cost a request per selected event before
+ * the user has chosen anything. The event rows already carry the watcher's verdict in
+ * `subjectRef`/`targetRef`, which is the thing a bulk correction is disagreeing with —
+ * "these thirty rows say Clover; they were Luna".
+ *
+ * So the unit is events, not boxes, and the rows carry `events` where a clip tally
+ * carries `boxes`/`frames`. No `weakFrames`: whether a label has hedged frames is a
+ * per-sidecar fact, so the "collect its low-confidence frames" option cannot be offered
+ * here — and an option whose estimate could only ever be a guess is worse than its
+ * absence.
+ *
+ * ⚠️ **Only refs the DB knows as labels are offered**, unlike the clip tally, which
+ * keeps an unknown uuid precisely because a stale detection is worth correcting. A
+ * `targetRef` is not necessarily a label at all: a zone-kind rule stores the *zone's*
+ * uuid there, and a remap keyed on one would rewrite `target_ref` from a zone to a
+ * label — a row pointing at something that is not a place. The sidecar tally never has
+ * to think about this because a sidecar holds only detections.
+ *
+ * @param {Array<Object>} events - watch event rows
+ * @param {Map<string, Object>} labels - uuid → label, as `fetchLabels()` returns
+ * @returns {Array<{labelUuid: string, name: string, events: number}>} biggest first
+ */
+export function labelTallyAcrossEvents(events, labels) {
+  const tally = new Map();
+  for (const event of events ?? []) {
+    // Counted once per event per label: a rule like "Maple near Maple" names the same
+    // label in both slots, and a row saying "2 events" for one event is a lie about the
+    // size of what is being corrected.
+    const refs = new Set([event?.subjectRef, event?.targetRef].filter(Boolean));
+    for (const ref of refs) {
+      if (!labels?.has(ref)) continue;
+      tally.set(ref, (tally.get(ref) ?? 0) + 1);
+    }
+  }
+  return [...tally.entries()]
+    .map(([labelUuid, count]) => ({
+      labelUuid,
+      name: labels.get(labelUuid).name || labelUuid,
+      events: count,
+    }))
+    .sort((a, b) => b.events - a.events || a.name.localeCompare(b.name));
+}
+
+/**
  * The times of every frame holding at least one of these labels.
  *
  * With `maxConf`, only the frames holding one the detector hedged on — the candidate
@@ -604,6 +652,14 @@ export function dedupeOverlappingBoxes(boxes, iouThreshold = 0.75) {
  * @param {Map<string, Object>} opts.labels - every label the DB knows, uuid → label
  * @param {?Object} [opts.event] - the event being corrected. Given, the dialog can also
  *   offer to fix the event's own subject/target — see `eventCorrectionFor`.
+ * @param {?Array<Object>} [opts.events] - the events being corrected, when the
+ *   correction is over a selection rather than the clip on screen. Mutually exclusive
+ *   with `event`: the fix-row then counts how many rows a remap would rewrite instead
+ *   of naming one row's slots.
+ * @param {?(remap: Map<string, string>) => string} [opts.estimateText] - the whole
+ *   estimate line, for a caller whose frame count is not knowable up front. A bulk
+ *   correction has no sidecar in the browser, so it can promise a ceiling and nothing
+ *   more; takes precedence over `estimateFrames`.
  * @param {(remap: Map<string, string>) => (number | {frames: number, hard: number})} [opts.estimateFrames] -
  *   how many frames a given selection would harvest, for the live count; `hard` is how
  *   many of them sit on a moment `hardMomentsFor` or `weakMomentsFor` pointed at. Given
@@ -617,19 +673,35 @@ export function dedupeOverlappingBoxes(boxes, iouThreshold = 0.75) {
  *   `eventDetailModal.js`'s `onRelabel`. Ignored for any `from` not present in `detected`.
  * @returns {{close: () => void}}
  */
-export function openLabelCorrectionModal({ detected, labels, event = null, estimateFrames, onConfirm, presetRemap = null }) {
+export function openLabelCorrectionModal({
+  detected,
+  labels,
+  event = null,
+  events = null,
+  estimateFrames,
+  estimateText = null,
+  onConfirm,
+  presetRemap = null,
+}) {
   const shell = createModalShell();
   shell.dialog.classList.add('label-correction');
   shell.dialog.dataset.testid = 'label-correction-modal';
 
+  const bulk = Array.isArray(events) && events.length > 0;
+
   shell.dialog.appendChild(el('h3', 'label-correction__title', 'What did the watcher get wrong?'));
-  shell.dialog.appendChild(el('p', 'label-correction__note',
-    'A spread of frames from across this clip is saved, left unverified for review — '
-    + 'not every frame, because consecutive frames of the same subject are near-duplicates. '
-    + 'A relabelled box keeps its geometry; "No bbox" removes the box instead, for a '
-    + 'detection that should never have been made; "right label, collect weak frames" '
-    + 'keeps both and harvests only the moments the detector hedged on. The event is '
-    + 'flagged so you can find it again.'));
+  shell.dialog.appendChild(el('p', 'label-correction__note', bulk
+    ? `A spread of frames is saved from each of these ${events.length} events, left `
+      + 'unverified for review — not every frame, because consecutive frames of the same '
+      + 'subject are near-duplicates. A relabelled box keeps its geometry; "No bbox" '
+      + 'removes the box instead, for a detection that should never have been made. The '
+      + 'clips are read on the server, so this runs as a job you can leave.'
+    : 'A spread of frames from across this clip is saved, left unverified for review — '
+      + 'not every frame, because consecutive frames of the same subject are near-duplicates. '
+      + 'A relabelled box keeps its geometry; "No bbox" removes the box instead, for a '
+      + 'detection that should never have been made; "right label, collect weak frames" '
+      + 'keeps both and harvests only the moments the detector hedged on. The event is '
+      + 'flagged so you can find it again.'));
 
   const rows = el('div', 'label-correction__rows');
   /** @type {Array<{from: string, select: HTMLSelectElement}>} */
@@ -644,12 +716,15 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     line.dataset.testid = 'label-correction-row';
     // Both counts: how insistent the model was, and how much training data correcting it
     // would produce. They are routinely very different numbers.
-    line.appendChild(el('span', 'label-correction__from',
-      `${row.name} — ${row.boxes} box${row.boxes === 1 ? '' : 'es'} `
-      + `in ${row.frames} frame${row.frames === 1 ? '' : 's'}`
-      // The number that decides whether the weak-frame option is worth choosing, said
-      // on the row rather than discovered from an estimate of zero after choosing it.
-      + (row.weakFrames ? `, ${row.weakFrames} low-confidence` : '')));
+    line.appendChild(el('span', 'label-correction__from', row.events != null
+      // A selection's rows count events, not boxes: nothing has read a sidecar yet —
+      // see `labelTallyAcrossEvents`.
+      ? `${row.name} — ${row.events} event${row.events === 1 ? '' : 's'}`
+      : `${row.name} — ${row.boxes} box${row.boxes === 1 ? '' : 'es'} `
+        + `in ${row.frames} frame${row.frames === 1 ? '' : 's'}`
+        // The number that decides whether the weak-frame option is worth choosing, said
+        // on the row rather than discovered from an estimate of zero after choosing it.
+        + (row.weakFrames ? `, ${row.weakFrames} low-confidence` : '')));
 
     const select = document.createElement('select');
     select.className = 'label-correction__to';
@@ -720,7 +795,9 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
   shell.dialog.appendChild(fixRow);
 
   const actions = el('div', 'label-correction__actions');
-  const confirm = el('button', 'panel-btn label-correction__confirm', 'Flag & save for review');
+  const confirm = el('button', 'panel-btn label-correction__confirm', bulk
+    ? `Correct ${events.length} event${events.length === 1 ? '' : 's'}`
+    : 'Flag & save for review');
   confirm.type = 'button';
   confirm.dataset.testid = 'label-correction-confirm';
   confirm.disabled = true;
@@ -741,7 +818,20 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
   }
 
   function syncFixEventRow() {
-    const correction = eventCorrectionFor(event, currentRemap(), labels);
+    const remap = currentRemap();
+    if (bulk) {
+      // Counted rather than listed: thirty rows' worth of "subject Clover → Luna" is
+      // the same sentence thirty times, and the number is the part that decides it. A
+      // selection whose rows the remap does not touch gets no offer at all, exactly as
+      // one event does.
+      const touched = events.filter(e => eventCorrectionFor(e, remap, labels)).length;
+      fixRow.hidden = touched === 0;
+      if (!touched) return;
+      fixText.textContent = `Also fix ${touched} of the ${events.length} selected `
+        + `event${events.length === 1 ? '' : 's'}, so they read and filter as the corrected label`;
+      return;
+    }
+    const correction = eventCorrectionFor(event, remap, labels);
     fixRow.hidden = !correction;
     if (!correction) return;
     // Named per slot, because "subject" and "target" are not interchangeable and a
@@ -756,6 +846,12 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     syncFixEventRow();
     if (!remap.size) {
       estimate.textContent = '';
+      return;
+    }
+    // A caller with no sidecar in hand owns its whole line: a bulk correction can state
+    // a ceiling and must not state a count it cannot know.
+    if (estimateText) {
+      estimate.textContent = estimateText(remap) ?? '';
       return;
     }
     const est = estimateFrames?.(remap);

@@ -54,6 +54,18 @@ import {
 } from './identity.js';
 import { openBucketBrowseModal } from './bucketBrowseModal.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
+import {
+  NO_BBOX,
+  WEAK,
+  eventCorrectionFor,
+  getConfiguredMaxTrainingFrames,
+  labelTallyAcrossEvents,
+  loadConfiguredMaxTrainingFrames,
+  openLabelCorrectionModal,
+} from './labelCorrectionModal.js';
+import { TaskStatus, taskResultData } from '/app-static/js/shared/api/tasks.js';
+import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 
 const PAGE_SIZE = 60;
 
@@ -129,6 +141,17 @@ const FINDINGS_CHUNK = 100;
  * and saying so before the confirm is better than after the launch.
  */
 const MAX_BULK_FINDINGS = 2000;
+
+/**
+ * Most events one bulk label correction will act on.
+ *
+ * Mirrors `CorrectEventLabelsTask._SANITY_MAX_EVENTS`: past it the task refuses the run,
+ * and saying so before the confirm is better than after the launch.
+ */
+const MAX_BULK_EVENTS = 2000;
+
+/** The task behind the selection bar's "Wrong label…". */
+const CORRECT_LABELS_TYPENAME = 'CorrectEventLabelsTask';
 
 /** The triage states offered in bulk, as `[value, button label]`. */
 const REVIEW_ACTIONS = [
@@ -823,6 +846,12 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   });
   switchesBtn.title = 'Walk the identity switches in the selection, comparing a frame either side of each.';
   selectionActions.appendChild(switchesBtn);
+  const relabelBtn = button('Wrong label…', () => void relabelSelected(), {
+    testid: 'event-search-wrong-label',
+  });
+  relabelBtn.title = 'The watcher called all of these the wrong thing — correct the rows and '
+    + 'harvest training frames from each clip.';
+  selectionActions.appendChild(relabelBtn);
   selectionActions.appendChild(deleteBtn);
   selectionActions.appendChild(button('Clear selection', () => {
     // All three units, not just the flat one. Clearing only `selected` left a group or
@@ -1178,6 +1207,136 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       // means the switch review beside it still has something to act on.
       await search();
     });
+  }
+
+  /**
+   * "The watcher called all of these the wrong thing" — correct a whole selection.
+   *
+   * The bulk counterpart to the event player's own "Wrong label…", and deliberately not
+   * a loop over it: that path seeks a real `<video>` and encodes each frame off a canvas,
+   * which needs the tab foregrounded and costs seconds per clip. So the remap is handed
+   * to `CorrectEventLabelsTask`, which does the same work from the clip files.
+   *
+   * Grouped and visit selections need nothing special here — `eventsForSelection`
+   * resolves all three units to rows, which is also where the labels on offer come from.
+   */
+  async function relabelSelected() {
+    const events = await withBusy(relabelBtn, 'Loading events…', eventsForSelection);
+    if (!events?.length) return;
+    if (events.length > MAX_BULK_EVENTS) {
+      toast(`${events.length} events is more than one correction run takes — narrow the selection`,
+        5000, 'error');
+      return;
+    }
+    const labels = await withBusy(relabelBtn, 'Loading labels…', fetchLabels);
+    if (!labels) return;
+    // Before the dialog, so its ceiling and the task's cap are the same number rather
+    // than disagreeing exactly once per session — see `loadConfiguredMaxTrainingFrames`.
+    await loadConfiguredMaxTrainingFrames();
+    const detected = labelTallyAcrossEvents(events, labels);
+    if (!detected.length) {
+      // Said out loud: a selection of zone-rule events carries no label in either slot,
+      // and there is nothing a label remap could correct about it.
+      toast('None of those events recorded a label to correct', 5000);
+      return;
+    }
+    const maxFrames = getConfiguredMaxTrainingFrames();
+    openLabelCorrectionModal({
+      detected,
+      labels,
+      events,
+      estimateText: () => `Up to ${maxFrames} frame${maxFrames === 1 ? '' : 's'} from each of `
+        + `${events.length} event${events.length === 1 ? '' : 's'} — at most `
+        + `${maxFrames * events.length}, and fewer wherever a clip is short or missing. `
+        + 'They are saved unverified, for review.',
+      onConfirm: (remap, { fixEvent } = {}) => launchCorrection(events, remap, labels, { fixEvent }),
+    });
+  }
+
+  /**
+   * Hand one remap to the correction task.
+   *
+   * The row fixes go to the task too rather than being patched from here: a group card
+   * stands for several hundred events, and that many PATCHes from a browser tab is a
+   * request storm the user can close mid-way through.
+   */
+  async function launchCorrection(events, remap, labels, { fixEvent = false } = {}) {
+    const nameOf = uuid => labels?.get(uuid)?.name || uuid;
+    const describeTo = to => {
+      if (to === NO_BBOX) return 'no bbox';
+      // Not a correction at all, and said as such: the label was right and only its
+      // hedged frames are being collected.
+      if (to === WEAK) return 'kept, low confidence';
+      return nameOf(to);
+    };
+    const changed = events.filter(e => eventCorrectionFor(e, remap, labels)).length;
+    await withBusy(relabelBtn, 'Starting…', async () => {
+      const taskUuid = await launchRun({
+        typename: CORRECT_LABELS_TYPENAME,
+        name: `Label correction · ${events.length} event${events.length === 1 ? '' : 's'}`,
+        params: {
+          event_uuids: events.map(e => e.uuid),
+          remap: Object.fromEntries(remap),
+          fix_events: fixEvent,
+          max_frames_per_event: getConfiguredMaxTrainingFrames(),
+        },
+      });
+      toast(
+        `Correcting ${events.length} event${events.length === 1 ? '' : 's'} `
+        + `(${[...remap].map(([from, to]) => `${nameOf(from)} → ${describeTo(to)}`).join(', ')})`
+        + (fixEvent && changed ? ` — ${changed} row${changed === 1 ? '' : 's'} will be rewritten` : '')
+        + '. Frames land in the review queue as unverified; follow it in Jobs.',
+        7000,
+      );
+      // The selection is dropped now, not when the run finishes: it is keyed on rows
+      // whose subject is about to change, and leaving it armed behind a bar reading
+      // "Delete 30 events" over a changing grid is how the wrong rows get acted on.
+      selected.clear();
+      selectedGroups.clear();
+      selectedSessions.clear();
+      anchorIndex = -1;
+      syncSelectionUi();
+      watchCorrection(taskUuid);
+    });
+  }
+
+  /**
+   * Reload the grid once the correction run has actually rewritten the rows.
+   *
+   * Not immediately after the launch, which is what the harvest does: a harvest changes
+   * nothing a card displays, whereas this rewrites the very labels on screen, and a
+   * refresh that lands before the first patch shows the mistake again and reads as the
+   * correction having failed.
+   *
+   * Best-effort and tied to this page: if the tab is closed the run still finishes, and
+   * the next visit to the grid reads the corrected rows anyway.
+   */
+  function watchCorrection(taskUuid) {
+    const unsubscribe = subscribeTaskStream({
+      onMessage: async (data) => {
+        const status = data.tasks?.[taskUuid]?.instance?.status;
+        if (status !== TaskStatus.COMPLETED && status !== TaskStatus.ERROR) return;
+        unsubscribe();
+        if (status === TaskStatus.ERROR) {
+          toast(`Label correction failed: ${data.tasks[taskUuid].instance?.errorMessage || 'unknown error'}`,
+            6000, 'error');
+          return;
+        }
+        // `.data`, not the result itself — the task's dict arrives in a `{ status, data }`
+        // envelope, and reading past it reports zero for a run that corrected plenty.
+        const result = taskResultData(data.tasks[taskUuid].instance) || {};
+        toast(
+          `Correction done: ${result.framesSaved ?? 0} frame(s) saved, `
+          + `${result.eventsCorrected ?? 0} event row(s) fixed`
+          + (result.duplicatesSkipped ? `, ${result.duplicatesSkipped} already in the dataset` : '')
+          + (result.failed ? `, ${result.failed} failed` : ''),
+          7000,
+        );
+        await search();
+      },
+      onError: (err) => Logger.error(err),
+    });
+    return unsubscribe;
   }
 
   /**
