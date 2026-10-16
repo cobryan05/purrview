@@ -41,6 +41,17 @@ _ARCH_MAP: dict[str, tuple[str, str]] = {
 }
 
 
+def _resume_checkpoint(artifact_path: Path, model_name: str) -> Optional[Path]:
+    """The checkpoint a killed run left behind, or None.
+
+    `last.pt` specifically, not `best.pt`: resuming means continuing the run, and the
+    best epoch may be far behind the last one. `best.pt` is the *deliverable*, which is
+    why it survives a restart that overwrites `last.pt`.
+    """
+    checkpoint = artifact_path / "runs" / model_name / "weights" / "last.pt"
+    return checkpoint if checkpoint.is_file() else None
+
+
 def _get_model_class(class_name: str):
     import libreyolo
 
@@ -198,9 +209,36 @@ class ObjectDetectionTrainer(Trainer):
             # model.train() adapts the head to the dataset's class count automatically.
             model_cls = _get_model_class(model_class_name)
             weight_filename = f"{model_cls.FILENAME_PREFIX}{size}{model_cls.WEIGHT_EXT}"
-            logger.info("Loading %s (size=%s) from %s", model_class_name, size, weight_filename)
 
-            model = model_cls(weight_filename, size=size)
+            # Picking up where a killed run left off, rather than from COCO.
+            #
+            # `restart_job` only ever acts on an `interrupted` job — one whose server
+            # died mid-run — and libreyolo writes `last.pt` after every epoch, carrying
+            # the optimizer and LR-scheduler state as well as the weights. Resuming is
+            # therefore the difference between losing the epochs since the last
+            # checkpoint and losing all of them: at ~2.4 min/epoch a 20-epoch run is
+            # most of an hour.
+            #
+            # The flag is explicit rather than inferred from the file existing. A job
+            # gets a fresh artifact dir, so in practice only a restart finds a
+            # checkpoint there — but "resume whatever is on disk" is a rule that starts
+            # silently resuming the moment anything else reuses a directory, and a
+            # silent resume is worse than a silent restart.
+            resume_from = _resume_checkpoint(artifact_path, model_name) if config.get("resume") else None
+            if config.get("resume") and resume_from is None:
+                # Said out loud: a restart that was asked to resume and could not is a
+                # run starting from epoch 1, and the user is owed that before they watch
+                # the loss climb back to its opening value.
+                logger.warning("Resume requested but no checkpoint under %s — starting from scratch", artifact_path)
+                progress_cb(
+                    {
+                        "log": "No checkpoint was found for this job, so training starts from the beginning.",
+                    }
+                )
+
+            source = str(resume_from) if resume_from else weight_filename
+            logger.info("Loading %s (size=%s) from %s", model_class_name, size, source)
+            model = model_cls(source, size=size)
 
             try:
                 # Run training in a thread (libreyolo train() is synchronous).
@@ -226,6 +264,13 @@ class ObjectDetectionTrainer(Trainer):
                     name=model_name,
                     exist_ok=True,
                     callbacks=[_epoch_cb, start_announcer],
+                    # Loading `last.pt` only restores the *weights*; this is what makes
+                    # libreyolo restore the optimizer, the LR schedule and the epoch
+                    # counter too, so the run continues rather than starting a fresh
+                    # 100 epochs from a warm start. It raises on an architecture or
+                    # config mismatch, which is deliberately not caught: a resume that
+                    # quietly became a restart is the bug this whole change fixes.
+                    resume=resume_from is not None,
                     **device_kwarg(config),
                 )
 

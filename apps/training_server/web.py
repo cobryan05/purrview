@@ -448,12 +448,22 @@ class WebApp:
             response_model=RestartJobResponse,
             tags=["training"],
         )
-        async def restart_job(job_id: str):
-            """Re-queue an interrupted job. Only valid for jobs in 'interrupted' status."""
+        async def restart_job(job_id: str, resume: bool = True):
+            """Re-queue an interrupted job. Only valid for jobs in 'interrupted' status.
+
+            `resume` defaults to true: an interrupted run has a per-epoch checkpoint and
+            continuing from it is almost always what was wanted. `resume=false` starts
+            over from pretrained weights, for a job whose dataset or architecture has
+            moved on.
+
+            A query parameter rather than a body so the default is the whole contract
+            for existing callers — they keep working and start resuming, which is what
+            they already believed they were doing.
+            """
             job = self._manager.get_job(job_id)
             if not job:
                 return JSONResponse({"detail": "Job not found"}, status_code=404)
-            ok = self._manager.restart_job(job_id)
+            ok = self._manager.restart_job(job_id, resume=resume)
             if not ok:
                 return JSONResponse(
                     {"detail": f"Cannot restart job in status: {job.status}"},

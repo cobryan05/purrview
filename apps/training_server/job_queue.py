@@ -56,6 +56,16 @@ class Job:
     # warning quotes. Without this the app has no way to tell "training" from "stopping",
     # and the two look identical for minutes.
     cancel_requested: bool = False
+    # The last epoch a progress event reported, latched the way `device_warning` is and
+    # persisted alongside the status. `last_progress` cannot answer this after a restart
+    # — it is in-memory only — and this is what lets an interrupted job's resume offer
+    # name the epoch it would continue from without opening the 300 MB checkpoint that
+    # holds the authoritative number.
+    #
+    # Approximate by at most one: a server killed between the epoch event and
+    # libreyolo's checkpoint write leaves this one ahead of the file. Only the label is
+    # affected — the resume itself reads the epoch out of the checkpoint.
+    last_epoch: Optional[int] = None
 
     def _persist(self) -> None:
         """Atomically write job state to disk for crash recovery."""
@@ -71,6 +81,7 @@ class Job:
                 "required_uuids": list(self.required_uuids),
                 "artifact_dir": str(self.artifact_dir) if self.artifact_dir else None,
                 "result": self.result,
+                "last_epoch": self.last_epoch,
             }
             tmp = self.state_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(data))
@@ -105,6 +116,9 @@ class Job:
             "created_at": self.created_at.isoformat(),
             "queue_position": self.queue_position,
             "result": self.result,
+            # Only an interrupted job can be resumed, so the offer is scoped here rather
+            # than leaving every caller to pair the two fields correctly.
+            "resumable_epoch": (self.last_epoch + 1) if (self.status == "interrupted" and self.last_epoch) else None,
         }
 
     async def stream(self) -> AsyncIterator[tuple[str, dict]]:
@@ -229,11 +243,27 @@ class JobQueue:
             return True
         return False
 
-    def restart_job(self, job_id: str) -> bool:
-        """Re-queue a job that was interrupted by a server restart."""
+    def restart_job(self, job_id: str, resume: bool = True) -> bool:
+        """Re-queue a job that was interrupted by a server restart.
+
+        `resume` carries into the trainer's config, which is what makes the run continue
+        from `last.pt` instead of starting over. It defaults to true because that is
+        what this method has always claimed to do and what every caller assumed: the
+        trainer ignored the checkpoint entirely, so an interrupted 20-epoch run silently
+        went back to epoch 1 and the only symptom was the loss climbing back to its
+        opening value.
+
+        Passed false by "start over", which is a real thing to want — a resume is
+        refused outright on an architecture or config mismatch, and a run whose dataset
+        has changed underneath it should not continue.
+        """
         job = self._jobs.get(job_id)
         if not job or job.status != "interrupted":
             return False
+        # On the config, not on the Job, because the config is what reaches the trainer
+        # and what `_persist` already writes — a second field would have to be threaded
+        # through both and kept in step with this one.
+        job.config = {**(job.config or {}), "resume": bool(resume)}
         position = self._queue.qsize()
         job.status = "queued"
         job.queue_position = position
@@ -306,6 +336,15 @@ class JobQueue:
             job.last_progress = data
             if data.get("device_warning"):
                 job.device_warning = data["device_warning"]
+            if isinstance(data.get("epoch"), int) and data["epoch"] != job.last_epoch:
+                job.last_epoch = data["epoch"]
+                # Written here because `emit` persists only on status transitions, and a
+                # crash is precisely the case where no transition follows: without this
+                # the state file still says whatever it did when the job went `running`,
+                # and the resume offer could never name an epoch. One small JSON write
+                # per epoch — minutes apart — and only when the number actually moves,
+                # so a trainer reporting progress per batch does not write per batch.
+                job._persist()
             job.emit("progress", data)
 
         try:

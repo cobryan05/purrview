@@ -35,7 +35,38 @@ function _fmtDate(iso) {
 
 const CANCELLABLE_STATUSES = new Set(['running', 'queued', 'awaiting_data', 'interrupted']);
 
-function _renderJob(job, onCancel) {
+/**
+ * A small action on a job row, styled like the cancel button beside it.
+ *
+ * @param {string} text
+ * @param {string} title
+ * @param {(e: Event) => Promise<void>} onClick
+ * @param {string} [testid]
+ */
+function _rowButton(text, title, onClick, testid) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = text;
+  btn.className = 'secondary';
+  btn.style.cssText = 'font-size: 0.68em; padding: 0.1em 0.45em; line-height: 1.4; min-width: 0;';
+  btn.title = title;
+  if (testid) btn.dataset.testid = testid;
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = '…';
+    try {
+      await onClick(e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+  return btn;
+}
+
+function _renderJob(job, onCancel, onRestart) {
   const row = document.createElement('div');
   row.style.cssText = `
     display: grid;
@@ -80,6 +111,32 @@ function _renderJob(job, onCancel) {
     : job.status.replace(/_/g, ' ');
   statusBadge.textContent = statusText;
   rightCol.appendChild(statusBadge);
+
+  // An interrupted job is the one status with work still recoverable: the server died
+  // mid-run and libreyolo left a per-epoch checkpoint behind. Resume leads, because
+  // continuing is nearly always what was wanted — starting over throws away however
+  // many epochs had already run, which at a couple of minutes each is the whole
+  // afternoon. "Start over" stays available for the cases a resume cannot serve: a
+  // changed dataset, or a changed architecture, which libreyolo refuses outright.
+  if (job.status === 'interrupted' && onRestart) {
+    const epoch = job.resumable_epoch;
+    rightCol.appendChild(_rowButton(
+      epoch ? `▸ Resume at ${epoch}` : '▸ Resume',
+      epoch
+        ? `Continue this run from its last checkpoint, at epoch ${epoch}. The optimizer and `
+          + 'learning-rate schedule carry over, so it picks up where it stopped.'
+        : 'Continue this run from its last checkpoint.',
+      () => onRestart(job.job_id, true),
+      'training-job-resume',
+    ));
+    rightCol.appendChild(_rowButton(
+      'Start over',
+      'Discard the checkpoint and train from pretrained weights again. Use this if the '
+        + 'dataset or the architecture has changed since the run began.',
+      () => onRestart(job.job_id, false),
+      'training-job-start-over',
+    ));
+  }
 
   if (CANCELLABLE_STATUSES.has(job.status) && onCancel) {
     const cancelBtn = document.createElement('button');
@@ -332,12 +389,31 @@ export function showTrainingServerModal() {
           return a.created_at < b.created_at ? -1 : 1;
         });
         for (const job of sorted) {
-          body.appendChild(_renderJob(job, async (jobId) => {
-            try {
-              await apiFetch(`/api/training/jobs/${jobId}`, { method: 'DELETE' });
-            } catch (_) { /* best-effort */ }
-            await refresh();
-          }));
+          body.appendChild(_renderJob(
+            job,
+            async (jobId) => {
+              try {
+                await apiFetch(`/api/training/jobs/${jobId}`, { method: 'DELETE' });
+              } catch (_) { /* best-effort */ }
+              await refresh();
+            },
+            async (jobId, resume) => {
+              // Reported rather than swallowed, unlike the cancel beside it: a resume
+              // that libreyolo refuses — a changed architecture, a config mismatch —
+              // comes back as a 409 or a 500, and silently re-rendering an unchanged
+              // row is how "the button does nothing" gets reported as a bug.
+              try {
+                await apiFetch(
+                  `/api/training/jobs/${jobId}/restart?resume=${resume ? 'true' : 'false'}`,
+                  { method: 'POST' },
+                );
+              } catch (e) {
+                showPaneError(body, `Could not ${resume ? 'resume' : 'restart'} that job: ${e.message}`);
+                return;
+              }
+              await refresh();
+            },
+          ));
         }
       }
 

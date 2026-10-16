@@ -117,6 +117,7 @@ class Manager:
                     artifact_dir=artifact_dir,
                     queue_position=0,
                     result=data.get("result"),
+                    last_epoch=data.get("last_epoch"),
                     state_path=state_file,
                 )
                 # Seed the event history so SSE replay shows the current status.
@@ -265,9 +266,15 @@ class Manager:
             self._cache.unpin(job.required_uuids)
         return self._queue.cancel(job_id)
 
-    def restart_job(self, job_id: str) -> bool:
-        """Re-queue an interrupted job. Images remain cached; training resumes from checkpoint."""
-        return self._queue.restart_job(job_id)
+    def restart_job(self, job_id: str, resume: bool = True) -> bool:
+        """Re-queue an interrupted job. Images remain cached.
+
+        With `resume`, training continues from the run's `last.pt` — the optimizer and
+        LR schedule included, not just the weights. Without it the run starts over from
+        pretrained weights, which is the right answer when the dataset or the
+        architecture has changed since.
+        """
+        return self._queue.restart_job(job_id, resume=resume)
 
     def list_jobs(self) -> list[Job]:
         return self._queue.list_jobs()
