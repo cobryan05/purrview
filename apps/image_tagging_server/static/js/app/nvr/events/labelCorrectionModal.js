@@ -29,16 +29,74 @@
  * is still a guess about *where*, and the review queue is where that gets settled.
  */
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
+import { getSetting } from '/app-static/js/shared/api/settings.js';
 
 /**
- * Most frames one correction will harvest from a clip.
+ * Most frames one correction will harvest from a clip, before configuration.
  *
  * A ceiling rather than a target: a two-second visit has three frames and should yield
  * three. It exists because the cost is paid twice — once seeking and encoding each frame
  * in the browser, once by whoever reviews them — and the tenth near-identical picture of
  * the same cat at the same bowl earns neither.
+ *
+ * Nearly every clip has more eligible frames than this, so in practice the cap *is* the
+ * yield — which is why it is worth being able to change. Raising it is only useful
+ * alongside dedup on the save path: without that, the extra slots fill with pictures the
+ * dataset already has.
  */
 export const MAX_TRAINING_FRAMES = 8;
+
+/** Bounds on the configured value. One frame is a legitimate "just this moment"; past
+ *  the upper end a single correction dominates whatever it is mixed into, and the
+ *  browser is seeking and encoding every one of them on the user's own machine. */
+export const MIN_CONFIGURABLE_TRAINING_FRAMES = 1;
+export const MAX_CONFIGURABLE_TRAINING_FRAMES = 40;
+
+export const TRAINING_FRAMES_SETTING_KEY = 'nvr_correction_max_frames';
+
+/** Live value behind the cap, so a saved setting applies without a reload. */
+let _configuredMaxFrames = MAX_TRAINING_FRAMES;
+
+/** @returns {number} frames one correction may harvest, as configured. */
+export function getConfiguredMaxTrainingFrames() {
+  return _configuredMaxFrames;
+}
+
+export function setConfiguredMaxTrainingFrames(n) {
+  _configuredMaxFrames = n;
+}
+
+/** @type {?Promise<number>} Memoised: the dialog may be opened many times a session. */
+let _loadPromise = null;
+
+/**
+ * Resolve the stored cap, once.
+ *
+ * Awaited before the dialog opens rather than read as a module-load side effect: the
+ * estimate it shows ("will save N frames") and the harvest that follows must agree, and
+ * a default used for the first dialog of a session would make them disagree exactly once
+ * — which looks like the setting not working.
+ */
+export function loadConfiguredMaxTrainingFrames() {
+  if (_loadPromise) return _loadPromise;
+  _loadPromise = (async () => {
+    try {
+      const stored = await getSetting(TRAINING_FRAMES_SETTING_KEY);
+      if (stored !== null) {
+        const n = parseInt(stored, 10);
+        if (Number.isFinite(n)
+          && n >= MIN_CONFIGURABLE_TRAINING_FRAMES
+          && n <= MAX_CONFIGURABLE_TRAINING_FRAMES) {
+          _configuredMaxFrames = n;
+        }
+      }
+    } catch (_) {
+      // A settings endpoint that is down must not cost you the ability to correct a label.
+    }
+    return _configuredMaxFrames;
+  })();
+  return _loadPromise;
+}
 
 /**
  * Closest two harvested frames may sit in clip time.
@@ -406,7 +464,7 @@ export function hardMomentsFor(doc, labelUuids, blips = []) {
  *   `t` must be one of `times`
  * @returns {number[]} ascending
  */
-export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, minGapS = MIN_FRAME_GAP_S, priority = [] } = {}) {
+export function pickTrainingFrames(times, { maxFrames = getConfiguredMaxTrainingFrames(), minGapS = MIN_FRAME_GAP_S, priority = [] } = {}) {
   const all = times ?? [];
   const have = new Set(all);
   const picked = [];

@@ -4480,7 +4480,7 @@ class TestTheHarvestSpacingIsRealTime:
         page.wait_for_load_state("networkidle")
         return page.evaluate(
             """async ([recording, count, fps]) => {
-                const { MIN_FRAME_GAP_S, MAX_TRAINING_FRAMES, pickTrainingFrames } =
+                const { MIN_FRAME_GAP_S, getConfiguredMaxTrainingFrames, pickTrainingFrames } =
                   await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
                 const { playbackTimeScale } =
                   await import('/app-static/js/app/nvr/events/eventDetailModal.js');
@@ -4489,7 +4489,10 @@ class TestTheHarvestSpacingIsRealTime:
                 return {
                   scale,
                   picked: pickTrainingFrames(times, { minGapS: MIN_FRAME_GAP_S / scale }).length,
-                  cap: MAX_TRAINING_FRAMES,
+                  // The configured cap, which is what pickTrainingFrames reads — not the
+                  // built-in default, so the assertion still means "capped" once the
+                  // setting is changed rather than quietly becoming a different test.
+                  cap: getConfiguredMaxTrainingFrames(),
                 };
             }""",
             [recording, count, fps],

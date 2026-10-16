@@ -101,7 +101,12 @@ export function normaliseBox(bbox, frameWidth, frameHeight) {
  *   of a source filter — it won't show up "from" its camera, but it also won't get
  *   filtered out "not from" some other camera. The `extra.source_camera` field some
  *   callers also set is free-text provenance for display; it is not this.
- * @returns {Promise<{path: string, uuid: ?string, boxesSaved: number, renamedFrom: ?string}>}
+ * @param {boolean} [opts.skipDuplicates] - drop the frame if the dataset already holds a
+ *   near-identical picture, rather than filing a second copy. For a harvest that picked
+ *   its own frames; a frame the user pointed at is saved whatever it resembles.
+ * @returns {Promise<{path: ?string, uuid: ?string, boxesSaved: number, renamedFrom: ?string,
+ *   duplicateOf: ?string, skipped: boolean}>} a skipped duplicate has no path and no
+ *   boxes — `duplicateOf` names the image that was kept instead.
  * @throws {Error} if the upload itself fails
  */
 export async function saveFrameForAnnotation({
@@ -113,10 +118,24 @@ export async function saveFrameForAnnotation({
   frameHeight = 0,
   extra = {},
   sourceUuid = '',
+  skipDuplicates = false,
 }) {
   const file = new File([blob], filename, { type: blob.type || 'image/jpeg' });
-  const [result] = await uploadImages({ files: [file], path, sourceUuid });
+  const [result] = await uploadImages({ files: [file], path, sourceUuid, skipDuplicates });
   if (!result?.ok) throw new Error(result?.message || 'Could not save the frame');
+
+  // Nothing was written, so there is no image to attach boxes to. Returned rather than
+  // thrown: a harvest meeting a frame it already has has succeeded, not failed.
+  if (result.skipped) {
+    return {
+      path: null,
+      uuid: null,
+      boxesSaved: 0,
+      renamedFrom: null,
+      duplicateOf: result.duplicateOf ?? null,
+      skipped: true,
+    };
+  }
 
   const savedPath = result.path;
   const bboxes = new Map();
@@ -148,5 +167,9 @@ export async function saveFrameForAnnotation({
     uuid: result.uuid ?? null,
     boxesSaved: bboxes.size,
     renamedFrom: result.renamedFrom ?? null,
+    // Advisory when `skipDuplicates` was off: the frame was kept, and the caller may
+    // still want to say what it resembles.
+    duplicateOf: result.duplicateOf ?? null,
+    skipped: false,
   };
 }

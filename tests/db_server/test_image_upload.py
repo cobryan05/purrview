@@ -217,6 +217,102 @@ class TestDuplicateReporting:
         assert r.json()["results"][0]["duplicateOf"] is None
 
 
+class TestSkipDuplicates:
+    """`skip_duplicates` turns the advisory report above into a refusal.
+
+    For the automated frame producers — a label correction, a blip harvest — where
+    nobody picked the pictures one by one and a near-duplicate is dilution rather than
+    a second opinion. The distinction that matters is *nothing is written*: a row
+    registered and then unwound leaves a uuid in the BK-tree describing no file, which
+    later uploads would match against.
+    """
+
+    async def test_a_duplicate_is_not_written(self, http_client, files_root):
+        png = make_png()
+        first = await _post(http_client, [_upload("one.png", png)])
+        second = await _post(http_client, [_upload("two.png", png)], skip_duplicates="true")
+
+        result = second.json()["results"][0]
+        assert result["skipped"] is True
+        assert result["ok"] is True, "a frame the dataset already holds is not a failure"
+        assert result["path"] is None
+        assert result["uuid"] is None
+        assert result["duplicateOf"] == first.json()["results"][0]["uuid"]
+        assert not (files_root / "two.png").exists()
+
+    async def test_a_new_image_is_still_written(self, http_client, files_root):
+        """The pairing negative: the flag must refuse duplicates, not uploads."""
+        await _post(http_client, [_upload("one.png", _patterned_png(0))])
+        r = await _post(http_client, [_upload("two.png", _patterned_png(1))], skip_duplicates="true")
+
+        result = r.json()["results"][0]
+        assert result["skipped"] is False
+        assert result["path"] is not None
+        assert (files_root / "two.png").exists()
+
+    async def test_the_same_upload_lands_when_the_flag_is_off(self, http_client, files_root):
+        """Pins the flag as the cause, not the re-upload: an import must keep behaving
+        as it did, or a user re-importing a better scan silently loses it."""
+        png = make_png()
+        await _post(http_client, [_upload("one.png", png)])
+        r = await _post(http_client, [_upload("two.png", png)])
+
+        assert r.json()["results"][0]["skipped"] is False
+        assert (files_root / "two.png").exists()
+
+    async def test_a_skipped_duplicate_registers_no_image(self, http_client, db_client):
+        png = make_png()
+        await _post(http_client, [_upload("one.png", png)])
+        before = len(await db_client.get_all_image_stubs())
+
+        await _post(http_client, [_upload("two.png", png)], skip_duplicates="true")
+
+        assert len(await db_client.get_all_image_stubs()) == before
+
+    async def test_a_skipped_duplicate_does_not_become_a_later_match(self, http_client):
+        """The ghost-entry regression: if the refused frame's hash were indexed under a
+        uuid that was never registered, a third copy would be reported as a duplicate of
+        a row that does not exist."""
+        png = make_png()
+        first = await _post(http_client, [_upload("one.png", png)])
+        original_uuid = first.json()["results"][0]["uuid"]
+
+        await _post(http_client, [_upload("two.png", png)], skip_duplicates="true")
+        third = await _post(http_client, [_upload("three.png", png)])
+
+        assert third.json()["results"][0]["duplicateOf"] == original_uuid
+
+    async def test_overwrite_wins_over_skipping(self, http_client, files_root):
+        """An overwrite names a specific path, so "skip" has nothing to mean — and
+        honouring it would make a deliberate replace silently do nothing."""
+        png = make_png()
+        await _post(http_client, [_upload("target.png", png)])
+        r = await _post(http_client, [_upload("target.png", png)], overwrite="true", skip_duplicates="true")
+
+        result = r.json()["results"][0]
+        assert result["skipped"] is False
+        assert result["path"] is not None
+        assert (files_root / "target.png").exists()
+
+    async def test_skipping_is_reported_per_file_in_a_batch(self, http_client, files_root):
+        """A harvest uploads frame by frame today, but the endpoint takes batches and a
+        mixed outcome must stay legible: one skip must not sink its neighbours."""
+        png = make_png()
+        await _post(http_client, [_upload("seed.png", png)])
+
+        r = await _post(
+            http_client,
+            [_upload("dupe.png", png), _upload("fresh.png", _patterned_png(2))],
+            skip_duplicates="true",
+        )
+        by_name = {res["filename"]: res for res in r.json()["results"]}
+
+        assert by_name["dupe.png"]["skipped"] is True
+        assert by_name["fresh.png"]["skipped"] is False
+        assert not (files_root / "dupe.png").exists()
+        assert (files_root / "fresh.png").exists()
+
+
 def _patterned_png(seed: int) -> bytes:
     """A structured 32x32 PNG whose pHash actually depends on *seed*.
 

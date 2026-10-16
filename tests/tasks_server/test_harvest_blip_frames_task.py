@@ -249,8 +249,8 @@ class TestFindingTheFramesAgain:
     a durable image tag, and actions on the finished job card that lead back.
     """
 
-    async def _upload_result(self, ok=True, duplicate_of=None, path="blip_harvest/frame.jpg"):
-        return SimpleNamespace(ok=ok, duplicate_of=duplicate_of, path=path, uuid="img-1", message=None)
+    async def _upload_result(self, ok=True, duplicate_of=None, path="blip_harvest/frame.jpg", skipped=False):
+        return SimpleNamespace(ok=ok, duplicate_of=duplicate_of, path=path, uuid="img-1", message=None, skipped=skipped)
 
     async def test_a_harvested_frame_is_tagged(self, monkeypatch):
         """Without this the only record that an image came from a harvest is the
@@ -263,7 +263,7 @@ class TestFindingTheFramesAgain:
         images = MagicMock()
         images.upload_images.return_value = SimpleNamespace(
             status="success",
-            results=[SimpleNamespace(ok=True, duplicate_of=None, path="p.jpg", uuid="u", message=None)],
+            results=[SimpleNamespace(ok=True, duplicate_of=None, path="p.jpg", uuid="u", message=None, skipped=False)],
         )
         monkeypatch.setattr(task, "_api", lambda cls: images)
 
@@ -283,7 +283,9 @@ class TestFindingTheFramesAgain:
         images = MagicMock()
         images.upload_images.return_value = SimpleNamespace(
             status="success",
-            results=[SimpleNamespace(ok=True, duplicate_of="other", path="p.jpg", uuid="u", message=None)],
+            # `skipped` with a `duplicate_of`: what the endpoint returns under
+            # skip_duplicates, where nothing was written for this frame at all.
+            results=[SimpleNamespace(ok=True, duplicate_of="other", path=None, uuid=None, message=None, skipped=True)],
         )
         monkeypatch.setattr(task, "_api", lambda cls: images)
 

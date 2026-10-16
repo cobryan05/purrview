@@ -56,6 +56,8 @@ import {
   framesHoldingLabels,
   hardMomentsFor,
   labelTallyAcrossClip,
+  loadConfiguredMaxTrainingFrames,
+  getConfiguredMaxTrainingFrames,
   MIN_FRAME_GAP_S,
   NO_BBOX,
   openLabelCorrectionModal,
@@ -1159,6 +1161,9 @@ export function openEventDetailModal(
     const blipsReq = fetchEventBlips({ eventUuid: event.uuid })
       .then(r => r.blips)
       .catch(err => { Logger.warn(err); return []; });
+    // Before the estimate is computed, not after: the dialog's "will save N frames" and
+    // the harvest that follows both read the cap, and they must read the same one.
+    await loadConfiguredMaxTrainingFrames();
     let labels;
     try {
       labels = await fetchLabels();
@@ -1251,6 +1256,7 @@ export function openEventDetailModal(
       // moment and skip them all after the dialog had already promised the frames.
       const key = [
         video?.duration,
+        getConfiguredMaxTrainingFrames(),
         overlay?.leadSeconds?.() ?? 0,
         [...relabelled].sort().join(','),
         [...weakOnly].sort().join(','),
@@ -1466,6 +1472,10 @@ export function openEventDetailModal(
       .map(([from, to]) => `${nameOf(from)} → ${describeTo(to)}`)
       .join(', ');
     const saved = [];
+    // Frames the dataset already held. Reported rather than silently absorbed: a
+    // correction that promised eight and filed two has not gone wrong, but a count that
+    // quietly disagrees with the estimate reads exactly like it has.
+    let duplicates = 0;
     try {
       const captured = await captureFramesAt(times, (done, total) => setProgress(done, total, 'Capturing'));
       for (const [index, { sidecarAt, frame }] of captured.entries()) {
@@ -1489,6 +1499,12 @@ export function openEventDetailModal(
           frameWidth: frame.width,
           frameHeight: frame.height,
           sourceUuid: event.sourceUuid || '',
+          // Nobody chose these frames one by one, so a near-duplicate is dilution
+          // rather than a second opinion — and the picker spaces by clip time, which
+          // says nothing about a subject that did not move. The check also runs across
+          // the harvest itself: each kept frame enters the index as it lands, so the
+          // sixth pick is compared against the five before it as well as the dataset.
+          skipDuplicates: true,
           extra: {
             source_camera: camera,
             source_event: event.uuid,
@@ -1503,6 +1519,10 @@ export function openEventDetailModal(
             pick_reason: reasons.get(sidecarAt) ?? 'spread',
           },
         });
+        if (result.skipped) {
+          duplicates += 1;
+          continue;
+        }
         saved.push(result);
       }
     } catch (err) {
@@ -1513,13 +1533,23 @@ export function openEventDetailModal(
       // and whose hint still reads "Saving…" for the rest of its life — the failure is
       // silent and the only way out is closing the event.
       savedHint.classList.remove('event-detail__hint--working');
-      savedHint.textContent = saved.length ? `Saved ${saved.length} frames` : '';
+      const dupeNote = duplicates ? ` (${duplicates} already in the dataset)` : '';
+      savedHint.textContent = saved.length ? `Saved ${saved.length} frames${dupeNote}` : '';
       saveBtn.disabled = false;
       annotateBtn.disabled = false;
     }
-    if (!saved.length) {
+    if (!saved.length && !duplicates) {
       toast('No frames could be saved', 5000, 'error');
       return;
+    }
+    if (!saved.length) {
+      // Not a failure, and not silent either: every frame of this clip is already
+      // collected, which is the expected outcome of correcting the same event twice.
+      // The event is still marked reviewed below — the correction happened, and the
+      // training data for it exists; it was just already there.
+      toast(`Every frame of this clip is already in the dataset — nothing new to save`, 6000);
+    } else if (duplicates) {
+      toast(`Saved ${saved.length} frames; ${duplicates} were already in the dataset`, 6000);
     }
     try {
       // Correcting an event *resolves* it, whether the flag came from Home Assistant
@@ -1541,7 +1571,11 @@ export function openEventDetailModal(
       Logger.error(err);
       toast('The corrected frames were saved, but the event could not be marked reviewed', 6000, 'error');
     }
-    await offerToReview(saved, { relabelled: [...remap.values()].some(to => to !== WEAK) });
+    // Nothing new to look at when every frame was a duplicate; the offer would open an
+    // empty review.
+    if (saved.length) {
+      await offerToReview(saved, { relabelled: [...remap.values()].some(to => to !== WEAK) });
+    }
   }
 
   /**

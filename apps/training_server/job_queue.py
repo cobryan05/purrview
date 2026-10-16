@@ -50,6 +50,12 @@ class Job:
     # warning once at the top of train(), and `last_progress` only ever holds the newest
     # event, so the app-wide notice needs a field that outlives the next epoch tick.
     device_warning: str = ""
+    # A stop has been asked for but the trainer has not unwound yet. Cancellation is
+    # cooperative and polled between epochs, so a running job stays `running` for up to
+    # a whole epoch after the request — and on CPU that is the 10-50x figure the device
+    # warning quotes. Without this the app has no way to tell "training" from "stopping",
+    # and the two look identical for minutes.
+    cancel_requested: bool = False
 
     def _persist(self) -> None:
         """Atomically write job state to disk for crash recovery."""
@@ -212,6 +218,14 @@ class JobQueue:
             return True
         if job.status == "running":
             job.cancel_event.set()
+            job.cancel_requested = True
+            # Not a status event: `running` is still the truth until the trainer returns,
+            # and emitting a status here would trip the terminal-event detection in
+            # `emit` and close every SSE subscriber on a job that is still going.
+            job.emit(
+                "progress",
+                {"log": "Stop requested — training will end after the current epoch finishes."},
+            )
             return True
         return False
 
@@ -224,6 +238,7 @@ class JobQueue:
         job.status = "queued"
         job.queue_position = position
         job.cancel_event.clear()
+        job.cancel_requested = False
         job.emit("status", {"status": "queued"})
         self._queue.put_nowait(job_id)
         return True

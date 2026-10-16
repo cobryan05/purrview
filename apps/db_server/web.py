@@ -536,6 +536,11 @@ class UploadedImageRead(ApiModel):
     # Set when a name collision forced a new name, so the UI can say so rather
     # than leaving the user to wonder where "snapshot.jpg" went.
     renamed_from: Optional[str] = None
+    # True when `skip_duplicates` was asked for and this file matched something
+    # already in the DB, so nothing was written. `ok` stays true: the request did
+    # what was asked. `path` and `uuid` are null, and `duplicate_of` names the
+    # image that was kept instead.
+    skipped: bool = False
 
 
 class UploadImagesResponse(StatusResponse):
@@ -2436,6 +2441,7 @@ class WebApp:
             path: str = Form(""),
             overwrite: bool = Form(False),
             source_uuid: str = Form(""),
+            skip_duplicates: bool = Form(False),
         ) -> UploadImagesResponse:
             """Import images from the user's machine into FILES_ROOT.
 
@@ -2445,6 +2451,11 @@ class WebApp:
             One bad file does not fail the batch: dropping twenty images and
             getting nothing because the nineteenth was a PDF would be worse than
             useless, so each is reported on its own.
+
+            `skip_duplicates` refuses to write a near-duplicate rather than merely
+            reporting one — for the automated frame producers, where nobody picked
+            the individual pictures. A hand-made import leaves it off: re-importing
+            an image you already have is a deliberate act.
             """
             results: List[UploadedImageRead] = []
             for upload in files:
@@ -2457,6 +2468,7 @@ class WebApp:
                         data=data,
                         overwrite=overwrite,
                         source_uuid=source_uuid or None,
+                        skip_duplicates=skip_duplicates,
                     )
                     results.append(
                         UploadedImageRead(
@@ -2467,6 +2479,7 @@ class WebApp:
                             duplicate_of=saved["duplicate_of"],
                             duplicate_distance=saved["duplicate_distance"],
                             renamed_from=saved["renamed_from"],
+                            skipped=saved["skipped"],
                         )
                     )
                 except ValueError as e:

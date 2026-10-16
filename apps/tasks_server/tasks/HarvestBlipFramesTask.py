@@ -14,10 +14,11 @@ no information. `harvest_times` picks the moments.
 blip uuids, never on "everything found". The analysis that produced them is automatic;
 turning them into dataset images is not.
 
-**Dedup is the upload endpoint's, not ours.** `/api/images/upload` already runs the
-perceptual hash and reports `duplicateOf`, so a frame that matches something already
-collected is counted and skipped rather than filed twice. Re-running a harvest is
-therefore close to free and does not grow the dataset.
+**Dedup is the upload endpoint's, not ours.** `/api/images/upload` runs the perceptual
+hash, and `skip_duplicates` makes it refuse the write rather than merely report the
+match, so a frame resembling something already collected costs nothing on disk and files
+no second proposal. Re-running a harvest is therefore close to free and does not grow
+the dataset.
 
 **Only detector faults are eligible.** A blip the tracker caused is a frame the detector
 already got right, and harvesting it would pad the training set with cases the model
@@ -311,6 +312,7 @@ class HarvestBlipFramesTask(Task):
             path=self._dest_path,
             overwrite=False,
             source_uuid=source_uuid or "",
+            skip_duplicates=True,
         )
         if response.status != JsonValues.SUCCESS or not response.results:
             self._failed += 1
@@ -322,9 +324,10 @@ class HarvestBlipFramesTask(Task):
             self._failed += 1
             self._note_failure(result.message or f"{name} was refused")
             return None
-        if result.duplicate_of:
-            # Already in the dataset. Counted rather than filed again, which is what
-            # makes re-running a harvest close to free.
+        if result.skipped or result.duplicate_of:
+            # Already in the dataset, and with `skip_duplicates` nothing was written for
+            # it either — which is what makes re-running a harvest close to free rather
+            # than merely idempotent in the candidate list.
             self._duplicates += 1
             return None
         await self._tag_harvested(result)

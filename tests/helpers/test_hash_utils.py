@@ -13,6 +13,7 @@ from PIL import Image
 
 from apps.helpers.hashUtils import (
     compute_image_phash,
+    compute_image_phash_from_bytes,
     hamming,
     phash_from_numpy,
     phash_from_numpy_crop,
@@ -182,3 +183,50 @@ class TestComputeImagePhash:
         bgr = cv2.imread(str(p))
         h_numpy = phash_from_numpy(bgr, hash_size=8)
         assert hamming(h_disk, h_numpy) == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# compute_image_phash_from_bytes
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _patterned_png_bytes(seed: int, size: int = 64) -> bytes:
+    """A PNG whose pHash actually depends on *seed*.
+
+    A solid colour hashes identically whatever colour it is, so it cannot tell a
+    matching hash from a constant one.
+    """
+    img = Image.new("RGB", (size, size))
+    px = img.load()
+    for y in range(size):
+        for x in range(size):
+            px[x, y] = (255, 255, 255) if ((x // 4) + (y // 4) + seed) % 2 else (0, 0, 0)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestComputeImagePhashFromBytes:
+    """The bytes-level hash exists so an upload can be dedup-checked before it is
+    written, and compared against an index built from files on disk. The two
+    pipelines agreeing is the whole premise — asserted against each other rather
+    than against a literal, since either side moving is the failure."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 3])
+    def test_matches_the_hash_of_the_file_those_bytes_are_written_to(self, tmp_path, seed):
+        data = _patterned_png_bytes(seed)
+        path = tmp_path / f"img{seed}.png"
+        path.write_bytes(data)
+        assert compute_image_phash_from_bytes(data, hash_size=8) == compute_image_phash(path, hash_size=8)
+
+    def test_distinguishes_different_pictures(self, tmp_path):
+        """Guards the degenerate pass: a function returning a constant would satisfy
+        the equality above for every input."""
+        a = compute_image_phash_from_bytes(_patterned_png_bytes(0), hash_size=8)
+        b = compute_image_phash_from_bytes(_patterned_png_bytes(1), hash_size=8)
+        assert hamming(a, b) > 0
+
+    def test_honours_hash_size(self):
+        data = _patterned_png_bytes(0)
+        assert len(compute_image_phash_from_bytes(data, hash_size=8)) == 16
+        assert len(compute_image_phash_from_bytes(data, hash_size=16)) == 64

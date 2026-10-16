@@ -10,6 +10,7 @@ encode/decode.  Both must match or the same physical image will hash differently
 depending on whether the hash was computed before or after the file was written.
 """
 
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
@@ -85,6 +86,19 @@ def phash_from_numpy_crop(
 def compute_image_phash(image_path: Path, hash_size: int = DEFAULT_IMAGE_HASH_SIZE) -> str:
     """Read an image from disk and return its pHash as a hex string."""
     pil = Image.open(image_path).convert("RGB")
+    return str(imagehash.phash(pil, hash_size=hash_size))
+
+
+def compute_image_phash_from_bytes(data: bytes, hash_size: int = DEFAULT_IMAGE_HASH_SIZE) -> str:
+    """pHash of encoded image bytes, identical to hashing the file they are written to.
+
+    Decodes with PIL exactly as ``compute_image_phash`` does, so an upload can be
+    dedup-checked before it touches the disk and still compare against an index built
+    from files. The `from_numpy` variants are not interchangeable here: they hash
+    post-decode pixels, which for an already-compressed upload differ from a PIL read
+    of the same bytes by enough bits to miss a near-threshold match.
+    """
+    pil = Image.open(BytesIO(data)).convert("RGB")
     return str(imagehash.phash(pil, hash_size=hash_size))
 
 

@@ -570,6 +570,13 @@ class Manager:
 
         Keyed per job so two CPU jobs do not collapse into one line, and drawn from
         the running jobs only, so it clears when the job ends.
+
+        "Ends" is not "was asked to stop": cancellation is cooperative and polled
+        between epochs, so a stopped job keeps this notice until the trainer actually
+        unwinds. The job list the user is looking at drops the task as soon as the stop
+        is sent, which left the notice apparently outliving its own job. A requested
+        stop therefore says so rather than still claiming to be training — the wait is
+        real, and on CPU it is as slow as the figure quoted here.
         """
         if not self._expects_gpu():
             return []
@@ -578,15 +585,23 @@ class Manager:
             if not job.device_warning:
                 continue
             label = (job.config or {}).get("model_name") or job.job_id[:8]
+            if job.cancel_requested:
+                message = (
+                    f"Training '{label}' is stopping — it finishes the epoch in progress first. "
+                    "That epoch is running on the CPU, roughly 10-50x slower than GPU, so the "
+                    "stop can take a while to land."
+                )
+            else:
+                message = (
+                    f"Training '{label}' is running on the CPU — roughly 10-50x slower than "
+                    "GPU. This deployment expects a GPU, so check that the container still "
+                    "has access to it."
+                )
             notices.append(
                 {
                     "key": f"training_cpu_only_{job.job_id}",
                     "level": "warning",
-                    "message": (
-                        f"Training '{label}' is running on the CPU — roughly 10-50x slower than "
-                        "GPU. This deployment expects a GPU, so check that the container still "
-                        "has access to it."
-                    ),
+                    "message": message,
                 }
             )
         return notices

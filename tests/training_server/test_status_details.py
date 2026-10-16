@@ -208,6 +208,62 @@ class TestTheCpuFallbackNotice:
 
         assert manager.get_status()["notices"] == []
 
+    def test_a_requested_stop_stops_claiming_to_be_training(self, manager, monkeypatch):
+        """The gap this closes: a stop is cooperative and polled between epochs, so the
+        job stays `running` while the task list the user sees has already dropped it.
+        The notice then looks like it is outliving its own job."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"}, cancel_event=asyncio.Event())
+        job.device_warning = "WARNING: no GPU detected"
+        before = manager.get_status()["notices"][0]["message"]
+
+        manager.cancel_job("j1")
+        after = manager.get_status()["notices"][0]["message"]
+
+        assert job.status == "running", "the job is still running until the trainer unwinds"
+        assert after != before, "a requested stop must not read identically to training"
+        assert "stopping" in after.lower()
+        # The claim being retired is that the *job* is still training. The replacement
+        # may well still mention the CPU — the slow epoch is why the stop is not instant.
+        assert "'cats-v3' is running on the CPU" not in after
+
+    def test_the_stopping_notice_keeps_the_job_key(self, manager, monkeypatch):
+        """Same key, so the changed wording replaces the line rather than adding a
+        second notice for one job."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"}, cancel_event=asyncio.Event())
+        job.device_warning = "WARNING: no GPU detected"
+
+        manager.cancel_job("j1")
+        notices = manager.get_status()["notices"]
+
+        assert len(notices) == 1
+        assert notices[0]["key"] == "training_cpu_only_j1"
+
+    def test_a_stop_on_a_gpu_job_raises_no_notice(self, manager, monkeypatch):
+        """The notice is about the device, not the stop. A job that never fell back to
+        the CPU must stay silent however it ends."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        _job(manager, "j1", "running", config={"model_name": "cats-v3"}, cancel_event=asyncio.Event())
+
+        manager.cancel_job("j1")
+
+        assert manager.get_status()["notices"] == []
+
+    def test_requeueing_clears_the_requested_stop(self, manager, monkeypatch):
+        """A restarted job is training again, not still stopping — the flag would
+        otherwise mislabel every epoch of the new run."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"}, cancel_event=asyncio.Event())
+        job.device_warning = "WARNING: no GPU detected"
+        manager.cancel_job("j1")
+        assert job.cancel_requested is True
+
+        job.status = "interrupted"
+        assert manager.restart_job("j1") is True
+
+        assert job.cancel_requested is False
+
     def test_two_cpu_jobs_keep_their_own_notices(self, manager, monkeypatch):
         """Keyed per job — the bar counts notices, and collapsing two jobs into
         one key would under-report."""

@@ -52,19 +52,26 @@ export async function setUploadTarget(path, remembered) {
  * @param {string} [opts.sourceUuid] - camera/stream this image was captured from,
  *   if any (sources table). Omitted for a hand-picked file import, where there
  *   is no camera to attribute it to.
+ * @param {boolean} [opts.skipDuplicates] - do not write a file that matches an image
+ *   already in the DB; the result carries `skipped: true` and `duplicateOf` instead of
+ *   a path. For automated producers only — a hand-picked import is a deliberate act and
+ *   gets the advisory `duplicateOf` without losing the file.
  * @returns {Promise<Array<{
  *   filename: string, ok: boolean, path?: string, uuid?: string,
  *   message?: string, duplicateOf?: string, duplicateDistance?: number,
- *   renamedFrom?: string,
+ *   renamedFrom?: string, skipped?: boolean,
  * }>>}
  */
-export async function uploadImages({ files, path = '', overwrite = false, sourceUuid = '' }) {
+export async function uploadImages({
+  files, path = '', overwrite = false, sourceUuid = '', skipDuplicates = false,
+}) {
   const form = new FormData();
   for (const file of files) form.append('files', file, file.name);
   // The server reads these as form fields, not JSON — booleans go as strings.
   form.append('path', path ?? '');
   form.append('overwrite', overwrite ? 'true' : 'false');
   form.append('source_uuid', sourceUuid ?? '');
+  form.append('skip_duplicates', skipDuplicates ? 'true' : 'false');
 
   // No Content-Type header: the browser has to set it, because only it knows
   // the multipart boundary it generated.

@@ -25,6 +25,15 @@ import {
   getConfiguredMaxTiles,
   setConfiguredMaxTiles,
 } from '/app-static/js/app/nvr/cardPreview.js';
+import {
+  MAX_CONFIGURABLE_TRAINING_FRAMES,
+  MAX_TRAINING_FRAMES,
+  MIN_CONFIGURABLE_TRAINING_FRAMES,
+  TRAINING_FRAMES_SETTING_KEY,
+  getConfiguredMaxTrainingFrames,
+  loadConfiguredMaxTrainingFrames,
+  setConfiguredMaxTrainingFrames,
+} from '/app-static/js/app/nvr/events/labelCorrectionModal.js';
 import { readTourState, resetTourState, runTour, setNeverShowTours, TOURS } from '/app-static/js/ui/tour/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import {
@@ -1382,7 +1391,71 @@ async function _buildDedupSection() {
   _wireHashToThreshold(bboxHashSelect, bboxThreshInput, 'bbox');
 
   body.append(imgHashRow, imgThreshRow, bboxHashRow, bboxThreshRow);
+  body.append(await _buildCorrectionFramesRow());
   return section;
+}
+
+/**
+ * How many frames one "this label is wrong" correction harvests from a clip.
+ *
+ * Here rather than under Interface because it is the same decision as the image
+ * threshold above it: the harvest now refuses a frame the dataset already holds, so the
+ * cap and what counts as "already holds it" together decide how much a correction
+ * actually contributes. Raised on its own, with the threshold loose, the extra slots
+ * fill with pictures that get skipped.
+ */
+async function _buildCorrectionFramesRow() {
+  await loadConfiguredMaxTrainingFrames();
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = String(MIN_CONFIGURABLE_TRAINING_FRAMES);
+  input.max = String(MAX_CONFIGURABLE_TRAINING_FRAMES);
+  input.step = '1';
+  input.className = 'settings-server-input settings-server-input--narrow';
+  input.dataset.testid = 'settings-correction-frames';
+  input.value = String(getConfiguredMaxTrainingFrames());
+
+  const unit = document.createElement('span');
+  unit.className = 'settings-input-unit';
+  unit.textContent = 'frames';
+
+  const saveBtn = _rowButton('Save');
+
+  const { row, setStatus } = _buildRow({
+    label: 'Frames per label correction',
+    description:
+      'Ceiling on the spread of frames saved when you correct an event’s label in NVR → Events. '
+      + 'A short visit yields fewer; most clips hit the ceiling. Frames matching an image already '
+      + `in the dataset are skipped, so this is an upper bound, not a count. Default: ${MAX_TRAINING_FRAMES}.`,
+    controls: [input, unit, saveBtn],
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const val = parseInt(input.value, 10);
+    if (!Number.isFinite(val)
+      || val < MIN_CONFIGURABLE_TRAINING_FRAMES
+      || val > MAX_CONFIGURABLE_TRAINING_FRAMES) {
+      setStatus(
+        `Value must be between ${MIN_CONFIGURABLE_TRAINING_FRAMES} and ${MAX_CONFIGURABLE_TRAINING_FRAMES}.`,
+        'error',
+      );
+      return;
+    }
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        await setSetting(TRAINING_FRAMES_SETTING_KEY, String(val));
+        // Applied in-process as well as stored: the correction dialog memoises its read,
+        // so without this the new value would only take effect on a reload.
+        setConfiguredMaxTrainingFrames(val);
+        setStatus(`Saved: ${val} frames`, 'info');
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
+  });
+
+  return row;
 }
 
 function _buildHashSizeRow({ key, label, description, currentN }) {

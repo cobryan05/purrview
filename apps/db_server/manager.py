@@ -132,6 +132,7 @@ from apps.helpers.hashUtils import (
     DEFAULT_IMAGE_THRESHOLD,
     compute_bbox_phash,
     compute_image_phash,
+    compute_image_phash_from_bytes,
     phash_from_numpy,
     phash_from_numpy_crop,
 )
@@ -2241,6 +2242,7 @@ class Manager:
         *,
         overwrite: bool = False,
         source_uuid: Optional[str] = None,
+        skip_duplicates: bool = False,
     ) -> Dict[str, Any]:
         """Write an uploaded image under FILES_ROOT and register it.
 
@@ -2253,10 +2255,21 @@ class Manager:
         already have is a real thing to want to do (a better scan of the same
         frame, say), so the caller is told and decides.
 
+        `skip_duplicates` is for the automated producers — a correction harvest, a
+        blip harvest — where nobody chose the individual frames and a near-duplicate
+        is pure dilution of the training set. It is checked *before* anything is
+        written: unwinding a registered row leaves a uuid in the BK-tree that no
+        longer describes a file on disk, and later uploads then match a ghost.
+        Ignored when `overwrite` is set, where the caller has named a specific path
+        and "skip" has no sensible meaning. Fails open: "could not check" is not
+        "is a duplicate".
+
         `filename` is client-supplied; only its basename is honoured. `overwrite`
         replaces an existing file instead of uniquifying the name.
 
-        Returns {path, uuid, duplicate_of, duplicate_distance, renamed_from}.
+        Returns {path, uuid, duplicate_of, duplicate_distance, renamed_from,
+        skipped}; a skipped duplicate has no path or uuid, since nothing was
+        written.
         Raises ValueError for an unusable destination, rejected extension, or
         undecodable image.
         """
@@ -2304,6 +2317,23 @@ class Manager:
         if frame is None:
             raise ValueError(f"{base_name!r} could not be decoded as an image")
 
+        # Hashed from the bytes about to be written, so the same value serves the
+        # pre-write duplicate check below and the index entry further down rather than
+        # being computed twice over the same picture.
+        phash = await asyncio.to_thread(compute_image_phash_from_bytes, data, self._hash_index.image_hash_size)
+        if skip_duplicates and not overwrite:
+            existing = await self._find_duplicate_by_phash(phash)
+            if existing is not None:
+                duplicate_of, duplicate_distance = existing
+                return {
+                    "path": None,
+                    "uuid": None,
+                    "duplicate_of": duplicate_of,
+                    "duplicate_distance": duplicate_distance,
+                    "renamed_from": None,
+                    "skipped": True,
+                }
+
         # An overwrite replaces a file that is already registered and may carry
         # annotations, so it cannot simply be deleted if the write half-fails.
         # Move it aside first (a rename, not a copy) and put it back on failure:
@@ -2331,7 +2361,7 @@ class Manager:
         # An overwrite reuses the existing row (add_image returns it), so the
         # pHash on that row still describes the file that was just replaced.
         duplicate_of, duplicate_distance = await self._find_upload_duplicate(
-            image.uuid, target, replaced=backup is not None
+            image.uuid, target, replaced=backup is not None, phash=phash
         )
         if backup is not None:
             # Thumbnails are keyed on the source file's mtime, so the new bytes
@@ -2349,6 +2379,7 @@ class Manager:
             "duplicate_of": duplicate_of,
             "duplicate_distance": duplicate_distance,
             "renamed_from": renamed_from,
+            "skipped": False,
         }
 
     async def register_images(self, rel_paths: Sequence[str]) -> Dict[str, Any]:
@@ -2546,8 +2577,34 @@ class Manager:
         )
         await self._db_client.update_phashes(image_uuid, image_phash, entries)
 
+    async def _image_dedup_threshold(self) -> int:
+        raw = await self._db_client.get_setting("dedup_image_threshold")
+        return int(raw) if raw is not None else DEFAULT_IMAGE_THRESHOLD
+
+    async def _find_duplicate_by_phash(self, phash: str) -> Optional[Tuple[str, int]]:
+        """Nearest already-known image to `phash`, without recording it.
+
+        The read-only half of `_find_upload_duplicate`, for asking "would this be a
+        duplicate?" about bytes that may never be written. Nothing is added to the
+        index here, so a caller that goes on to skip the upload leaves no entry
+        pointing at a file that does not exist.
+
+        Fails open, like its sibling: an index that is cold, mid-rebuild or sized
+        differently yields no match rather than an answer it cannot stand behind, and
+        the caller keeps the frame. A partial index can only ever *miss* a duplicate —
+        a hit is a real stored hash inside the threshold — so the error it admits is a
+        redundant image, never a lost one.
+        """
+        try:
+            threshold = await self._image_dedup_threshold()
+            for other_uuid, distance in self._hash_index.find_similar_images(phash, threshold):
+                return other_uuid, distance
+        except Exception:
+            logger.exception("Duplicate pre-check failed; treating as not-a-duplicate")
+        return None
+
     async def _find_upload_duplicate(
-        self, image_uuid: str, path: Path, replaced: bool = False
+        self, image_uuid: str, path: Path, replaced: bool = False, phash: Optional[str] = None
     ) -> Tuple[Optional[str], Optional[int]]:
         """Nearest already-known image within the configured dedup threshold.
 
@@ -2559,6 +2616,10 @@ class Manager:
         only when it is None, but that runs on the first annotation save, which
         an imported-and-ignored image never gets.
 
+        *phash* is the hash of the bytes just written, when the caller already has
+        it; recomputing from the file yields the same value, so this only saves the
+        second read.
+
         *replaced* says this path already had a different picture at it, which
         makes it an index *update* rather than an insert — see
         HashIndex.replace_image, without which later uploads keep matching
@@ -2569,9 +2630,9 @@ class Manager:
         and "we could not check" is not the same as "it is a duplicate".
         """
         try:
-            threshold_raw = await self._db_client.get_setting("dedup_image_threshold")
-            threshold = int(threshold_raw) if threshold_raw is not None else DEFAULT_IMAGE_THRESHOLD
-            phash = await asyncio.to_thread(compute_image_phash, path, self._hash_index.image_hash_size)
+            threshold = await self._image_dedup_threshold()
+            if phash is None:
+                phash = await asyncio.to_thread(compute_image_phash, path, self._hash_index.image_hash_size)
             if replaced:
                 self._hash_index.replace_image(image_uuid, phash)
             else:
