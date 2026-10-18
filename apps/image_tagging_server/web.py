@@ -142,23 +142,51 @@ class TestMqttPayload(BaseModel):
     tls: bool = False
 
 
-# Task SSE polling cadence. The stream is a poll loop behind a push-shaped API, so
-# every connected browser costs a full image_tagging → tasks → db round trip per tick,
-# forever. 2 Hz is only worth paying while something is actually moving: a task that
-# is running or about to run changes its progress between ticks. Nothing live means
-# nothing to animate, and the next change is user-initiated, so a slower tick just
-# costs a little start-up latency on a card that was idle anyway.
+# Task SSE polling cadence. The stream is a poll loop behind a push-shaped API, so each
+# tick costs a full image_tagging → tasks → db round trip over a ~240 KB payload. 2 Hz is
+# only worth paying while something is actually moving; an at-rest list costs a little
+# start-up latency on a card that was idle anyway, and the next change is user-initiated.
 TASKS_STREAM_ACTIVE_POLL_S = 0.5
 TASKS_STREAM_IDLE_POLL_S = 3.0
 _TASKS_STREAM_ACTIVE_STATUSES = frozenset({"new", "pending", "running"})
 
+#: How long the payload must hold still before a live task stops earning the fast
+#: cadence. "Something is running" is not the same as "something is changing": a
+#: watcher runs for weeks, so presence of a running task alone pinned the loop at
+#: 2 Hz for the life of the process and made the idle cadence unreachable on an NVR
+#: box. Movement is what 2 Hz is for, and movement shows up as a changed payload.
+TASKS_STREAM_SETTLE_S = 10.0
 
-def _tasks_poll_interval(data: dict) -> float:
-    """Poll fast while any task is live, slowly when the task list is at rest.
+#: Notices change on human timescales (a camera goes down, a job falls to the CPU), so
+#: this is a flat cadence with no fast path to earn.
+NOTICES_STREAM_POLL_S = 2.0
 
-    Paused/completed/error instances are deliberately not "live" — they hold still
-    until the user acts, and a user action re-renders from its own response.
+#: Longest one SSE connection is kept before it is closed and the client is left to
+#: reconnect.
+#:
+#: The server cannot tell a live browser from an abandoned socket. A client reached
+#: through a port forwarder (VS Code's, among others) leaves the upstream connection
+#: open when its tab goes away: nothing cancels the request and `is_disconnected()`
+#: stays False, because the forwarder genuinely is still connected. Those strays
+#: accumulate for as long as the process lives.
+#:
+#: Closing on a timer reaps them without needing to identify them. A live client's
+#: EventSource reconnects on its own and re-reads whole state from the next frame
+#: (every consumer of these streams is level-triggered); a stray never comes back.
+SSE_MAX_LIFETIME_S = 600.0
+
+
+def _tasks_poll_interval(data: dict, settled_s: float) -> float:
+    """Poll fast while a live task is actually moving, slowly once it has settled.
+
+    *settled_s* is how long the payload has been identical. Both conditions are
+    required: paused/completed/error instances are deliberately not "live" — they
+    hold still until the user acts, and a user action re-renders from its own
+    response — and a live task whose payload has stopped changing has nothing left
+    to animate either.
     """
+    if settled_s >= TASKS_STREAM_SETTLE_S:
+        return TASKS_STREAM_IDLE_POLL_S
     try:
         tasks = (data or {}).get("tasks") or {}
         for entry in tasks.values():
@@ -169,6 +197,98 @@ def _tasks_poll_interval(data: dict) -> float:
         # A shape we don't recognise shouldn't silently pin the loop at 2 Hz.
         return TASKS_STREAM_IDLE_POLL_S
     return TASKS_STREAM_IDLE_POLL_S
+
+
+class SharedSseFeed:
+    """One upstream poll, fanned out to every subscriber of one SSE endpoint.
+
+    These streams cost O(open connections) before this existed: each connection ran
+    its own poll loop, so an unchanged payload — a quarter of a megabyte for the task
+    list — was re-fetched, re-serialised and thrown away once per connection per
+    tick. Twenty stale tabs behind a port forwarder was enough to spend most of two
+    cores on JSON nobody read.
+
+    Connection count is not something this server can hold down (see
+    `SSE_MAX_LIFETIME_S`), so the per-tick cost is what has to be bounded. One poll
+    serves every subscriber, and subscribers are woken only when the payload actually
+    changes.
+    """
+
+    #: Longest a subscriber goes without being sent anything before it gets a comment
+    #: frame. Browsers and proxies both drop an SSE stream that falls silent.
+    KEEPALIVE_S = 15.0
+
+    def __init__(self, fetch, interval_for, *, empty, name: str):
+        self._fetch = fetch
+        self._interval_for = interval_for
+        self._empty = empty
+        self._name = name
+        self._payload: Optional[str] = None
+        self._version = 0
+        self._changed_at = 0.0
+        self._waiters: set[asyncio.Event] = set()
+        self._poller: Optional[asyncio.Task] = None
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._waiters)
+
+    async def _poll_forever(self) -> None:
+        """Fetch until the last subscriber has gone."""
+        loop = asyncio.get_running_loop()
+        while self._waiters:
+            try:
+                data = await self._fetch()
+                payload = json.dumps(data)
+            except Exception:
+                # A failed fetch is reported as empty rather than ending the feed:
+                # the upstream being briefly down must not close every open stream.
+                logger.debug("%s: SSE fetch failed", self._name, exc_info=True)
+                data, payload = self._empty, json.dumps(self._empty)
+            now = loop.time()
+            if payload != self._payload:
+                self._payload = payload
+                self._version += 1
+                self._changed_at = now
+                for waiter in tuple(self._waiters):
+                    waiter.set()
+            await asyncio.sleep(self._interval_for(data, max(0.0, now - self._changed_at)))
+        self._poller = None
+
+    async def stream(self, max_lifetime_s: float = SSE_MAX_LIFETIME_S):
+        """Yield SSE frames for one connection, sharing the feed's single poll."""
+        loop = asyncio.get_running_loop()
+        waiter = asyncio.Event()
+        self._waiters.add(waiter)
+        if self._poller is None or self._poller.done():
+            self._changed_at = loop.time()
+            self._poller = loop.create_task(self._poll_forever())
+        try:
+            seen = -1
+            started = last_sent = loop.time()
+            while True:
+                now = loop.time()
+                if now - started >= max_lifetime_s:
+                    return
+                if self._payload is not None and self._version != seen:
+                    seen = self._version
+                    last_sent = now
+                    yield f"data: {self._payload}\n\n"
+                    continue
+                waiter.clear()
+                budget = min(self.KEEPALIVE_S - (now - last_sent), max_lifetime_s - (now - started))
+                try:
+                    await asyncio.wait_for(waiter.wait(), timeout=max(0.05, budget))
+                except asyncio.TimeoutError:
+                    pass
+                now = loop.time()
+                if self._version == seen and now - last_sent >= self.KEEPALIVE_S:
+                    last_sent = now
+                    yield ":\n\n"  # keep-alive comment
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._waiters.discard(waiter)
 
 
 class RevalidatedStaticFiles(StaticFiles):
@@ -284,6 +404,21 @@ class WebApp:
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)
         self._templates: Jinja2Templates = Jinja2Templates(directory=os.path.join(SCRIPT_DIR, "templates"))
         self._manager: Manager = manager
+
+        # One poll per endpoint, not one per connection. Built here rather than at
+        # module scope so each app instance (and each test) gets its own.
+        self._tasks_feed = SharedSseFeed(
+            self._manager.get_tasks_for_stream,
+            _tasks_poll_interval,
+            empty={},
+            name="tasks",
+        )
+        self._notices_feed = SharedSseFeed(
+            self._manager.get_raw_notices,
+            lambda _data, _settled: NOTICES_STREAM_POLL_S,
+            empty=[],
+            name="notices",
+        )
 
         # Wraps every route and both static mounts below — see AuthGate's docstring
         # for why this is a plain ASGI middleware rather than BaseHTTPMiddleware.
@@ -458,32 +593,11 @@ class WebApp:
 
         @self._app.get("/api/tasks/stream")
         async def tasks_stream(request: Request) -> StreamingResponse:
-            """SSE stream — pushes a data frame whenever task state changes."""
+            """SSE stream — pushes a data frame whenever task state changes.
 
-            async def _gen():
-                last_json: str | None = None
-                last_hb = asyncio.get_running_loop().time()
-                try:
-                    while True:
-                        try:
-                            data = await self._manager.get_tasks_for_stream()
-                            j = json.dumps(data)
-                        except Exception:
-                            data = {}
-                            j = "{}"
-                        now = asyncio.get_running_loop().time()
-                        if j != last_json:
-                            last_json = j
-                            last_hb = now
-                            yield f"data: {j}\n\n"
-                        elif now - last_hb > 15:
-                            last_hb = now
-                            yield ":\n\n"  # keep-alive comment
-                        await asyncio.sleep(_tasks_poll_interval(data))
-                except asyncio.CancelledError:
-                    pass
-
-            return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+            Every connection shares one upstream poll; see `SharedSseFeed`.
+            """
+            return StreamingResponse(self._tasks_feed.stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
         @self._app.api_route("/api/tasks/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
         async def proxy_tasks(request: Request, path: str):
@@ -634,31 +748,11 @@ class WebApp:
 
         @self._app.get("/api/notices/stream")
         async def notices_stream(request: Request) -> StreamingResponse:
-            """SSE stream — pushes a data frame whenever the aggregated notice list changes."""
+            """SSE stream — pushes a data frame whenever the aggregated notice list changes.
 
-            async def _gen():
-                last_json: str | None = None
-                last_hb = asyncio.get_running_loop().time()
-                try:
-                    while True:
-                        try:
-                            notices = await self._manager.get_raw_notices()
-                            j = json.dumps(notices)
-                        except Exception:
-                            j = "[]"
-                        now = asyncio.get_running_loop().time()
-                        if j != last_json:
-                            last_json = j
-                            last_hb = now
-                            yield f"data: {j}\n\n"
-                        elif now - last_hb > 15:
-                            last_hb = now
-                            yield ":\n\n"  # keep-alive comment
-                        await asyncio.sleep(2)
-                except asyncio.CancelledError:
-                    pass
-
-            return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+            Every connection shares one upstream poll; see `SharedSseFeed`.
+            """
+            return StreamingResponse(self._notices_feed.stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
         @self._app.post("/api/test-server", response_class=JSONResponse)
         async def test_server(payload: TestServerPayload) -> JSONResponse:
