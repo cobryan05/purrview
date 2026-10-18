@@ -819,3 +819,90 @@ class TestBackoffTracksDowntimeNotAttemptCount:
         health.record_failure(0.3, "no bytes returned")
 
         assert health.next_attempt_at <= SourceHealth.BACKOFF_BASE_S + 0.3
+
+
+class TestADeadReaderIsNotAConnectForever:
+    """A rebuild whose reader dies without geometry has to reach the failure ladder.
+
+    `_reconnect_source` reported every not-yet-ready rebuild as a connect in progress,
+    which is right for a camera that is slow to come up and wrong for one that is not
+    there at all. An unreachable source's reader is spawned, finds no stream on the
+    relay path and stops at once — so the next pass found it neither ready nor
+    connecting, rebuilt it, and reported a connect again. `connecting` resets
+    `next_attempt_at` to `CONNECT_POLL_S`, so the backoff was never entered and the
+    source was respawned every two seconds for as long as the run lasted.
+
+    Observed on a live install as one unplugged camera spawning 29 ffmpeg processes a
+    minute for days, each dying in under a millisecond.
+    """
+
+    async def test_a_reader_that_dies_without_geometry_is_charged_as_a_failure(self):
+        task = _task()
+        # Never ready, never connecting: the shape of a reader that exits on spawn.
+        provider = _FakeProvider(ready=False, connecting=False)
+        pipeline = _pipeline(provider)
+        task._pipelines = [pipeline]
+
+        # The rebuild, reported as a connect because geometry legitimately has not
+        # arrived yet on the pass that does it.
+        await task._service_source(pipeline, inference_api=None)
+        assert provider.reconnect_calls == 1
+        assert pipeline.health.connecting is True
+        assert pipeline.health.consecutive_failures == 0
+
+        # The reader built above is neither ready nor connecting, so it has stopped.
+        await task._service_source(pipeline, inference_api=None)
+
+        assert pipeline.health.connecting is False, "a stopped reader is not a connect in progress"
+        assert pipeline.health.consecutive_failures == 1
+
+    async def test_the_next_attempt_is_a_backoff_not_a_connect_poll(self):
+        """The whole point: the wait between respawns has to grow."""
+        task = _task()
+        pipeline = _pipeline(_FakeProvider(ready=False, connecting=False))
+        task._pipelines = [pipeline]
+
+        await task._service_source(pipeline, inference_api=None)
+        connect_poll_until = pipeline.health.next_attempt_at
+        await task._service_source(pipeline, inference_api=None)
+
+        assert pipeline.health.next_attempt_at > connect_poll_until
+        assert pipeline.health.backoff_s >= SourceHealth.BACKOFF_BASE_S
+        assert pipeline.health.backoff_s > SourceHealth.CONNECT_POLL_S
+
+    async def test_an_unreachable_source_is_not_rebuilt_on_every_pass(self):
+        """Charging the dead attempt is what stops the respawn loop.
+
+        The charge and the rebuild alternate, so a source that never comes up costs
+        half as many spawns as passes — and in the running watcher the backoff the
+        charge sets is what keeps those passes minutes apart (`WatchPipeline.due`).
+        """
+        task = _task()
+        provider = _FakeProvider(ready=False, connecting=False)
+        pipeline = _pipeline(provider)
+        task._pipelines = [pipeline]
+
+        for _ in range(10):
+            await task._service_source(pipeline, inference_api=None)
+
+        assert provider.reconnect_calls <= 5, "every pass rebuilt the reader — the backoff is not being entered"
+
+    async def test_a_source_that_is_merely_slow_is_still_left_alone(self):
+        """The charge must not reach the case the connecting state exists for.
+
+        A camera behind a relay can take minutes from cold, and its reader is up and
+        handshaking the whole time. Charging that is the regression this guards: it
+        widens the backoff for doing exactly what coming up looks like.
+        """
+        task = _task()
+        provider = _FakeProvider(ready=False, connecting=True)
+        pipeline = _pipeline(provider)
+        pipeline.health.record_connecting(time.monotonic())
+        task._pipelines = [pipeline]
+
+        for _ in range(5):
+            await task._service_source(pipeline, inference_api=None)
+
+        assert provider.reconnect_calls == 0
+        assert pipeline.health.consecutive_failures == 0
+        assert pipeline.health.connecting is True

@@ -269,6 +269,13 @@ class StreamWatcherTask(Task):
         #: change can be told from a standing value. See `_apply_bridge_recording`.
         self._bridge_recording_seen: Dict[str, bool] = {}
         self._pin_ids: Dict[str, Optional[str]] = {}
+        #: model name → why its loaded session is on the CPU, for models this watcher
+        #: runs. Only ever populated for an *unwanted* fallback: the reason comes from
+        #: `onnxSession.create_session`, which sets it solely when CUDA was asked for
+        #: and could not be initialised. A CPU-only build never asks, so this needs no
+        #: "did you expect a GPU" setting the way CPU *training* does — being set is
+        #: already the whole signal.
+        self._device_fallbacks: Dict[str, str] = {}
         self._dry_run: bool = False
         self._analysis_fps_cap: Optional[float] = None
         self._status_msg: str = "Starting"
@@ -1406,8 +1413,34 @@ class StreamWatcherTask(Task):
         """
         notices = super().get_notices()
         watched = {p.source_uuid for p in self._pipelines}
-        return notices + [
-            clipRepairAdvice.notice_for(f) for f in clipRepairAdvice.findings() if f["sourceUuid"] in watched
+        return (
+            notices
+            + [clipRepairAdvice.notice_for(f) for f in clipRepairAdvice.findings() if f["sourceUuid"] in watched]
+            + self._cpu_inference_notices()
+        )
+
+    def _cpu_inference_notices(self) -> list[dict]:
+        """A standing notice per model this watcher runs that fell back to the CPU.
+
+        The fallback is already recorded by the inference server and reported in a
+        detect-unit response's `notes`, but a watcher never reads those: it analyses
+        through `frameInference`, which logs them at DEBUG. So the one caller running
+        inference around the clock was the one with no way to find out, and the
+        symptom — frames analysed many times slower — looks like a slow camera.
+
+        Keyed per model so two degraded models do not collapse into one line, and
+        mirroring `_cpu_training_notices` in the training manager, which is where the
+        same failure already surfaces for training jobs.
+        """
+        return [
+            {
+                "key": f"watcher_cpu_inference_{name}",
+                "level": "warning",
+                "message": (
+                    f"Model '{name}' is analysing this watcher's frames on the CPU — far slower " f"than GPU. {reason}"
+                ),
+            }
+            for name, reason in sorted(self._device_fallbacks.items())
         ]
 
     async def _load_mqtt_settings(self, db_api_client: db_client.ApiClient) -> Optional[MqttSettings]:
@@ -1460,7 +1493,26 @@ class StreamWatcherTask(Task):
                 metas[name] = await asyncio.to_thread(models_api.get_model_meta, name)
             except Exception:
                 logger.debug("Could not read meta for model %s", name, exc_info=True)
+        self._record_device_fallbacks(metas)
         return metas
+
+    def _record_device_fallbacks(self, metas: dict) -> None:
+        """Note which of these models are running on the CPU against their wishes.
+
+        Read off the metas the caller already fetched, so neither the startup pass nor
+        the pin renewal pays an extra request for it.
+
+        A model missing from *metas* (its meta could not be read) leaves whatever was
+        recorded for it alone rather than clearing it: a failed read is not evidence
+        that a fallback has been resolved, and treating it as such would retract the
+        warning on exactly the unhealthy inference server likeliest to fail the read.
+        """
+        for name, meta in metas.items():
+            reason = getattr(meta, "device_fallback", None)
+            if reason:
+                self._device_fallbacks[name] = str(reason)
+            else:
+                self._device_fallbacks.pop(name, None)
 
     def _split_model_stacks(self, metas: dict) -> None:
         """Move each pipeline's crop classifiers out of `model_names` into `sub_models`.
@@ -1556,6 +1608,14 @@ class StreamWatcherTask(Task):
                         # A failed renewal must never kill the watcher; the worst case
                         # is a model reload on the next inference.
                         logger.warning("Pin renewal failed for %s", name, exc_info=True)
+                # On the renewal tick rather than only at startup: a session falls back
+                # when it is *loaded*, so the run that pays for it is usually not the
+                # run that started — a GPU filled by a training job hours in is the
+                # ordinary way this happens, and a startup-only check would never see it.
+                try:
+                    await self._load_model_metas(models_api, set(self._pin_ids))
+                except Exception:
+                    logger.debug("Could not refresh device fallbacks", exc_info=True)
         except asyncio.CancelledError:
             pass
 
@@ -1938,6 +1998,24 @@ class StreamWatcherTask(Task):
         the loop that calls this services every other camera too — one dead source
         would cost the healthy ones their frame rate.
         """
+        # An earlier pass's rebuild that the provider no longer calls connecting, and
+        # which never reported geometry, is a connect attempt that has failed — charge
+        # it before building another. `_service_source` has already returned for
+        # anything still connecting, so reaching here in that state means the reader
+        # built last pass has stopped.
+        #
+        # Without the charge every rebuild re-reported itself as a connect in progress,
+        # so the failure ladder was never entered and an unreachable source was
+        # respawned every CONNECT_POLL_S for as long as the run lasted.
+        # Returns rather than rebuilding here: the rebuild below ends in
+        # `record_connecting`, which resets `next_attempt_at` to CONNECT_POLL_S and
+        # would discard the backoff just recorded. The attempt the charge earns is the
+        # one the backoff schedules, and by then `connecting` is clear so this does not
+        # fire twice in a row.
+        if pipeline.health.connecting and not pipeline.provider.is_ready():
+            self._record_source_failure(pipeline, now, "reader stopped before reporting geometry")
+            return False
+
         try:
             await asyncio.wait_for(pipeline.provider.reconnect(), timeout=self._RECONNECT_TIMEOUT_S)
         except (asyncio.TimeoutError, TimeoutError):
