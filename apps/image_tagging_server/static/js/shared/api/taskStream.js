@@ -41,6 +41,17 @@ let _retryAttempt = 0;
 let _outageReported = false;
 /** True while the tab has been hidden long enough that we dropped the stream. */
 let _suspended = false;
+/**
+ * The most recent frame, replayed to a subscriber that arrives after it.
+ *
+ * Frames carry whole state rather than transitions, so the newest one is always the
+ * best answer to "what is true now" — and without it a late subscriber learns nothing
+ * until something next *changes*. That is a real gap, not a theoretical one: a caller
+ * that launches a task and then subscribes (`watchHarvest`) misses the completion of
+ * anything that finishes in between, and a harvest of three frames finishes that fast.
+ * The modal never opens and the frames are reachable only through the toast.
+ */
+let _lastFrame = null;
 
 function _fanout(method, arg) {
   // Copy first: a handler may unsubscribe (or subscribe) while we iterate.
@@ -110,6 +121,7 @@ function _open() {
     // its shortest delay through an outage.
     _retryAttempt = 0;
     _outageReported = false;
+    _lastFrame = data;
     _fanout('onMessage', data);
   };
 
@@ -161,6 +173,23 @@ export function subscribeTaskStream({ onMessage, onError } = {}) {
     setTimeout(() => {
       if (!_subscribers.has(sub) || !_outageReported) return;
       try { sub.onError(new Error('SSE connection closed unexpectedly')); }
+      catch (err) { console.error('taskStream subscriber failed', err); }
+    }, 0);
+  }
+
+  // Same reasoning as the outage replay above, for the ordinary case: the stream is
+  // shared and long-lived, so by the time anything subscribes the current frame has
+  // usually already been delivered to someone else. Replaying it is what makes
+  // "subscribe, then react to state" work regardless of when you arrived.
+  //
+  // Deferred for the same reason, and re-checked inside: a handler that unsubscribes
+  // immediately must not be called, and a real frame arriving first makes this one
+  // redundant rather than wrong — frames are whole state, so a duplicate is a no-op
+  // for every consumer of this stream.
+  if (_lastFrame !== null && onMessage) {
+    setTimeout(() => {
+      if (!_subscribers.has(sub)) return;
+      try { sub.onMessage(_lastFrame); }
       catch (err) { console.error('taskStream subscriber failed', err); }
     }, 0);
   }

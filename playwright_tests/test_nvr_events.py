@@ -2741,6 +2741,71 @@ class TestTheTrackingBlipsPanel:
 
         expect(page.locator("[data-testid='preview-run-title']")).to_have_text("Harvested frames")
 
+    def test_a_completion_already_delivered_still_opens_the_run(self, page: Page, base_url: str):
+        """The watcher subscribes *after* the launch, so the frame it needs may already be gone.
+
+        `startHarvest` awaits `launchRun` and only then calls `watchHarvest`. The task
+        stream is one shared, long-lived EventSource, so by then the current frame has
+        usually been delivered to the page's other subscribers already — and a stream
+        that retains nothing leaves the new subscriber knowing nothing until something
+        next *changes*. For a harvest of three frames, "already finished" is the normal
+        case, and the review modal simply never opened.
+
+        Serving the frame to the FIRST connection only is what makes this deterministic.
+        The shipped behaviour recovered by accident: the mock's response ends, EventSource
+        reconnects, and the frame is served again — fast enough in isolation, not under a
+        full `-n 8` run, which is why this reached FLAKY_TESTS.md twice instead of being
+        read as the bug it is.
+        """
+        self._mock_launch(page, [])
+        # Registered first so the stateful stream route below takes precedence — the
+        # preview-run fetch it sets up is still wanted.
+        self._mock_harvest_completion(
+            page,
+            {"previewRunUuid": "run-harvest-1", "framesHarvested": 3},
+            run_name="Harvested frames",
+        )
+
+        connections = {"n": 0}
+        frame = (
+            "data: "
+            + json.dumps(
+                {
+                    "tasks": {
+                        "task-harvest-1": {
+                            "instance": {
+                                "uuid": "task-harvest-1",
+                                "status": "completed",
+                                "result": {
+                                    "status": "completed",
+                                    "data": {"previewRunUuid": "run-harvest-1", "framesHarvested": 3},
+                                },
+                            },
+                        }
+                    }
+                }
+            )
+            + "\n\n"
+        )
+
+        def _stream_once(route):
+            connections["n"] += 1
+            # A comment frame keeps later connections open and carries no state, so the
+            # only way to learn the harvest finished is the replay on subscribe.
+            route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body=frame if connections["n"] == 1 else ":\n\n",
+            )
+
+        page.route("**/api/tasks/stream", _stream_once)
+        self._open_modal(page, base_url, blips=[_blip()])
+
+        page.locator("[data-testid='event-blip-check']").check()
+        page.locator("[data-testid='event-blips-harvest']").click()
+
+        expect(page.locator("[data-testid='preview-run-title']")).to_have_text("Harvested frames")
+
     def test_a_harvest_that_produced_nothing_opens_no_run(self, page: Page, base_url: str):
         """The other half of the same branch. A run that proposed nothing has no preview
         run to open, and a modal over an empty triage grid would be worse than the toast
