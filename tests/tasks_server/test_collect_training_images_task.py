@@ -2678,13 +2678,19 @@ class TestUptimeAndCapturesPerMinuteExcludePausedTime:
     async def test_uptime_excludes_paused_time(self):
         task = _make_task()
         await task._init(_PARAMS, resume_data=None)
-        start = time.perf_counter()
-        task._run_started_at = start
+        # An exact base, not a real `perf_counter()` reading. `_format_duration`
+        # truncates (`int(seconds)`), so this assertion needs elapsed to be exactly
+        # 100.0 — and `(start + 100.0) - start` is only exact while both values sit in
+        # the same binade. A real reading in the 60–200s range (a freshly booted CI
+        # runner, minutes into a job) crosses one about 25% of the time, loses an ulp,
+        # and truncates 99.999… to "1m 39s". A long-uptime dev box reads ~3e6 and can
+        # never reproduce it, which is how this reached CI green-locally twice.
+        task._run_started_at = 0.0
         task._collector._images_saved = 10
 
         with patch(
             "apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter",
-            return_value=start + 100.0,
+            return_value=100.0,
         ):
             stats_before_pause = task.get_status_data()["stats"]
             task._paused_duration_s = 60.0
