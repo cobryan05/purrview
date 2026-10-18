@@ -367,6 +367,10 @@ class TrainingCollector:
         #: fired as a background task; this is that task, checked (not awaited)
         #: before starting another.
         self._eviction_task: Optional[asyncio.Task] = None
+        #: When the last pass finished, on the `_now` clock. None until one has run,
+        #: which is distinct from 0.0: `time.monotonic()` has an arbitrary origin, so
+        #: a numeric default cannot be compared against it to mean "never".
+        self._last_eviction_at: Optional[float] = None
         #: Set by `shutdown()` before it drains. `drain_saves()` goes through
         #: `collect_saves()`, which schedules an eviction pass — so without this
         #: the teardown itself starts a detached task that outlives the collector
@@ -1012,16 +1016,43 @@ class TrainingCollector:
     #: makes it safe at small caps: below 50 images the margin is zero and the pass
     #: trims exactly to the cap, because one extra permanent delete is a worse price
     #: than the batching is worth on a queue that short.
+    #:
+    #: Deliberately left small. Widening it does reduce how often a pass runs, but it
+    #: buys that by deleting further below the cap, and these deletes are permanent —
+    #: `EVICTION_MIN_INTERVAL_S` buys the same reduction for nothing.
     EVICTION_LOW_WATER_MARGIN: float = 0.02
+
+    #: Floor on the gap between two eviction passes.
+    #:
+    #: The margin above bounds how often a pass is needed in *images*, and cannot do
+    #: it at all on a cap too small for the fraction to round to anything; this bounds
+    #: it in time, for any cap, and costs no extra deletions — a pass deferred by a
+    #: minute deletes the minute's arrivals when it runs, rather than more.
+    #:
+    #: The queue may sit over its cap by one interval's worth of arrivals in exchange.
+    #: That is the intended trade: a cap here is a budget, and the alternative is a
+    #: full candidate page and an O(n²) ranking to delete the one image that put it
+    #: over.
+    EVICTION_MIN_INTERVAL_S: float = 60.0
+
+    #: Injectable clock seam for the interval above. Patched on the class or instance
+    #: in tests rather than monkeypatching `time`, which is process-wide and shared
+    #: with whatever else is running concurrently.
+    _now = staticmethod(time.monotonic)
 
     def _maybe_enforce_review_queue_cap(self) -> None:
         """Fire a background eviction pass, unless one is already running.
 
         Called from `collect_saves()`, itself called from a driver's hot loop —
-        this method must never await anything itself. The task-in-flight check
-        is the throttle: while a pass is running, further saves in the same
-        window don't queue up a pile of overlapping passes; the next save after
-        it finishes re-checks and fires again if the queue is still over.
+        this method must never await anything itself.
+
+        Two throttles, and they cover different things. The task-in-flight check
+        stops overlapping passes: while one runs, further saves in that window do
+        not pile up behind it. `EVICTION_MIN_INTERVAL_S` then bounds how often a
+        pass may run at all, which is what the low-water margin cannot do on a cap
+        too small for it to round to anything — there, every save after the first
+        arrives over the cap and would otherwise buy a full ranking pass to delete
+        the one image that put it there.
         """
         if self._shutting_down:
             return
@@ -1030,6 +1061,8 @@ class TrainingCollector:
         if self._task_tag_uuid is None:
             return
         if self._eviction_task is not None and not self._eviction_task.done():
+            return
+        if self._last_eviction_at is not None and self._now() - self._last_eviction_at < self.EVICTION_MIN_INTERVAL_S:
             return
         self._eviction_task = asyncio.create_task(self._enforce_review_queue_cap())
 
@@ -1188,6 +1221,12 @@ class TrainingCollector:
                 self._log(f"Review queue cap: evicted {len(to_delete)} image(s) ({self._evicted_total} total)")
         except Exception:
             logger.exception("review-queue cap enforcement failed for %s", self._tag_scope_name)
+        finally:
+            # Stamped on the way out, so the interval is the gap between passes and
+            # a slow pass does not shorten it. A failed pass is stamped too: it read
+            # the page and ranked it before it raised, and retrying that immediately
+            # is the cost this floor exists to bound.
+            self._last_eviction_at = self._now()
 
     def _drain_target(self, cap: Optional[int], current: Optional[int]) -> Optional[int]:
         """How far down to delete for one cap.

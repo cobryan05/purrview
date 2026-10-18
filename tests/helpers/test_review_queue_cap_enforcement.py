@@ -277,3 +277,72 @@ class TestTheStoredHashIsReused:
             await _run_with(collector, images)
 
         assert len(hashed) == 5
+
+
+class TestEvictionPassInterval:
+    """How often a pass may run, as opposed to how much it deletes.
+
+    A pass is a full candidate page read back with its boxes and tags plus an O(n²)
+    ranking, and the low-water margin cannot bound how often one runs when the cap is
+    too small for that fraction to round to anything. There every save after the first
+    arrives over the cap, so without a floor on the gap each one buys a whole pass to
+    delete the single image that put it there — which is the per-frame cost, not the
+    deletion.
+    """
+
+    @staticmethod
+    async def _drive(collector: TrainingCollector, images_api: MagicMock, *, at: float) -> None:
+        """One save's worth of cap enforcement, at a given point on the clock."""
+        collector._now = lambda _t=at: _t
+        with patch("apps.helpers.training.collector.ImagesApi", return_value=images_api):
+            collector._maybe_enforce_review_queue_cap()
+            if collector._eviction_task is not None:
+                await collector._eviction_task
+
+    @staticmethod
+    def _api(*, total: int) -> MagicMock:
+        images_api = MagicMock()
+        images_api.get_review_queue.side_effect = lambda params: SimpleNamespace(
+            total_count=total,
+            images=[] if params.limit == 1 else [_image(i) for i in range(min(total, params.limit))],
+        )
+        images_api.delete_image.side_effect = lambda uuid: None
+        return images_api
+
+    async def test_a_second_save_inside_the_interval_runs_no_pass(self):
+        # A cap of 10 has no low-water margin at all — the fraction rounds down — so
+        # this is exactly the case the margin cannot protect and the interval must.
+        collector = _collector(10)
+        images_api = self._api(total=20)
+
+        await self._drive(collector, images_api, at=1000.0)
+        after_first = images_api.delete_image.call_count
+        assert after_first > 0, "the first save over the cap must trim"
+
+        await self._drive(collector, images_api, at=1000.0 + TrainingCollector.EVICTION_MIN_INTERVAL_S / 2)
+
+        assert images_api.delete_image.call_count == after_first, "a pass ran again inside the interval"
+
+    async def test_a_save_after_the_interval_runs_a_pass_again(self):
+        """The floor delays passes; it must not cancel them, or the cap stops holding."""
+        collector = _collector(10)
+        images_api = self._api(total=20)
+
+        await self._drive(collector, images_api, at=1000.0)
+        after_first = images_api.delete_image.call_count
+
+        await self._drive(collector, images_api, at=1000.0 + TrainingCollector.EVICTION_MIN_INTERVAL_S + 1)
+
+        assert images_api.delete_image.call_count > after_first
+
+    async def test_the_first_pass_of_a_run_is_never_delayed(self):
+        """`_last_eviction_at` starts unset, and `time.monotonic()`'s origin is
+        arbitrary — a numeric default compared against it could withhold the first
+        pass of a run for an interval, or forever."""
+        collector = _collector(10)
+        assert collector._last_eviction_at is None
+        images_api = self._api(total=20)
+
+        await self._drive(collector, images_api, at=0.0)
+
+        assert images_api.delete_image.call_count > 0
