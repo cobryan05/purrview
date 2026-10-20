@@ -106,6 +106,11 @@ class RingMqttImageProvider(ImageProvider):
     #: would use — an idle Ring camera is *supposed* to be quiet, and treating a
     #: normal gap between snapshots as a failure would report a healthy camera as down
     #: on almost every read.
+    #:
+    #: A backstop rather than a deadline on the whole call: an escalation interrupts
+    #: the idle wait and the next pass starts this timeout again, so the bound on how
+    #: long a caller can be kept waiting is the caller's own (see the watcher's
+    #: `_fetch_budget_s`), not this.
     IDLE_FRAME_TIMEOUT = 300.0
 
     #: Bound on the idle snapshot queue. Snapshots are minutes apart, so this only ever
@@ -502,12 +507,13 @@ class RingMqttImageProvider(ImageProvider):
         """Interrupt an in-progress idle wait so the trigger is served now.
 
         Safe from paho's thread: the event belongs to the capture loop, so it is set
-        through `call_soon_threadsafe`. With no loop bound there is nobody waiting and
-        the flag on its own is enough.
+        through `call_soon_threadsafe`. With no loop bound there is nothing to set it
+        on — `stop()` drops the loop while a reader can still be parked on the event,
+        and `Event.set()` off-loop would reach that waiter without the loop's wakeup —
+        so the flag is left to stand on its own, which is all it has to do.
         """
         loop = self._loop
         if loop is None:
-            self._escalate_event.set()
             return
         try:
             loop.call_soon_threadsafe(self._escalate_event.set)
@@ -574,9 +580,15 @@ class RingMqttImageProvider(ImageProvider):
         """
         self._live_until = self._now() + (hold_s if hold_s is not None else self._live_hold_s)
         self._escalate_requested = True
-        self._wake_for_escalation()
         await self._publish_stream_command("on")
         self._we_requested_live = True
+        # Last, after the write above. The wake resumes a reader parked in the idle
+        # tier, which escalates — and an escalation that fails to open the stream
+        # retracts the claim, clearing `_we_requested_live`. Waking any earlier runs
+        # that inside the publish await, so this method's own write lands on top of
+        # the retraction and leaves the camera recorded as held awake by us after we
+        # have already published `off`.
+        self._wake_for_escalation()
 
     async def release_live(self) -> None:
         """Give up the caller's claim on the live tier.
