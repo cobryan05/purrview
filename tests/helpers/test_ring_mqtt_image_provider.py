@@ -164,6 +164,40 @@ class TestEscalationTriggers:
             client.deliver(f"{BASE}/stream/state", b"ON")
         assert provider._escalate_requested is False
 
+    async def test_a_trigger_interrupts_an_idle_wait(self, fakes):
+        """ "Go live" must not wait out the cloud snapshot cadence.
+
+        An idle camera spends nearly all its time blocked inside `getNextImage`
+        waiting on the snapshot queue, and ring-mqtt publishes one every 30-90 s. A
+        trigger that was only read at the top of that call therefore did nothing until
+        the snapshot it was meant to replace had already arrived.
+        """
+        provider, client = await _started_provider(live_on_motion=False)
+        pending = asyncio.ensure_future(provider.getNextImage())
+        # Let it reach the idle wait with an empty queue — no snapshot is ever delivered.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert provider._live_provider is None
+
+        await provider.request_live()
+        frame = await asyncio.wait_for(pending, timeout=2.0)
+
+        assert provider._live_provider is not None
+        assert frame.image.shape == (8, 8, 3)
+
+    async def test_a_broker_thread_trigger_interrupts_an_idle_wait(self, fakes):
+        """Same, for the triggers that arrive on paho's thread rather than the loop."""
+        provider, client = await _started_provider(live_on_motion=True)
+        pending = asyncio.ensure_future(provider.getNextImage())
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+        client.deliver(f"{BASE}/motion/state", b"ON")
+        frame = await asyncio.wait_for(pending, timeout=2.0)
+
+        assert provider._live_provider is not None
+        assert frame.image.shape == (8, 8, 3)
+
     async def test_someone_elses_off_does_not_end_our_live_window(self, fakes):
         """One client's `off` must not cut short a stream another is mid-way through
         reading. The hold timer is what ends our window."""

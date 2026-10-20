@@ -213,6 +213,12 @@ class RingMqttImageProvider(ImageProvider):
         #: Set by the broker thread when a trigger arrives, so the async side can pick
         #: it up without the broker thread having to touch the event loop.
         self._escalate_requested: bool = False
+        #: Raised alongside the flag above to interrupt an idle-tier wait. The flag
+        #: alone is only read at the top of `getNextImage`, and an idle camera spends
+        #: nearly all of its time blocked *inside* that call waiting on the snapshot
+        #: queue — so without this a trigger did not act until the next cloud snapshot
+        #: (30-90 s) had already arrived.
+        self._escalate_event: asyncio.Event = asyncio.Event()
         #: Whether ring-mqtt currently reports an active motion event. While true the
         #: live tier is held open regardless of `_live_until`, so the bridge's
         #: `motion_duration` decides the event's length rather than our hold setting.
@@ -490,6 +496,24 @@ class RingMqttImageProvider(ImageProvider):
         """
         self._escalate_requested = True
         self._live_until = self._now() + self._live_hold_s
+        self._wake_for_escalation()
+
+    def _wake_for_escalation(self) -> None:
+        """Interrupt an in-progress idle wait so the trigger is served now.
+
+        Safe from paho's thread: the event belongs to the capture loop, so it is set
+        through `call_soon_threadsafe`. With no loop bound there is nobody waiting and
+        the flag on its own is enough.
+        """
+        loop = self._loop
+        if loop is None:
+            self._escalate_event.set()
+            return
+        try:
+            loop.call_soon_threadsafe(self._escalate_event.set)
+        except RuntimeError:
+            # The loop closed between the check and the call; the flag still stands.
+            pass
 
     def hold_live(self) -> None:
         """Extend the live window, for a consumer that knows something this provider
@@ -550,6 +574,7 @@ class RingMqttImageProvider(ImageProvider):
         """
         self._live_until = self._now() + (hold_s if hold_s is not None else self._live_hold_s)
         self._escalate_requested = True
+        self._wake_for_escalation()
         await self._publish_stream_command("on")
         self._we_requested_live = True
 
@@ -673,32 +698,63 @@ class RingMqttImageProvider(ImageProvider):
                 await self._sleep(self._next_capture_time - now)
             self._next_capture_time = self._now() + self._min_capture_interval
 
-        if self._escalate_requested:
-            self._escalate_requested = False
-            await self._escalate()
-        elif self._live_provider is not None and not self._motion_active and self._now() >= self._live_until:
-            # `_motion_active` gates this so an event that outlasts `live_hold_s` is
-            # not cut off half way through — the grace period only starts once
-            # ring-mqtt says the motion has actually stopped.
-            logger.info("Ring camera %s live window expired; returning to snapshots", self._camera_id)
-            await self._deescalate()
-
-        if self._live_provider is not None:
-            try:
-                return await self._live_provider.getNextImage()
-            except Exception:
-                # The live reader failing is not the source failing: the idle tier is
-                # still perfectly good, and dropping back to it keeps the camera
-                # producing frames instead of reporting a dead source.
-                logger.warning("Live read failed for %s; falling back to snapshots", self._camera_id, exc_info=True)
+        # Looped because the idle wait below gives up as soon as a trigger lands, and
+        # the escalation it asked for is decided at the top of this block.
+        while True:
+            if self._escalate_requested:
+                self._escalate_requested = False
+                self._escalate_event.clear()
+                await self._escalate()
+            elif self._live_provider is not None and not self._motion_active and self._now() >= self._live_until:
+                # `_motion_active` gates this so an event that outlasts `live_hold_s` is
+                # not cut off half way through — the grace period only starts once
+                # ring-mqtt says the motion has actually stopped.
+                logger.info("Ring camera %s live window expired; returning to snapshots", self._camera_id)
                 await self._deescalate()
 
-        return await self._next_snapshot()
+            if self._live_provider is not None:
+                try:
+                    return await self._live_provider.getNextImage()
+                except Exception:
+                    # The live reader failing is not the source failing: the idle tier is
+                    # still perfectly good, and dropping back to it keeps the camera
+                    # producing frames instead of reporting a dead source.
+                    logger.warning("Live read failed for %s; falling back to snapshots", self._camera_id, exc_info=True)
+                    await self._deescalate()
 
-    async def _next_snapshot(self) -> ImageWithProviderMetadata:
+            snapshot = await self._next_snapshot()
+            if snapshot is not None:
+                return snapshot
+
+    async def _next_snapshot(self) -> Optional[ImageWithProviderMetadata]:
+        """The next cloud snapshot, or None if a live trigger arrived while waiting.
+
+        The early return is what makes "go live" immediate. ring-mqtt publishes a
+        snapshot every 30-90 s, and a wait that only ever ended on the queue meant a
+        request landing just after one arrived was not acted on until the next.
+        """
+        getter = asyncio.ensure_future(self._snapshot_queue.get())
+        waiter = asyncio.ensure_future(self._escalate_event.wait())
         try:
-            frame, raw = await asyncio.wait_for(self._snapshot_queue.get(), timeout=self.IDLE_FRAME_TIMEOUT)
-        except asyncio.TimeoutError:
+            done, _ = await asyncio.wait(
+                (getter, waiter), timeout=self.IDLE_FRAME_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            waiter.cancel()
+            if not getter.done():
+                # Queue.get re-wakes the next getter when cancelled, so the item it was
+                # about to take stays in the queue for the following pass.
+                getter.cancel()
+        if getter.done() and not getter.cancelled():
+            frame, raw = getter.result()
+        elif waiter in done:
+            # The flag is always set before the event, so an event without one is a
+            # stale set left by an escalation that has already been served. Clearing
+            # it here stops the caller spinning on a wait that ends instantly.
+            if not self._escalate_requested:
+                self._escalate_event.clear()
+            return None
+        else:
             raise TimeoutError(f"No snapshot from Ring camera {self._camera_id} within {self.IDLE_FRAME_TIMEOUT:.0f}s")
 
         frame_idx = self._frame_idx
