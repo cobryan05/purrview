@@ -152,7 +152,11 @@ class TestRetriesNeverStop:
             now += health.backoff_s
 
         assert delays[0] == pytest.approx(SourceHealth.BACKOFF_BASE_S)
-        assert delays[1] > delays[0], "backoff must grow"
+        # Growth is asserted over the whole ladder rather than at the second rung: the
+        # early rungs are deliberately flat (see TestShortOutagesStayOnAFlatInterval),
+        # so "the next one is longer" is only true once the flat window is behind it.
+        assert max(delays) > delays[0], "backoff must grow"
+        assert delays == sorted(delays), "backoff must never shrink"
         assert max(delays) == pytest.approx(SourceHealth.BACKOFF_MAX_S)
 
     def test_a_source_down_for_a_day_is_still_being_retried(self):
@@ -173,6 +177,59 @@ class TestRetriesNeverStop:
         # Still scheduled, still finite — never a give-up sentinel.
         health.record_failure(now, "no frame")
         assert health.next_attempt_at == pytest.approx(now + SourceHealth.BACKOFF_MAX_S)
+
+
+class TestShortOutagesStayOnAFlatInterval:
+    """A drop the camera recovers from in seconds must not be waited out.
+
+    The retry interval is derived from elapsed downtime, so the attempts that land
+    while a short outage is still recovering are the ones most likely to find the
+    source back. Those have to stay close together: spacing them by a multiple of a
+    downtime that has barely started leaves a source unread long after its relay path
+    is available again.
+    """
+
+    @staticmethod
+    def _attempt_times(span_s: float) -> list:
+        """When a source that never comes back would be retried, over `span_s`."""
+        health = SourceHealth()
+        now = 0.0
+        times = [now]
+        while now < span_s:
+            health.record_failure(now, "no frame")
+            now = health.next_attempt_at
+            times.append(now)
+        return times
+
+    def test_every_attempt_inside_the_flat_window_is_one_base_interval_apart(self):
+        times = self._attempt_times(SourceHealth.BACKOFF_FLAT_UNTIL_S)
+        gaps = [b - a for a, b in zip(times, times[1:])]
+
+        assert gaps, "the source should have been retried at least once"
+        assert max(gaps) == pytest.approx(
+            SourceHealth.BACKOFF_BASE_S
+        ), "no attempt inside the flat window may be spaced out by growth"
+
+    def test_a_camera_back_inside_the_flat_window_is_retried_within_one_interval(self):
+        times = self._attempt_times(SourceHealth.BACKOFF_FLAT_UNTIL_S)
+
+        for recovered_at in (1.0, 5.0, 12.0, 29.0):
+            waited = next(t for t in times if t >= recovered_at) - recovered_at
+            assert waited <= SourceHealth.BACKOFF_BASE_S, (
+                f"a source readable again {recovered_at}s in waited a further " f"{waited}s to be retried"
+            )
+
+    def test_a_long_outage_still_widens_to_the_cap(self):
+        """The flat window must not become a flat ladder.
+
+        A camera that is genuinely gone has to cost less and less, or a watcher over
+        four dead cameras spends the whole run reconnecting them.
+        """
+        times = self._attempt_times(3600.0)
+        gaps = [b - a for a, b in zip(times, times[1:])]
+
+        assert gaps[-1] > SourceHealth.BACKOFF_BASE_S, "the interval must widen past the flat window"
+        assert gaps[-1] == pytest.approx(SourceHealth.BACKOFF_MAX_S)
 
 
 class TestReconnectDrive:
