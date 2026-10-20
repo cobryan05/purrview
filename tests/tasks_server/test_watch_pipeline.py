@@ -127,7 +127,9 @@ class TestSourceHealth:
         health = SourceHealth()
         health.record_failure(0.0, "boom")
         first = health.backoff_s
-        health.record_failure(first, "boom")
+        # Stepped past the flat window: inside it the interval is pinned to
+        # BACKOFF_BASE_S whatever the downtime, so growth is only observable beyond it.
+        health.record_failure(SourceHealth.BACKOFF_FLAT_UNTIL_S * 2, "boom")
         assert health.backoff_s > first
 
     def test_backoff_is_capped(self):

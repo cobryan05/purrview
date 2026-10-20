@@ -130,6 +130,13 @@ class SourceHealth:
     #: cannot exceed roughly this multiple of the time the source has actually been
     #: away.
     BACKOFF_GROWTH = 2.0
+    #: Downtime below which the retry interval stays flat at BACKOFF_BASE_S, growth
+    #: being measured from here rather than from zero. A camera that drops its RTSP
+    #: session is usually back on the relay within a few seconds, so the attempts just
+    #: after a drop are the ones most likely to succeed and must not be spaced out by
+    #: growth derived from an outage that has barely started. Past here the source is
+    #: not blipping, and the widening interval is what keeps an unplugged camera cheap.
+    BACKOFF_FLAT_UNTIL_S = 30.0
     #: Downtime past which the source stops being "a camera that dropped" and starts
     #: being a fault worth reporting. Retries do not stop here — they continue at
     #: BACKOFF_MAX_S forever, because a camera that has been unplugged for a day is
@@ -178,9 +185,17 @@ class SourceHealth:
         # a camera that is already back for the length of BACKOFF_MAX_S. Bounding the
         # wait by the downtime so far keeps a short blip cheap to recover from while a
         # source that really is gone still settles at BACKOFF_MAX_S apart.
+        #
+        # Offset by BACKOFF_FLAT_UNTIL_S so the scaling starts at the end of the flat
+        # window: inside it every rung floors to BACKOFF_BASE_S, and past it the
+        # interval widens from the excess rather than stepping straight to the full
+        # multiple of the downtime.
         self.backoff_s = min(
             self.BACKOFF_MAX_S,
-            max(self.BACKOFF_BASE_S, self.downtime_s(now) * self.BACKOFF_GROWTH),
+            max(
+                self.BACKOFF_BASE_S,
+                (self.downtime_s(now) - self.BACKOFF_FLAT_UNTIL_S) * self.BACKOFF_GROWTH,
+            ),
         )
         self.next_attempt_at = now + self.backoff_s
 
