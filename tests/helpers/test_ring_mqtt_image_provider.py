@@ -71,8 +71,9 @@ class FakeLiveProvider:
         self.stopped = False
         FakeLiveProvider.instances.append(self)
 
-    def set_source_identity(self, name):
+    def set_source_identity(self, name, uuid=None):
         self.name = name
+        self.uuid = uuid
 
     def set_source_fps_ceiling(self, fps):
         self.fps = fps
@@ -125,6 +126,25 @@ async def _started_provider(**kwargs) -> tuple[RingMqttImageProvider, FakeMqttCl
     return provider, provider._mqtt_client
 
 
+async def _parked_in_the_idle_wait(provider: RingMqttImageProvider, timeout_s: float = 2.0) -> None:
+    """Block until `provider` is genuinely waiting inside the idle tier.
+
+    A fixed number of scheduler turns is not a readiness signal. Too few and the
+    trigger fired afterwards lands *before* the wait exists, so the event is already
+    set when it is first awaited and the test passes without the interruption it is
+    named for ever happening — a silent false pass, not a flake.
+
+    The waiter the idle wait registers on the escalation event is the observable
+    proof that it got there, so spin until that exists and fail loudly if it never
+    does.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not provider._escalate_event._waiters:
+        assert loop.time() < deadline, "the provider never reached the idle wait"
+        await asyncio.sleep(0)
+
+
 class TestEscalationTriggers:
     """What is allowed to wake the camera."""
 
@@ -174,9 +194,8 @@ class TestEscalationTriggers:
         """
         provider, client = await _started_provider(live_on_motion=False)
         pending = asyncio.ensure_future(provider.getNextImage())
-        # Let it reach the idle wait with an empty queue — no snapshot is ever delivered.
-        for _ in range(3):
-            await asyncio.sleep(0)
+        # Reached the idle wait with an empty queue — no snapshot is ever delivered.
+        await _parked_in_the_idle_wait(provider)
         assert provider._live_provider is None
 
         await provider.request_live()
@@ -189,8 +208,7 @@ class TestEscalationTriggers:
         """Same, for the triggers that arrive on paho's thread rather than the loop."""
         provider, client = await _started_provider(live_on_motion=True)
         pending = asyncio.ensure_future(provider.getNextImage())
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await _parked_in_the_idle_wait(provider)
 
         client.deliver(f"{BASE}/motion/state", b"ON")
         frame = await asyncio.wait_for(pending, timeout=2.0)
