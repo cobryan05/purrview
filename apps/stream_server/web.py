@@ -101,7 +101,9 @@ class WebApp:
             retention_s: float = Form(
                 -1.0, description="Seconds of rolling buffer to keep; negative uses the server default"
             ),
-            record: bool = Form(True, description="Whether to maintain a rolling buffer for this source"),
+            # Opt-out rather than `record: bool = Form(True)`: FastAPI reads an omitted
+            # bool form field as an unchecked checkbox, i.e. False, whatever its default.
+            no_buffer: bool = Form(False, description="Skip the rolling buffer for this source"),
         ) -> JSONResponse:
             """Idempotently arm a relay path for a source and take a lease on it.
 
@@ -115,7 +117,7 @@ class WebApp:
                     source_url=source_url,
                     holder=holder,
                     retention_s=None if retention_s < 0 else retention_s,
-                    record=record,
+                    record=not no_buffer,
                 )
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, **result.to_dict()})
             except Exception as e:
