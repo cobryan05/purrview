@@ -29,7 +29,7 @@ class TestEnsureEndpoint:
     async def test_reports_when_a_source_has_no_buffer(self, http_client, manager):
         resp = await http_client.post(
             "/api/streams/ensure",
-            data={"source_url": "rtsp://cam/stream", "holder": "w", "record": "false"},
+            data={"source_url": "rtsp://cam/stream", "holder": "w", "no_buffer": "true"},
         )
         data = resp.json()
         assert data["success"] is True
