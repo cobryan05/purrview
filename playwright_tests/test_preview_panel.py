@@ -247,6 +247,22 @@ class FakePreviewApi:
                     content_type="application/json",
                     body=json.dumps({"status": "success", "runs": runs}),
                 )
+            if method == "POST":
+                body = json.loads(req.post_data or "{}")
+                run = {
+                    "uuid": f"run-created-{len(self.runs) + 1}",
+                    "name": body.get("name") or body.get("modelName", ""),
+                    "createdAt": "2026-08-12T00:00:00Z",
+                    "pinned": False,
+                    "stats": {},
+                    **body,
+                }
+                self.add_run(run, [])
+                return route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "run": self.runs[run["uuid"]]}),
+                )
             return route.fallback()
 
         run_uuid = parts[0]

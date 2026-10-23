@@ -8,6 +8,10 @@
  * `executeBulkImageAction` the review toolbar's own "Bulk Apply"/"Apply to All"
  * buttons use — so a classifier match can be tagged, label-marked, or even
  * deleted, with full parity with the rest of the app (not just "add a tag").
+ *
+ * A run started with a preview run is saved: its candidates live in
+ * `preview_candidates` and the grid writes each outcome back (applied / rejected /
+ * relabelled), so reopening it from "Previous Model Results" shows only what is left.
  */
 
 import { getImageThumbnailUrl } from '/app-static/js/shared/api/review.js';
@@ -18,6 +22,63 @@ import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
+import { fetchPreviewRun, queryPreviewCandidates, updatePreviewCandidates, PreviewDecision } from '/app-static/js/shared/api/previewRuns.js';
+
+const _PAGE_SIZE = 1000;
+
+/**
+ * Every untriaged candidate of a saved classifier run, in the grid's shape.
+ *
+ * Fetched unfiltered and filtered here: a read marks vanished images `stale`, so
+ * a server-side decision filter would shift the offset under the next page.
+ */
+async function _loadRunCandidates(runUuid, labels) {
+  const rows = [];
+  for (let offset = 0; ; offset += _PAGE_SIZE) {
+    const { candidates, totalCount } = await queryPreviewCandidates(runUuid, {
+      sortBy: 'confidence', limit: _PAGE_SIZE, offset,
+    });
+    rows.push(...candidates);
+    if (candidates.length < _PAGE_SIZE || rows.length >= totalCount) break;
+  }
+  const open = new Set([PreviewDecision.PENDING, PreviewDecision.ACCEPTED]);
+  return {
+    triagedCount: rows.filter(c => c.decision === PreviewDecision.APPLIED || c.decision === PreviewDecision.REJECTED).length,
+    candidates: rows.filter(c => open.has(c.decision)).map(c => ({
+      candidateUuid: c.uuid,
+      imageUuid: c.imageUuid,
+      imagePath: c.imageFilename,
+      predictedLabelUuid: c.proposedLabelUuid,
+      predictedLabelName: labels?.get(c.proposedLabelUuid)?.name ?? null,
+      confidence: c.confidence,
+    })),
+  };
+}
+
+/**
+ * Open a saved classifier run in the confirmation grid.
+ *
+ * @param {{runUuid: string, labels: Map<string, object>, refresh?: () => void}} opts
+ */
+export async function openSavedClassifierRun({ runUuid, labels, refresh = null }) {
+  const [run, { candidates, triagedCount }] = await Promise.all([
+    fetchPreviewRun(runUuid),
+    _loadRunCandidates(runUuid, labels),
+  ]);
+  const stats = run?.stats ?? {};
+  await openClassifierTagConfirmationModal(candidates, {
+    modelName: run?.modelName ?? '',
+    refresh,
+    labels,
+    runUuid,
+    triagedCount,
+    stats: {
+      imagesFailed: stats.images_failed ?? 0,
+      noMatchCount: stats.no_match_count ?? 0,
+      sampleErrors: stats.sample_errors ?? [],
+    },
+  });
+}
 
 /**
  * Per-card adapter for an image-level classifier preview candidate — the object
@@ -25,7 +86,8 @@ import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
  * runModelOnResults.js's `makeCandidateBboxAdapter`, but IMAGE-LEVEL: a
  * classifier proposes a whole-image label, not a box, so there is NO geometry,
  * verification, tags, or bbox uuid. It mutates the in-memory candidate / preview
- * state ONLY; nothing hits the DB until the user hits Apply.
+ * state, plus the saved run's own candidate rows when there is one (`persist`);
+ * no annotation changes until the user hits Apply.
  *
  * @param {object} candidate - the transient preview candidate object.
  * @param {HTMLElement} cardEl - the candidate's card element.
@@ -33,10 +95,11 @@ import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
  *   labels: Map<string, object>,
  *   removeCandidate: (candidate: object) => void,
  *   rerenderProposedChip: (candidate: object) => void,
+ *   persist?: (candidates: object[], fields: object) => Promise<void>,
  * }} previewController
  */
 export function makeCandidateImageAdapter(candidate, cardEl, previewController) {
-  const { labels, removeCandidate, rerenderProposedChip } = previewController;
+  const { labels, removeCandidate, rerenderProposedChip, persist } = previewController;
   return {
     // ── Display getters ────────────────────────────────────────────────────
     getImageUuid() { return candidate.imageUuid ?? null; },
@@ -57,12 +120,14 @@ export function makeCandidateImageAdapter(candidate, cardEl, previewController) 
       candidate.predictedLabelUuid = labelUuid;
       candidate.predictedLabelName = labelUuid ? (labels.get(labelUuid)?.name ?? null) : null;
       rerenderProposedChip(candidate);
+      await persist?.([candidate], { proposedLabelUuid: labelUuid });
     },
 
     // ── Remove from preview (no DB) ────────────────────────────────────────
     // Drops the candidate so Apply won't include it (unchecks + removes the row).
     async remove() {
       removeCandidate(candidate);
+      await persist?.([candidate], { decision: PreviewDecision.REJECTED });
     },
   };
 }
@@ -81,8 +146,23 @@ export function makeCandidateImageAdapter(candidate, cardEl, previewController) 
  * @param {Map<string, object>} ctx.labels - label lookup, for display and the bulk-action modal.
  * @param {{imagesFailed: number, noMatchCount: number, sampleErrors: string[]}} [ctx.stats]
  *   - diagnostic breakdown from the task result, shown when there are zero candidates.
+ * @param {string} [ctx.runUuid] - saved run the candidates came from; outcomes are written back to it.
+ * @param {number} [ctx.triagedCount] - candidates of that run already applied or rejected.
  */
 export async function openClassifierTagConfirmationModal(candidates, ctx) {
+  // Write an outcome back to the saved run. A failure only costs the bookkeeping
+  // (the candidate reappears next time), so it warns rather than blocking the apply.
+  async function _persist(cands, fields) {
+    if (!ctx.runUuid) return;
+    const uuids = cands.map(c => c.candidateUuid).filter(Boolean);
+    try {
+      await updatePreviewCandidates(ctx.runUuid, uuids, fields);
+    } catch (err) {
+      Logger.error('Failed to record classifier run decision:', err);
+      toast('Could not update the saved run; these matches may show again when you reopen it.', 5000, 'warning');
+    }
+  }
+
   const hoverPreview = createHoverPreview();
   const { dialog, open, close } = createModalShell({ onClose: () => hoverPreview.destroy() });
   dialog.classList.add('app-modal-dialog--lg', 'classifier-match-confirm-modal');
@@ -101,7 +181,9 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
     const empty = document.createElement('div');
     empty.className = 'relabel-modal-empty';
     const stats = ctx.stats;
-    if (stats) {
+    if (ctx.triagedCount > 0) {
+      empty.textContent = `All ${ctx.triagedCount} match(es) in this run have been triaged.`;
+    } else if (stats) {
       const parts = [];
       if (stats.noMatchCount > 0) parts.push(`${stats.noMatchCount} image(s) below threshold`);
       if (stats.imagesFailed > 0) parts.push(`${stats.imagesFailed} image(s) failed to load/process`);
@@ -202,6 +284,7 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
     labels: ctx.labels,
     removeCandidate: _removeCandidate,
     rerenderProposedChip: _rerenderProposedChip,
+    persist: _persist,
   };
 
   let _cardIndex = 0;
@@ -360,14 +443,17 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
           if (!confirmed) return;
 
           let failCount = 0;
-          for (const { img } of entries) {
+          const removed = [];
+          for (const [i, { img }] of entries.entries()) {
             try {
               await removeSingleImage(action, img.uuid);
+              removed.push(checkedRows[i].candidate);
             } catch (err) {
               Logger.error(`${action} image failed for ${img.uuid}: ${err.message}`);
               failCount++;
             }
           }
+          await _persist(removed, { decision: PreviewDecision.APPLIED });
           const succeeded = entries.length - failCount;
           const verb = removalVerb(action);
           toast(
@@ -377,6 +463,11 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
           );
         } else {
           const { failCount, succeededEntries } = await executeBulkImageAction(action, entries, labelUuids, tagUuids);
+          const succeeded = new Set(succeededEntries);
+          await _persist(
+            checkedRows.filter((_, i) => succeeded.has(entries[i])).map(r => r.candidate),
+            { decision: PreviewDecision.APPLIED },
+          );
           const summary = failCount > 0
             ? `Applied to ${succeededEntries.length}/${entries.length} image(s), ${failCount} failed`
             : `Applied to ${succeededEntries.length} image(s)`;

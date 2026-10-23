@@ -38,10 +38,10 @@ import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { expandLabelFilterSet, bboxHasAnyTag, bboxMatchesConfidence, VERIFICATION_TAG_BY_STATE } from '/app-static/js/app/review/filterPredicate.js';
-import { openClassifierTagConfirmationModal } from '/app-static/js/app/review/runClassifierOnResults.js';
+import { openClassifierTagConfirmationModal, openSavedClassifierRun } from '/app-static/js/app/review/runClassifierOnResults.js';
 import { labelChip as _labelChip } from '/app-static/js/app/review/labelChip.js';
 import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
-import { createPreviewRun, updatePreviewRun, deletePreviewRun } from '/app-static/js/shared/api/previewRuns.js';
+import { createPreviewRun, updatePreviewRun, deletePreviewRun, isClassifierRun, CLASSIFIER_RUN_TASK } from '/app-static/js/shared/api/previewRuns.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 
 const _CLASSIFIER_KINDS = new Set(['image_classifier', 'multi_label_classifier']);
@@ -1253,23 +1253,13 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   /** Assigned beside the buttons below; same temporal-dead-zone reason as `runBtn`. */
   let saveNote = null;
 
-  /**
-   * Say whether this run's output will be kept.
-   *
-   * Only detector runs are persisted (`createPreviewRun` below); a classifier run's
-   * "apply" is a free-form bulk image action chosen afterwards, which has nothing to
-   * persist a decision against. Saying "saved" for both would be a promise the
-   * classifier branch cannot keep.
-   */
+  /** Say where this run's output will be kept. */
   function _syncSaveNote() {
     if (!saveNote) return;
-    const isClassifier = selectedClassifier !== null;
-    saveNote.textContent = isClassifier
-      ? 'Results are held in this session only — triage them when the run finishes.'
-      : 'Every result is saved as the run goes, under the “Previous Model Results” button on '
-        + 'the Review toolbar. Closing this window or cancelling part way through keeps '
-        + 'what has been found so far. Saved runs are swept automatically after a week — '
-        + 'or a day once everything in one has been triaged — so pin a run there to keep it.';
+    saveNote.textContent = 'Every result is saved as the run goes, under the “Previous Model Results” button on '
+      + 'the Review toolbar. Closing this window or cancelling part way through keeps '
+      + 'what has been found so far. Saved runs are swept automatically after a week — '
+      + 'or a day once everything in one has been triaged — so pin a run there to keep it.';
   }
 
   async function _loadModels() {
@@ -1664,11 +1654,16 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     // work away. Hand it to the triage panel exactly as a completed run does.
     if (previewRun) {
       const runUuid = previewRun.uuid;
+      const classifierRun = isClassifierRun(previewRun);
       previewRun = null;
       toast('Run cancelled — the candidates found so far are under “Previous Model Results”.', 4000);
       try {
-        const { openPreviewRunModal } = await import('/app-static/js/app/review/previewPanel.js');
-        await openPreviewRunModal({ runUuid, labels: ctx.labels, onApplied: ctx.refresh });
+        if (classifierRun) {
+          await openSavedClassifierRun({ runUuid, labels: ctx.labels, refresh: ctx.refresh });
+        } else {
+          const { openPreviewRunModal } = await import('/app-static/js/app/review/previewPanel.js');
+          await openPreviewRunModal({ runUuid, labels: ctx.labels, onApplied: ctx.refresh });
+        }
       } catch (err) {
         Logger.error('Failed to open the cancelled run for triage:', err);
         toast('The partial results were saved; open them from “Previous Model Results”.', 5000, 'warning');
@@ -1772,13 +1767,14 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     let aggNoOpCount = 0;
     let aggNoMatchCount = 0;
     const aggSampleErrors = [];
+    // False when a task returned its candidates inline despite being given a run
+    // (a tasks_server that predates classifier persistence).
+    let taskPersisted = true;
 
-    // Detector runs are persisted: the run row is created up front and every
-    // model in the sequence writes its candidates straight into it, so the
-    // result survives this modal being closed and can be triaged over several
-    // sittings. Classifier runs still use the in-memory confirmation modal —
-    // their "apply" is a free-form bulk *image* action chosen afterwards, which
-    // has no representation in a candidate's persisted decision.
+    // Runs are persisted: the run row is created up front and every model in
+    // the sequence writes its candidates straight into it, so the result
+    // survives this modal (or the whole tab) going away and can be triaged over
+    // several sittings.
     // The two halves of the new-box mode. `relabel_existing` is only allowed to
     // be false when new boxes are actually being collected (the task rejects
     // the combination that could propose nothing at all).
@@ -1786,7 +1782,19 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     const runRelabelExisting = runAddNew ? _relabelExisting() : true;
 
     previewRun = null;
-    if (!isClassifier) {
+    if (isClassifier) {
+      try {
+        previewRun = await createPreviewRun({
+          modelName: selectedClassifier,
+          taskTypename: CLASSIFIER_RUN_TASK,
+          params: { conf_thresh: confThresh, model_names: modelNames },
+          scope: { kind: 'images', image_uuid_count: runImageUuids.length },
+        });
+      } catch (err) {
+        Logger.error('Failed to create preview run; falling back to an unsaved preview:', err);
+        toast('Could not save this run; its results will not persist.', 5000, 'warning');
+      }
+    } else {
       try {
         previewRun = await createPreviewRun({
           modelName: modelNames.join(' → '),
@@ -1828,6 +1836,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
               model_name: modelName,
               conf_thresh: confThresh,
               image_uuids: runImageUuids,
+              ...(previewRun ? { preview_run_uuid: previewRun.uuid } : {}),
             }
           : {
               model_name: modelName,
@@ -1919,6 +1928,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
         aggNoOpCount += data.no_op_count ?? 0;
         aggNoMatchCount += data.no_match_count ?? 0;
         if (data.sample_errors?.length) aggSampleErrors.push(...data.sample_errors);
+        if (!data.preview_run_uuid) taskPersisted = false;
       }
 
       if (cancelled) return;
@@ -1929,7 +1939,16 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
 
       // Persisted run: the candidates are already in the DB (the task wrote them
       // as it went and returned only the uuid), so hand off to the triage panel
-      // rather than the in-memory confirmation modal.
+      // rather than the in-memory confirmation modal. A classifier task writes
+      // its own stats.
+      if (previewRun && isClassifier && !taskPersisted) {
+        await deletePreviewRun(previewRun.uuid).catch(() => {});
+        previewRun = null;
+      }
+      if (previewRun && isClassifier) {
+        await openSavedClassifierRun({ runUuid: previewRun.uuid, labels: ctx.labels, refresh: ctx.refresh });
+        return;
+      }
       if (previewRun) {
         try {
           await updatePreviewRun(previewRun.uuid, {

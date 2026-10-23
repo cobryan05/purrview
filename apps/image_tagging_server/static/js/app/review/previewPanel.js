@@ -36,6 +36,7 @@ import {
   updatePreviewCandidates,
   updatePreviewRun,
   isReportRun,
+  isClassifierRun,
   PreviewDecision,
   PreviewDecisionAction,
 } from '/app-static/js/shared/api/previewRuns.js';
@@ -1150,6 +1151,9 @@ export async function openPreviousModelResultsModal({ labels = null, onApplied =
       if (isReport) {
         const { openSavedVerifyReport } = await import('/app-static/js/app/review/compareModels.js');
         await openSavedVerifyReport({ run, labels });
+      } else if (isClassifierRun(run)) {
+        const { openSavedClassifierRun } = await import('/app-static/js/app/review/runClassifierOnResults.js');
+        await openSavedClassifierRun({ runUuid: run.uuid, labels, refresh: onApplied });
       } else {
         await openPreviewRunModal({ runUuid: run.uuid, labels, onApplied });
       }

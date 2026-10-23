@@ -43,6 +43,16 @@ export function isReportRun(run) {
   return Boolean(run?.params?.[REPORT_PARAM]);
 }
 
+/**
+ * The task behind a classifier run. Its candidates are whole-image proposals
+ * (no bbox), triaged in the classifier grid rather than the bbox triage panel.
+ */
+export const CLASSIFIER_RUN_TASK = 'PreviewClassifierMatchTask';
+
+export function isClassifierRun(run) {
+  return run?.taskTypename === CLASSIFIER_RUN_TASK;
+}
+
 /** What accepting a candidate does — mirrors PreviewDecisionAction. */
 export const PreviewDecisionAction = {
   RELABEL: 'relabel',
