@@ -17,6 +17,9 @@ import json
 
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.test_preview_panel import FakePreviewApi
+from playwright_tests.waits import wait_until
+
 LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
 LABEL_CORRUPT = {"uuid": "lbl-corrupt", "name": "Corrupt", "color": "#888888", "parentUuid": None}
 
@@ -138,7 +141,7 @@ class _FakeTask:
         self.create_bodies = []
         self.poll_count = 0
 
-    def install(self, page: Page, candidates: list, stats: dict = None):
+    def install(self, page: Page, candidates: list, stats: dict = None, on_complete=None):
         def handle_create(route: Route):
             body = json.loads(route.request.post_data or "{}")
             self.create_bodies.append(body)
@@ -192,6 +195,8 @@ class _FakeTask:
         page.route("**/api/tasks/instances/get", handle_get)
 
         def handle_result(route: Route):
+            if on_complete:
+                on_complete()
             data = {
                 "images_processed": 2,
                 "candidate_count": len(candidates),
@@ -374,3 +379,108 @@ class TestClassifierRunFlow:
         expect(confirm_dialog).to_be_visible(timeout=5000)
         expect(confirm_dialog).to_contain_text("No matches from corrupt-classifier")
         expect(confirm_dialog).to_contain_text("2 image(s) below threshold")
+
+
+def _saved_candidate(uuid, image_uuid, confidence, decision="pending"):
+    """A classifier candidate as the preview-runs API returns it: no bbox, not a new box."""
+    return {
+        "uuid": uuid,
+        "runUuid": "run-clf",
+        "imageUuid": image_uuid,
+        "imageFilename": f"folder/{image_uuid}.jpg",
+        "bboxUuid": None,
+        "isNew": False,
+        "proposedLabelUuid": "lbl-corrupt",
+        "confidence": confidence,
+        "decision": decision,
+        "sourceModel": "corrupt-classifier",
+    }
+
+
+class TestSavedClassifierRuns:
+    """A classifier run is saved like a detector run, so a tab that dies after the
+    run finishes no longer takes the results with it."""
+
+    def _setup(self, page: Page):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_CORRUPT])
+        _mock_tags(page, [UNVERIFIED_TAG, CORRUPT_TAG])
+        _mock_models(page, ["yolo9-detector"], ["corrupt-classifier"])
+        api = FakePreviewApi()
+        api.install(page)
+        return api
+
+    def test_run_is_triaged_from_the_saved_run_and_apply_is_recorded(self, page: Page, base_url: str):
+        api = self._setup(page)
+
+        def _task_writes_candidates():
+            # What the real task does server-side: stream its matches into the run.
+            run_uuid = next(iter(api.runs))
+            for c in (_saved_candidate("c-1", "img-1", 0.91), _saved_candidate("c-2", "img-2", 0.68)):
+                api.candidates[run_uuid][c["uuid"]] = c | {"runUuid": run_uuid}
+            api._recompute(run_uuid)
+
+        fake_task = _FakeTask()
+        # The one-shot result carries no candidates for a saved run, only its uuid.
+        fake_task.install(page, [], stats={"preview_run_uuid": "run-created-1"}, on_complete=_task_writes_candidates)
+        calls = _mock_image_bulk_apply(page)
+
+        _navigate_to_review(page, base_url)
+        _mock_image_thumbnails(page)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        _check_model_in_dialog(dialog, "corrupt-classifier")
+        dialog.locator("button", has_text="Run").click()
+
+        confirm_dialog = page.locator(".classifier-match-confirm-modal")
+        expect(confirm_dialog).to_contain_text("2 matches from corrupt-classifier", timeout=5000)
+
+        run_uuid = next(iter(api.runs))
+        assert api.runs[run_uuid]["taskTypename"] == "PreviewClassifierMatchTask"
+        assert fake_task.create_bodies[0]["params"]["preview_run_uuid"] == run_uuid
+
+        # Apply to one match only; the other must stay open in the saved run.
+        confirm_dialog.locator(".relabel-modal-card[data-image-uuid='img-2'] input[type=checkbox]").uncheck()
+        confirm_dialog.locator("button", has_text="Apply to 1 checked").click()
+        bulk_modal = page.locator("text=Apply to 1 selected image").locator("..")
+        bulk_modal.locator("label", has_text="Add Tags").locator("input[type=radio]").check()
+        bulk_modal.locator(".bulk-modal-picker--tags .ms-item", has_text="Corrupt").locator(
+            "input[type=checkbox]"
+        ).check()
+        bulk_modal.locator("button", has_text="Apply").click()
+
+        wait_until(page, lambda: api.patch_bodies, "the applied match was never recorded on the saved run")
+        assert calls[0]["imageUuids"] == ["img-1"]
+        assert api.candidates[run_uuid]["c-1"]["decision"] == "applied"
+        assert api.candidates[run_uuid]["c-2"]["decision"] == "pending"
+
+    def test_reopening_shows_only_untriaged_matches_in_the_classifier_grid(self, page: Page, base_url: str):
+        api = self._setup(page)
+        api.add_run(
+            {
+                "uuid": "run-clf",
+                "name": "corrupt-classifier run",
+                "modelName": "corrupt-classifier",
+                "taskTypename": "PreviewClassifierMatchTask",
+                "createdAt": "2026-08-11T00:00:00Z",
+                "pinned": False,
+                "params": {},
+                "stats": {"images_processed": 3},
+            },
+            [
+                _saved_candidate("c-1", "img-1", 0.91, decision="applied"),
+                _saved_candidate("c-2", "img-2", 0.68),
+                _saved_candidate("c-3", "img-3", 0.55, decision="rejected"),
+            ],
+        )
+
+        _navigate_to_review(page, base_url)
+        _mock_image_thumbnails(page)
+        page.get_by_test_id("review-previous-model-results").click()
+        page.get_by_test_id("preview-run-row").get_by_test_id("preview-run-open").click()
+
+        confirm_dialog = page.locator(".classifier-match-confirm-modal")
+        expect(confirm_dialog).to_contain_text("1 match from corrupt-classifier", timeout=5000)
+        expect(confirm_dialog.locator(".relabel-modal-card")).to_have_count(1)
+        expect(confirm_dialog.locator(".relabel-modal-card[data-image-uuid='img-2']")).to_have_count(1)
