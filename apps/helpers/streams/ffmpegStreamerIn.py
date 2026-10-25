@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from subprocess import Popen
 from typing import Any, Dict, Optional, Tuple
@@ -349,7 +350,7 @@ class FFmpegStreamerIn:
         if self._process:
             raise RuntimeError("Can't start new process while old process is running!")
 
-        self._process = await asyncio.to_thread(self._build_process)
+        self._process = await self._aspawn()
 
         self._stop_event.clear()
         self._metadata_event.clear()
@@ -358,6 +359,30 @@ class FFmpegStreamerIn:
         self._is_frame_aligned = False
 
         self._task = self._event_loop.create_task(self._worker_task())
+
+    async def _aspawn(self) -> Popen:
+        """Spawn ffmpeg off the event loop, reaping it if the caller is cancelled first.
+
+        `Popen` returns only once the child has exec'd, which under disk pressure can
+        outlast a caller's fetch budget. Cancelling the await does not stop the thread,
+        so without this the process it spawns has no owner: never reaped, and its pipes
+        kept open by subprocess's zombie list, so ffmpeg blocks forever writing frames.
+        """
+        spawn = asyncio.ensure_future(asyncio.to_thread(self._build_process))
+        try:
+            return await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            spawn.add_done_callback(self._reap_orphaned_spawn)
+            raise
+
+    def _reap_orphaned_spawn(self, spawn: asyncio.Future) -> None:
+        if spawn.cancelled() or spawn.exception() is not None:
+            return
+        process = spawn.result()
+        logger.warning(f"Reaping ffmpeg for {self._source} (pid {process.pid}): its start was cancelled mid-spawn")
+        # A dedicated thread, not the default executor: the slow spawns that land here
+        # happen when that executor is already saturated by blocked I/O.
+        threading.Thread(target=self._reap_process, args=(process,), daemon=True).start()
 
     async def astop(self) -> None:
         """Async, non-blocking equivalent of stop(). Terminates the process and cancels/awaits
