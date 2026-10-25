@@ -49,13 +49,20 @@
 # GPU_DEVICES must never be set to the empty string: unset means "all GPUs" to
 # CUDA, but empty means "no GPUs", and that reads as a container that silently
 # lost its GPU. setup.sh always writes an explicit index list.
+#
+# GPU_DRIVER / GPU_DEVICE_ID pick how Docker attaches the GPU: the legacy NVIDIA
+# runtime hook (nvidia / all, the default) or CDI (cdi / nvidia.com/gpu=all).
+# Hosts differ in which one their NVIDIA Container Toolkit supports; setup.sh
+# probes both and writes whichever works. device_ids rather than `count: all`
+# because compose rejects count alongside device_ids, and only device_ids
+# serves both drivers.
 x-gpu: &gpu
   deploy:
     resources:
       reservations:
         devices:
-          - driver: nvidia
-            count: all
+          - driver: ${GPU_DRIVER:-nvidia}
+            device_ids: ['${GPU_DEVICE_ID:-all}']
             capabilities: [gpu]
 
 x-gpu-env: &gpu-env
@@ -130,11 +137,11 @@ services:
         required: false
     volumes:
       # Local time comes from the host, not from a hardcoded zone: every
-      # service reads the host's /etc/localtime + /etc/timezone read-only, so
+      # service reads the host's /etc/localtime read-only (not /etc/timezone:
+      # many hosts lack it, and Docker then creates it as a directory), so
       # log timestamps and event times match the machine the stack runs on.
       # Set TZ in .env only to deliberately override the host.
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
       # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
       # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data
@@ -181,7 +188,6 @@ services:
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
       - ./conf:/conf
       - ./logs:/logs
       - training_cache:/training-cache
@@ -230,7 +236,6 @@ services:
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
       # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
       # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data
@@ -286,7 +291,6 @@ services:
       - training-dev
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
       # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
       # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data
@@ -334,7 +338,6 @@ services:
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
       - ./conf:/conf
       - ./logs:/logs
       - ./apps:/app/apps
@@ -394,7 +397,6 @@ services:
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
       # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
       # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data

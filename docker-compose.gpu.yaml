@@ -12,8 +12,9 @@
 # Do NOT merge this on a CPU-only host — reserving an nvidia device there
 # prevents the container from starting. (setup.sh wires this automatically.)
 #
-# Which GPUs the container may use is GPU_DEVICES (see docker-compose.yaml);
-# this overlay only grants access to the hardware.
+# Which GPUs the container may use is GPU_DEVICES, and how Docker attaches them
+# is GPU_DRIVER / GPU_DEVICE_ID (both see docker-compose.yaml); this overlay only
+# grants access to the hardware.
 #
 # training/mono/training-dev/mono-dev always need a GPU (training), so they
 # reserve one unconditionally in the base file and never need this overlay.
@@ -23,14 +24,14 @@ services:
       resources:
         reservations:
           devices:
-            - driver: nvidia
-              count: all
+            - driver: ${GPU_DRIVER:-nvidia}
+              device_ids: ['${GPU_DEVICE_ID:-all}']
               capabilities: [gpu]
   app-dev:
     deploy:
       resources:
         reservations:
           devices:
-            - driver: nvidia
-              count: all
+            - driver: ${GPU_DRIVER:-nvidia}
+              device_ids: ['${GPU_DEVICE_ID:-all}']
               capabilities: [gpu]

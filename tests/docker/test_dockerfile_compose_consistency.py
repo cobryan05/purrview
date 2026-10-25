@@ -27,6 +27,19 @@ def _load_compose(name: str) -> dict:
     return yaml.safe_load((REPO / name).read_text())
 
 
+def _with_defaults(value: str) -> str:
+    """Resolve compose `${VAR:-default}` interpolation as it reads with VAR unset."""
+    return re.sub(r"\$\{\w+:-([^}]*)\}", r"\1", value)
+
+
+def _assert_default_reservation_is_all_nvidia_gpus(where: str, devices: list[dict]) -> None:
+    # An unset .env must keep the legacy behaviour: the nvidia runtime, every GPU.
+    gpu = [d for d in devices if _with_defaults(d.get("driver", "")) == "nvidia"]
+    assert gpu, f"{where} must reserve an nvidia GPU by default"
+    device_ids = [_with_defaults(i) for i in gpu[0].get("device_ids", [])]
+    assert device_ids == ["all"] or gpu[0].get("count") == "all", f"{where} must reserve every GPU by default"
+
+
 def test_compose_targets_exist_in_dockerfile():
     stages = _dockerfile_stages()
     compose = _load_compose("docker-compose.yaml")
@@ -79,8 +92,7 @@ def test_gpu_services_reserve_a_gpu():
     compose = _load_compose("docker-compose.yaml")
     for svc_name in ("training", "mono", "training-dev", "mono-dev"):
         devices = compose["services"][svc_name]["deploy"]["resources"]["reservations"]["devices"]
-        drivers = [d.get("driver") for d in devices]
-        assert "nvidia" in drivers, f"{svc_name} must reserve an nvidia GPU"
+        _assert_default_reservation_is_all_nvidia_gpus(svc_name, devices)
 
 
 def test_gpu_overlay_only_augments_app():
@@ -91,7 +103,7 @@ def test_gpu_overlay_only_augments_app():
     }, "overlay must only touch the CPU-buildable `app`/`app-dev` services"
     for svc_name in ("app", "app-dev"):
         devices = overlay["services"][svc_name]["deploy"]["resources"]["reservations"]["devices"]
-        assert any(d.get("driver") == "nvidia" for d in devices)
+        _assert_default_reservation_is_all_nvidia_gpus(f"overlay {svc_name}", devices)
 
 
 def test_env_example_documents_core_keys():
