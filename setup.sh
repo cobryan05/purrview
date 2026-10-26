@@ -304,6 +304,91 @@ warn_missing_buildx() {
 }
 warn_missing_buildx
 
+# Every service bind-mounts /etc/localtime. Docker creates a missing bind source
+# as an empty *directory*, which then fails every later `up` with "is a
+# directory" — and an older compose file also mounted /etc/timezone, so hosts
+# without that file may already carry the stray directory.
+warn_timezone_mounts() {
+  if [ -d /etc/timezone ] && [ -z "$(ls -A /etc/timezone 2>/dev/null)" ]; then
+    echo "!! /etc/timezone is an empty directory — Docker created it from an old bind mount."
+    echo "   Remove it so tools that read it stop erroring:  sudo rmdir /etc/timezone"
+    echo
+  fi
+  if [ ! -e /etc/localtime ]; then
+    echo "!! /etc/localtime is missing; 'docker compose up' would create it as a directory."
+    echo "   Set the host timezone first, e.g.:  sudo timedatectl set-timezone <Area/City>"
+    echo
+  elif [ -d /etc/localtime ]; then
+    echo "!! /etc/localtime is a directory (likely created by Docker); containers will fail to start."
+    echo "   Fix:  sudo rmdir /etc/localtime && sudo timedatectl set-timezone <Area/City>"
+    echo
+  fi
+}
+warn_timezone_mounts
+
+# Probe how this host's Docker attaches an NVIDIA GPU. Echoes "cdi", "nvidia", or
+# nothing if neither works.
+#
+# Two mechanisms exist and hosts differ: the legacy runtime hook (driver: nvidia)
+# and CDI (driver: cdi), which needs a generated spec (`nvidia-ctk cdi generate`).
+# Static hints — a spec file, a registered runtime — do not prove either works, so
+# each is tried with a throwaway container through compose itself (the docker run
+# --device form of CDI is not enabled on every daemon even where compose's is).
+# CDI wins when both work: it is the toolkit's supported path going forward.
+probe_gpu_driver() {
+  local dir driver ids
+  dir="$(mktemp -d)"
+  for driver in cdi nvidia; do
+    if [ "$driver" = "cdi" ]; then ids="nvidia.com/gpu=all"; else ids="all"; fi
+    cat > "$dir/compose.yaml" <<EOF
+services:
+  probe:
+    image: alpine:3
+    command: ["test", "-e", "/dev/nvidiactl"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: $driver
+              device_ids: ['$ids']
+              capabilities: [gpu]
+EOF
+    if timeout 120 docker compose -f "$dir/compose.yaml" -p purrview-gpu-probe \
+         run --rm --quiet-pull probe >/dev/null 2>&1; then
+      docker compose -f "$dir/compose.yaml" -p purrview-gpu-probe down >/dev/null 2>&1 || true
+      rm -rf "$dir"; echo "$driver"; return 0
+    fi
+  done
+  docker compose -f "$dir/compose.yaml" -p purrview-gpu-probe down >/dev/null 2>&1 || true
+  rm -rf "$dir"
+}
+
+# Resolve GPU_DRIVER/GPU_DEVICE_ID (globals). A GPU_DRIVER already in the
+# environment skips the probe, for hosts where it misjudges.
+choose_gpu_driver() {
+  local found="$GPU_DRIVER_IN"
+  if [ -z "$found" ]; then
+    echo >&2
+    echo "-- GPU attach mode --" >&2
+    echo "   Probing how Docker attaches the GPU here (CDI vs legacy nvidia runtime)..." >&2
+    found="$(probe_gpu_driver)"
+    if [ -z "$found" ]; then
+      echo "  !! Neither CDI nor the nvidia runtime could attach a GPU to a test container." >&2
+      echo "     Containers that reserve a GPU will fail to start until the NVIDIA Container" >&2
+      echo "     Toolkit works ('nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml' enables CDI)." >&2
+      echo "     Writing the legacy default; override with GPU_DRIVER=cdi ./setup.sh." >&2
+      found="nvidia"
+    else
+      echo "   Using: $found" >&2
+    fi
+  fi
+  case "$found" in
+    cdi)    GPU_DRIVER="cdi";    GPU_DEVICE_ID="nvidia.com/gpu=all" ;;
+    nvidia) GPU_DRIVER="nvidia"; GPU_DEVICE_ID="all" ;;
+    *) echo "!! GPU_DRIVER must be 'cdi' or 'nvidia' — got '$found'." >&2; exit 1 ;;
+  esac
+}
+
 echo "=========================================================="
 echo " PurrView setup"
 echo "=========================================================="
@@ -433,9 +518,13 @@ esac
 GPU_DEVICES=""
 INFERENCE_GPU=""
 TRAINING_GPU=""
+GPU_DRIVER_IN="${GPU_DRIVER:-}"
+GPU_DRIVER=""
+GPU_DEVICE_ID=""
 case "$COMPOSE_PROFILES" in *training*|*mono*|*dev*) RESERVES_GPU="y" ;; *) RESERVES_GPU="n" ;; esac
 case "$COMPOSE_FILE" in *docker-compose.gpu.yaml*) RESERVES_GPU="y" ;; esac
 if [ "$RESERVES_GPU" = "y" ]; then
+  choose_gpu_driver
   GPU_DEVICES="$(choose_gpu_devices)"
   # Asked only about the cards just exposed, and only where the service in question is
   # part of this deployment — a training-only node has no inference service, and a
@@ -557,6 +646,8 @@ fi
   # Only ever an explicit index list — an empty GPU_DEVICES means "no GPUs" to
   # CUDA, so the variable is omitted rather than written blank.
   [ -n "$GPU_DEVICES" ] && echo "GPU_DEVICES=$GPU_DEVICES"
+  # The legacy nvidia driver is the compose default, so only CDI is written.
+  [ "$GPU_DRIVER" = "cdi" ] && echo "GPU_DRIVER=$GPU_DRIVER" && echo "GPU_DEVICE_ID=$GPU_DEVICE_ID"
   # CUDA ordinals, not physical ids (see cuda_ordinal_for). Omitted for "either",
   # which leaves onnxruntime/torch to pick exactly as they did before these existed.
   [ -n "$INFERENCE_GPU" ] && echo "INFERENCE_GPU=$INFERENCE_GPU"

@@ -13,6 +13,7 @@ two failure modes that matter — ignoring SIGTERM, and ignoring SIGKILL too.
 
 import asyncio
 import subprocess
+import threading
 
 import pytest
 
@@ -140,3 +141,46 @@ class TestStopEscalation:
         assert proc.terminate_calls == 1
         assert proc.kill_calls == 1
         assert all(t is not None for t in proc.waits)
+
+
+class TestCancelledStart:
+    """`astart()` spawns ffmpeg in a thread that cancellation cannot stop.
+
+    Under heavy disk load `Popen` blocks until the child's exec has paged ffmpeg in,
+    which can outlast the watcher's fetch budget. The awaiting task is then cancelled,
+    the thread finishes the spawn anyway, and nothing holds the process to stop it.
+    """
+
+    async def test_a_process_spawned_after_cancellation_is_reaped(self, streamer, monkeypatch):
+        release = threading.Event()
+        proc = FakePopen(dies_on_terminate=True)
+
+        def slow_spawn():
+            release.wait(timeout=5)
+            return proc
+
+        monkeypatch.setattr(streamer, "_build_process", slow_spawn)
+        start = asyncio.create_task(streamer.astart())
+        await asyncio.sleep(0.05)
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+
+        release.set()
+        for _ in range(200):
+            if proc.terminate_calls:
+                break
+            await asyncio.sleep(0.01)
+
+        assert proc.terminate_calls == 1
+        assert streamer._process is None
+
+    async def test_an_uncancelled_start_keeps_its_process(self, streamer, monkeypatch):
+        proc = FakePopen(dies_on_terminate=True)
+        monkeypatch.setattr(streamer, "_build_process", lambda: proc)
+        monkeypatch.setattr(streamer, "_worker_task", lambda: asyncio.sleep(0))
+
+        await streamer.astart()
+
+        assert streamer._process is proc
+        assert proc.terminate_calls == 0
