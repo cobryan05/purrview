@@ -177,9 +177,9 @@ Expect the labelling to be the slow part; everything else is quick.
 8. **Start it.** Jobs → Start a job → the watcher. Watch → Live shows what it is
    seeing, and Watch → Events fills up as rules fire.
 9. **Point Home Assistant at it.** Settings → MQTT for the broker; entities
-   appear through discovery. Add
-   [purrview_ha](https://github.com/cobryan05/purrview_ha) through HACS for the
-   events browser, media source and Lovelace cards.
+   appear through discovery. Install
+   [PurrView](https://github.com/cobryan05/purrview_ha) from the HACS store for
+   the events browser, media source and Lovelace cards.
 
 Then the loop above: correct what it got wrong, harvest those frames, retrain.
 The first model will not be very good. That is expected, and fixing it is the
@@ -691,13 +691,14 @@ seen in the laundry room. Set the broker under Settings → MQTT.
 things MQTT is the wrong shape for: an events browser with its own camera,
 subject, event-type and date filters, media proxied through Home Assistant rather
 than handed out as raw URLs, and live camera entities fed by `publish_mqtt_image`
-actions. It lives in its own repository, `cobryan05/purrview_ha`, and installs
-through HACS as a custom repository:
+actions. It lives in its own repository, `cobryan05/purrview_ha`, and is listed
+in the HACS default store:
 
-1. HACS → Integrations → ⋮ → **Custom repositories**.
-2. Add `https://github.com/cobryan05/purrview_ha` with category **Integration**.
-3. Install **PurrView**, then restart Home Assistant.
-4. Settings → Devices & Services → **Add Integration** → *PurrView*.
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=cobryan05&repository=purrview_ha&category=integration)
+
+1. In HACS, search for **PurrView** (or use the button above) and install it.
+2. Restart Home Assistant.
+3. Settings → Devices & Services → **Add Integration** → *PurrView*.
 
 It needs an **API token** from Settings → Security — not the web-UI login
 password; the two are independent, and an install that sets only a password will
