@@ -81,7 +81,12 @@ docker compose up -d
 #
 # `--keep-storage` is the point of doing this here rather than in a host-wide cron:
 # it keeps the most recent cache so the *next* rebuild is still incremental, and
-# only discards the older generations that no longer speed anything up.
+# only discards the older generations that no longer speed anything up. 60GB holds
+# the app image's layers plus the training-wheels stage.
+#
+# Cache mounts (the pip cache of torch/CUDA wheels) are pruned by age only: under a
+# size cap they are the least recently used records and go first. The daemon rejects
+# `type!=`, hence the positive `type=` filters.
 #
 # Runs after the stack is up, so a failed build never has its cache pruned out from
 # under a retry, and is non-fatal: a rebuild that worked must not report failure
@@ -90,7 +95,10 @@ if [ "${SKIP_PRUNE:-0}" != "1" ]; then
   echo
   echo "Reclaiming orphaned build artifacts (SKIP_PRUNE=1 to skip)..."
   docker image prune -f || echo "  (image prune failed; continuing)" >&2
-  docker builder prune -f --keep-storage 20GB || echo "  (builder prune failed; continuing)" >&2
+  docker builder prune -f --filter type=regular --keep-storage 60GB ||
+    echo "  (builder prune failed; continuing)" >&2
+  docker builder prune -f --filter type=exec.cachemount --filter until=720h ||
+    echo "  (cache-mount prune failed; continuing)" >&2
   echo "Docker disk now:"
   docker system df || true
 fi
