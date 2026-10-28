@@ -117,13 +117,15 @@ export function boxColour(item, fallback) {
  * @param {string} colour - stroke and caption colour (the label's, normally)
  * @param {?string} label - omitted when null
  * @param {{dashed?: boolean, emphasis?: boolean, lineWidth?: number, fontPx?: number,
- *          glow?: ?string}} [opts] - `glow` is the halo colour: it carries the box's
- *          *status* (event, anchor) independently of the label colour on the stroke.
+ *          glow?: ?string, faded?: boolean}} [opts] - `glow` is the halo colour: it
+ *          carries the box's *status* (event, anchor) independently of the label colour
+ *          on the stroke. `faded` marks a box that is remembered rather than seen.
  */
-export function drawBox(ctx, bbox, colour, label, { dashed = false, emphasis = false, lineWidth = 2, fontPx = 12, glow = null } = {}) {
+export function drawBox(ctx, bbox, colour, label, { dashed = false, emphasis = false, lineWidth = 2, fontPx = 12, glow = null, faded = false } = {}) {
   if (!ctx || !bbox || bbox.length !== 4) return;
   const [x1, y1, x2, y2] = bbox;
   ctx.save();
+  if (faded) ctx.globalAlpha = 0.35;
   ctx.strokeStyle = colour;
   ctx.lineWidth = emphasis ? lineWidth * 2 : lineWidth;
   if (emphasis || glow) {

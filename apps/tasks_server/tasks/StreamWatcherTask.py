@@ -3857,6 +3857,7 @@ class StreamWatcherTask(Task):
                     {
                         **t.to_dict(),
                         "ageS": round(t.age_s(now), 2),
+                        "coasting": not t.matched_this_update,
                         "labelColor": self._label_colour(t.label_uuid),
                         "eventRules": rules_by_track.get(t.track_id, []),
                     }
