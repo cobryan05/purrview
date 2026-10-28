@@ -74,7 +74,7 @@ from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_an
 from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.labelHelper import build_label_ancestry_map, build_label_group_map, build_label_metadata_map
-from apps.helpers.recordings import clipRepairAdvice
+from apps.helpers.recordings import clipRepairAdvice, clipVideoHealth
 from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
 from apps.helpers.tracking.Registry import create_tracker
@@ -1416,6 +1416,7 @@ class StreamWatcherTask(Task):
         return (
             notices
             + [clipRepairAdvice.notice_for(f) for f in clipRepairAdvice.findings() if f["sourceUuid"] in watched]
+            + [clipVideoHealth.notice_for(f) for f in clipVideoHealth.findings() if f["sourceUuid"] in watched]
             + self._cpu_inference_notices()
         )
 
