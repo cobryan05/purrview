@@ -637,6 +637,8 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
         drawBox(scaleBox(track.bbox, k), colour, state.show.labels ? caption : null, {
           emphasis: active,
           glow: active || track.isAnchor ? status : null,
+          // Unmatched this frame: drawn where it was last seen until its TTL runs out.
+          faded: track.coasting === true,
           ...pen,
         });
       }
