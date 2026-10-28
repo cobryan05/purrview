@@ -429,6 +429,36 @@ class TestRecoveryMargin:
         assert owner != near_id
 
 
+class TestMotionPrediction:
+    """A walker the detector misses for a moment is looked for where it was heading."""
+
+    @staticmethod
+    def _walk_then(tracker, reappear_x, reappear_t):
+        """Walk a 10px box 5px per 0.2 s to x=15 (overlapping enough to match each
+        frame), go unseen, then reappear at `reappear_x`. Returns (walker id, id at
+        reappearance)."""
+        for i in range(4):
+            x = i * 5.0
+            walker = tracker.update([_det(x, 0, x + 10, 10)], now=i * 0.2)[0].track_id
+        tracks = tracker.update([_det(reappear_x, 0, reappear_x + 10, 10)], now=reappear_t)
+        return walker, next(t.track_id for t in tracks if t.bbox[0] == reappear_x)
+
+    def test_a_walker_missed_for_a_frame_is_picked_up_ahead(self):
+        # At x=25 it no longer overlaps its last box (x=15) at all — only the projected
+        # position finds it.
+        walker, found = self._walk_then(IouTracker(min_hits=1), reappear_x=25.0, reappear_t=1.0)
+        assert found == walker
+
+        walker, found = self._walk_then(IouTracker(min_hits=1, predict_motion=False), 25.0, 1.0)
+        assert found != walker
+
+    def test_a_walker_that_stopped_is_still_matched_where_it_stopped(self):
+        # A second later the projection is 25px ahead, nowhere near the subject, which
+        # stood still. Matching on the projection alone would fork the track here.
+        walker, found = self._walk_then(IouTracker(min_hits=1), reappear_x=15.0, reappear_t=1.6)
+        assert found == walker
+
+
 def _track(track_id, x1, y1, x2, y2, conf=0.9, label=CAT) -> Track:
     return Track(track_id=track_id, bbox=(x1, y1, x2, y2), label_uuid=label, confidence=conf, confirmed=True)
 

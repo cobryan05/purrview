@@ -59,6 +59,26 @@ def _inflate(box: BBox, pad: float) -> BBox:
     return (x1 - pad, y1 - pad, x2 + pad, y2 + pad)
 
 
+def _shift(box: BBox, dx: float, dy: float) -> BBox:
+    x1, y1, x2, y2 = box
+    return (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
+
+
+def _centre(box: BBox) -> Tuple[float, float]:
+    x1, y1, x2, y2 = box
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+#: Extrapolation horizon. Constant velocity stops being a fair guess after a second or
+#: so of a walker going unseen — they turn, stop or leave — and an unbounded projection
+#: would carry a long-coasting track across the frame onto an unrelated subject.
+_MAX_PREDICT_S = 1.5
+
+#: Weight of the newest velocity sample. Per-frame centres jitter by a few pixels, which
+#: at 3-5 fps is a large fraction of a slow subject's real motion.
+_VELOCITY_SMOOTHING = 0.5
+
+
 @register_tracker()
 class IouTracker(Tracker):
     """Greedy IoU tracker with per-label lifetimes and anchor latching."""
@@ -71,12 +91,14 @@ class IouTracker(Tracker):
         anchor_confidence: float = 0.6,
         min_confidence: float = 0.25,
         recovery_margin: float = 0.0,
+        predict_motion: bool = True,
         label_lifetimes: Optional[Dict[str, LabelLifetimeSpec]] = None,
         **params: Any,
     ) -> None:
         super().__init__(**params)
         self._min_confidence = min_confidence
         self._recovery_margin = recovery_margin
+        self._predict_motion = predict_motion
         self._iou_threshold = iou_threshold
         self._min_hits = min_hits
         self._max_age_s = max_age_s
@@ -131,6 +153,18 @@ class IouTracker(Tracker):
                     "rate. 0 turns it off."
                 ),
             },
+            "predict_motion": {
+                "type": "boolean",
+                "required": False,
+                "default": True,
+                "help": (
+                    "Look for a moving subject where it was heading, not only where it was "
+                    "last seen. Stops someone walking across the frame from leaving a trail "
+                    "of new objects behind them. Something that stops or turns is still "
+                    "matched where it was, so this never loses a match it would otherwise "
+                    "have made."
+                ),
+            },
             "min_hits": shared_param("min_hits", 3),
             "max_age_s": shared_param("max_age_s", 2.0),
             "anchor_confidence": shared_param("anchor_confidence", 0.6),
@@ -152,6 +186,7 @@ class IouTracker(Tracker):
         track_idxs: List[int],
         det_idxs: List[int],
         margin: float,
+        now: float,
     ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
         """Greedily pair a subset of tracks with a subset of detections by descending IoU.
 
@@ -165,19 +200,28 @@ class IouTracker(Tracker):
         A non-zero `margin` grows both boxes before scoring, which turns the overlap test
         into a proximity test without introducing a second scoring function to reason
         about. The threshold is unchanged: the same bar, more generous geometry.
+
+        A track with a velocity is scored at both its last box and its predicted one,
+        keeping the better: a subject that stopped or turned still matches where it was.
         """
         candidates: List[Tuple[float, int, int]] = []
         for t_idx in track_idxs:
             track = self._tracks[t_idx]
+            boxes = [track.bbox]
+            predicted = self._predicted_bbox(track, now)
+            if predicted is not None:
+                boxes.append(predicted)
             for d_idx in det_idxs:
                 det = detections[d_idx]
                 if not self.can_associate(track.label_uuid, det.label_uuid):
                     continue
-                a, b = track.bbox, det.bbox
-                if margin > 0.0:
-                    pad = _margin_pad(margin, a, b)
-                    a, b = _inflate(a, pad), _inflate(b, pad)
-                score = iou(a, b)
+                score = 0.0
+                for a in boxes:
+                    b = det.bbox
+                    if margin > 0.0:
+                        pad = _margin_pad(margin, a, b)
+                        a, b = _inflate(a, pad), _inflate(b, pad)
+                    score = max(score, iou(a, b))
                 if score >= self._iou_threshold:
                     candidates.append((score, t_idx, d_idx))
 
@@ -198,7 +242,31 @@ class IouTracker(Tracker):
             [i for i in det_idxs if i not in used_dets],
         )
 
-    def _match(self, detections: List[Detection]) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+    def _predicted_bbox(self, track: Track, now: float) -> Optional[BBox]:
+        """Where `track` should be at `now` if it kept its velocity, or None."""
+        if not self._predict_motion or track.velocity == (0.0, 0.0):
+            return None
+        dt = min(max(0.0, now - track.last_seen), _MAX_PREDICT_S)
+        vx, vy = track.velocity
+        return _shift(track.bbox, vx * dt, vy * dt)
+
+    def _update_velocity(self, track: Track, new_bbox: BBox, now: float) -> None:
+        """Fold the move from the track's current box to `new_bbox` into its velocity."""
+        dt = now - track.last_seen
+        if not self._predict_motion or dt <= 0.0:
+            return
+        (ox, oy), (nx, ny) = _centre(track.bbox), _centre(new_bbox)
+        sample = ((nx - ox) / dt, (ny - oy) / dt)
+        if track.hits <= 1:
+            # The first move is all the evidence there is; averaging it with the zero
+            # a new track starts on would halve the speed for no reason.
+            track.velocity = sample
+            return
+        a = _VELOCITY_SMOOTHING
+        vx, vy = track.velocity
+        track.velocity = (a * sample[0] + (1 - a) * vx, a * sample[1] + (1 - a) * vy)
+
+    def _match(self, detections: List[Detection], now: float) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
         """Associate tracks with detections, optionally with a second forgiving pass.
 
         The second pass exists because requiring overlap is the same property that loses
@@ -214,11 +282,11 @@ class IouTracker(Tracker):
         exact match was available, trading a guarantee for a ranking contest.
         """
         pairs, unmatched_tracks, unmatched_dets = self._pair(
-            detections, list(range(len(self._tracks))), list(range(len(detections))), 0.0
+            detections, list(range(len(self._tracks))), list(range(len(detections))), 0.0, now
         )
         if self._recovery_margin > 0.0 and unmatched_tracks and unmatched_dets:
             recovered, unmatched_tracks, unmatched_dets = self._pair(
-                detections, unmatched_tracks, unmatched_dets, self._recovery_margin
+                detections, unmatched_tracks, unmatched_dets, self._recovery_margin, now
             )
             pairs = pairs + recovered
         return pairs, unmatched_tracks, unmatched_dets
@@ -231,7 +299,7 @@ class IouTracker(Tracker):
         # association pass — so it applies its own threshold here rather than inheriting
         # whatever floor the task happened to request.
         detections = [d for d in detections if d.confidence >= self._min_confidence]
-        pairs, _, unmatched_dets = self._match(detections)
+        pairs, _, unmatched_dets = self._match(detections, now)
 
         # Reset before the match loop: a track not in `pairs` below is exactly a
         # track this call did not match — it survives on its TTL, coasting on
@@ -255,6 +323,7 @@ class IouTracker(Tracker):
             # stationary object jitter, and letting that jitter through would make a
             # containment rule flicker at the zone boundary.
             if not (track.is_anchor and det.confidence < self._anchor_confidence):
+                self._update_velocity(track, det.bbox, now)
                 track.bbox = det.bbox
             track.confidence = det.confidence
             # Identity is the vote's to decide, not this frame's. `label_uuid` and
