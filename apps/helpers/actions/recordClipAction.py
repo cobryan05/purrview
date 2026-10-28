@@ -1012,6 +1012,18 @@ class RecordClipAction(Action):
         elif clipRepairAdvice.wants_probe(context.source_uuid):
             submit_probe(dest, source_uuid=context.source_uuid, source_name=context.source_name or "")
 
+    def _check_video(self, result: Dict[str, Any], dest: Path, context: ActionContext) -> None:
+        """Queue a check that the clip actually holds continuous video.
+
+        Skipped for ring-cut clips: a snapshot-cadence source is gaps between frames by
+        design, and would read as a camera that keeps losing its picture.
+        """
+        if result.get("lowFps"):
+            return
+        from ..recordings import clipVideoHealth
+
+        clipVideoHealth.submit(dest, source_uuid=context.source_uuid, source_name=context.source_name or "")
+
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
         # Only the closing edge can be cut: the window isn't known until the event ends,
         # which is precisely what a retroactive buffer buys us.
@@ -1041,6 +1053,7 @@ class RecordClipAction(Action):
                 # map from drawing boxes in the wrong place.
                 result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
                 self._conceal_damage(result, dest, context)
+                self._check_video(result, dest, context)
                 return ActionResult(
                     ok=True, detail=f"wrote {dest.name} from {result['partCount']} part(s)", data=result
                 )
@@ -1064,6 +1077,7 @@ class RecordClipAction(Action):
                 )
             result["overlay"] = self.save_overlay and (not result.get("hasGap") or bool(result.get("segments")))
             self._conceal_damage(result, dest, context)
+            self._check_video(result, dest, context)
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data=result)
         except Exception as e:
             # Past the buffer window this is permanent, not transient — the caller marks
