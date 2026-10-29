@@ -421,7 +421,7 @@ services:
       - "${TRAINING_PORT:-8005}:8005"
       - "${RTSP_PORT:-8553}:8554"
       - "${SUPERVISORD_PORT:-9001}:9001"
-    restart: "no"
+    restart: unless-stopped
     profiles: ["dev-mono"]
 
 volumes:
