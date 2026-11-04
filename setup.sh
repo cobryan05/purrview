@@ -269,6 +269,34 @@ fi
 UID_VAL="$(id -u)"
 GID_VAL="$(id -g)"
 
+# AMD GPU for VAAPI stream decode. VAAPI_HOST_DEVICE is the by-path render node of the
+# first AMD GPU with amdgpu bound, "" if there is none. AMD_UNBOUND_BUS is an AMD display
+# device with no driver bound, for the hint.
+VAAPI_HOST_DEVICE=""
+VAAPI_HOST_GID=""
+VAAPI_HOST_BUS=""
+AMD_UNBOUND_BUS=""
+for node in /sys/class/drm/renderD*; do
+  [ -e "$node/device/vendor" ] || continue
+  [ "$(cat "$node/device/vendor")" = "0x1002" ] || continue
+  [ "$(basename "$(readlink -f "$node/device/driver" 2>/dev/null)")" = "amdgpu" ] || continue
+  bus="$(basename "$(readlink -f "$node/device")")"
+  [ -e "/dev/dri/by-path/pci-$bus-render" ] || continue
+  VAAPI_HOST_DEVICE="/dev/dri/by-path/pci-$bus-render"
+  VAAPI_HOST_GID="$(stat -c %g "/dev/dri/$(basename "$node")")"
+  VAAPI_HOST_BUS="$bus"
+  break
+done
+if [ -z "$VAAPI_HOST_DEVICE" ]; then
+  for dev in /sys/bus/pci/devices/*; do
+    [ "$(cat "$dev/vendor" 2>/dev/null)" = "0x1002" ] || continue
+    case "$(cat "$dev/class" 2>/dev/null)" in 0x03*) ;; *) continue ;; esac
+    [ -e "$dev/driver" ] && continue
+    AMD_UNBOUND_BUS="$(basename "$dev")"
+    break
+  done
+fi
+
 # The Dockerfile uses BuildKit-only syntax (a `# syntax=` directive and
 # `--mount=type=cache`). Without the buildx plugin, `docker compose build`
 # silently falls back to the legacy builder and fails deep into the build with
@@ -534,6 +562,38 @@ if [ "$RESERVES_GPU" = "y" ]; then
   [ "$ROLE" = "2" ] || TRAINING_GPU="$(choose_default_card "training (per-run override stays available)" "$GPU_DEVICES")"
 fi
 
+# ---- camera stream decode (AMD VAAPI) ---------------------------------------
+# Asked wherever cameras are read (every role but training-only), and only when an
+# AMD GPU with amdgpu bound was found.
+VAAPI_DRIVERS=""
+VAAPI_DEVICE=""
+VAAPI_GID=""
+if [ "$ROLE" != "3" ]; then
+  if [ -n "$VAAPI_HOST_DEVICE" ]; then
+    echo
+    echo "-- Camera stream decode --"
+    echo "   AMD GPU found (bus $VAAPI_HOST_BUS). Decoding camera streams on it (VAAPI)"
+    echo "   saves ~70% of the CPU each camera's decoder uses, for ~90 MB of system RAM"
+    echo "   per camera. A camera it cannot decode falls back to the CPU on its own."
+    if ask "  Decode camera streams on the AMD GPU?" y; then
+      VAAPI_DRIVERS="1"
+      VAAPI_DEVICE="$VAAPI_HOST_DEVICE"
+      VAAPI_GID="$VAAPI_HOST_GID"
+      COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yaml}:docker-compose.vaapi.yaml"
+    fi
+  elif [ -n "$AMD_UNBOUND_BUS" ]; then
+    echo
+    echo "   Note: AMD GPU $AMD_UNBOUND_BUS has no driver bound, so it cannot decode camera"
+    echo "   streams. If the kernel boots with 'nomodeset', adding 'amdgpu.modeset=1' to"
+    echo "   the kernel command line binds it; then re-run ./setup.sh."
+  fi
+fi
+
+# Setting COMPOSE_FILE stops compose from loading docker-compose.override.yml on its own.
+if [ -n "$COMPOSE_FILE" ] && [ -f docker-compose.override.yml ]; then
+  COMPOSE_FILE="$COMPOSE_FILE:docker-compose.override.yml"
+fi
+
 # ---- sizing (RAM + disk caches) -------------------------------------------
 # Every knob has a working default in docker-compose.yaml, so the whole section
 # is opt-in and the common path stays one question long. Each prompt is gated on
@@ -652,6 +712,9 @@ fi
   # which leaves onnxruntime/torch to pick exactly as they did before these existed.
   [ -n "$INFERENCE_GPU" ] && echo "INFERENCE_GPU=$INFERENCE_GPU"
   [ -n "$TRAINING_GPU" ] && echo "TRAINING_GPU=$TRAINING_GPU"
+  [ -n "$VAAPI_DRIVERS" ] && echo "VAAPI_DRIVERS=$VAAPI_DRIVERS"
+  [ -n "$VAAPI_DEVICE" ] && echo "VAAPI_DEVICE=$VAAPI_DEVICE"
+  [ -n "$VAAPI_GID" ] && echo "VAAPI_GID=$VAAPI_GID"
   [ -n "$TRAINING_SERVER_HOST" ] && echo "TRAINING_SERVER_HOST=$TRAINING_SERVER_HOST"
   [ -n "$TRAINING_SERVER_PORT" ] && echo "TRAINING_SERVER_PORT=$TRAINING_SERVER_PORT"
   echo "APPUSER_UID=$UID_VAL"
@@ -683,6 +746,7 @@ echo "Profiles: $COMPOSE_PROFILES"
 [ "$APP_BASE" = "slim-runtime" ] \
   && echo "App image: SLIM (CPU-only, no CUDA)" \
   || echo "App image: CUDA (GPU inference)"
+[ -n "$VAAPI_DEVICE" ] && echo "Stream decode:       AMD GPU (VAAPI, $VAAPI_DEVICE)"
 if [ "$HAS_MEDIAMTX" = "y" ]; then
   echo "App:                 http://localhost:${APP_PORT:-7999}"
   echo "Supervisord:         http://localhost:${SUPERVISORD_PORT:-9001}"

@@ -117,7 +117,7 @@ class TestLeaseIsReleasedWhenStartFails:
         monkeypatch.setattr(FfmpegImageProvider, "_wait_for_stream", staticmethod(ready))
 
         class ExplodingStreamer:
-            def __init__(self, url, output_args=None):
+            def __init__(self, url, input_args=None, output_args=None):
                 pass
 
             async def astart(self):
@@ -172,7 +172,7 @@ class TestSuccessfulStartIsUnaffected:
             return True
 
         class QuietStreamer:
-            def __init__(self, url, output_args=None):
+            def __init__(self, url, input_args=None, output_args=None):
                 self.url = url
 
             async def astart(self):
@@ -221,7 +221,7 @@ class TestSuccessfulStartIsUnaffected:
             return True
 
         class QuietStreamer:
-            def __init__(self, url, output_args=None):
+            def __init__(self, url, input_args=None, output_args=None):
                 self.url = url
 
             async def astart(self):
@@ -261,7 +261,7 @@ class TestHeartbeat:
             return True
 
         class QuietStreamer:
-            def __init__(self, url, output_args=None):
+            def __init__(self, url, input_args=None, output_args=None):
                 pass
 
             async def astart(self):

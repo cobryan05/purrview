@@ -1,6 +1,7 @@
 """FFMpeg-backed Image Provider class"""
 
 import asyncio
+import functools
 import logging
 import os
 import time
@@ -39,6 +40,22 @@ LEASE_RENEW_INTERVAL_S = 60.0
 STREAM_START_TIMEOUT = 10.0
 STREAM_READ_TIMEOUT = 10.0
 FFMPEG_START_TIMEOUT = 30.0
+
+
+@functools.lru_cache(maxsize=1)
+def configured_hwaccel_device() -> str:
+    """The VAAPI render node camera streams are decoded on, or "" to decode on the CPU.
+
+    Set by docker-compose.vaapi.yaml (`STREAM_HWACCEL=vaapi`, `STREAM_HWACCEL_DEVICE`).
+    A configured node that does not exist in the container reads as CPU decode.
+    """
+    if os.getenv("STREAM_HWACCEL", "").strip().lower() != "vaapi":
+        return ""
+    device = os.getenv("STREAM_HWACCEL_DEVICE", "").strip()
+    if not device or not os.path.exists(device):
+        logger.warning(f"STREAM_HWACCEL=vaapi but render node {device!r} is missing; decoding streams on the CPU")
+        return ""
+    return device
 
 
 @register_image_provider()
@@ -129,6 +146,11 @@ class FfmpegImageProvider(ImageProvider):
         #: watcher does) pays every source's sleep on all the others. This attribute
         #: only ever tells ffmpeg to send less, which costs the caller nothing.
         self._decimate_interval: float = min_capture_interval
+        #: VAAPI render node this provider's readers decode on; "" decodes on the CPU.
+        #: Cleared for the provider's lifetime by `_fall_back_to_cpu_decode()`.
+        self._hwaccel_device: str = configured_hwaccel_device()
+        #: Whether any reader of this provider has delivered a frame.
+        self._has_delivered_frame: bool = False
         self._next_capture_time: float = 0.0
         self._frame_idx: int = 0
         self._restart_count: int = 0
@@ -210,7 +232,7 @@ class FfmpegImageProvider(ImageProvider):
                 # Kept so reconnect() can rebuild the reader without re-running the
                 # whole lease handshake to rediscover where to read from.
                 self._stream_url = stream_url
-                self._stream = FFmpegStreamerIn(stream_url, output_args=self._spawn_args())
+                self._stream = self._new_reader(stream_url)
 
                 self._stream_started_at = self._now()
                 await self._stream.astart()
@@ -223,7 +245,7 @@ class FfmpegImageProvider(ImageProvider):
             return
 
         self._stream_url = self._video_path
-        self._stream = FFmpegStreamerIn(self._video_path, output_args=self._spawn_args())
+        self._stream = self._new_reader(self._video_path)
 
         self._stream_started_at = self._now()
         await self._stream.astart()
@@ -255,6 +277,7 @@ class FfmpegImageProvider(ImageProvider):
         if self.is_connecting():
             return
 
+        self._fall_back_to_cpu_decode()
         if self._stream is not None:
             stream, self._stream = self._stream, None
             await stream.astop()
@@ -267,7 +290,7 @@ class FfmpegImageProvider(ImageProvider):
             await self.start()
             return
 
-        self._stream = FFmpegStreamerIn(self._stream_url, output_args=self._spawn_args())
+        self._stream = self._new_reader(self._stream_url)
 
         self._stream_started_at = self._now()
         await self._stream.astart()
@@ -321,6 +344,15 @@ class FfmpegImageProvider(ImageProvider):
         """
         self._decimate_interval = 1.0 / fps if fps > 0 else 0.0
 
+    def _new_reader(self, source: str) -> FFmpegStreamerIn:
+        return FFmpegStreamerIn(source, input_args=self._spawn_input_args(), output_args=self._spawn_args())
+
+    def _spawn_input_args(self) -> dict:
+        """Decoder args for a new reader: VAAPI decode into GPU memory, or none for CPU."""
+        if not self._hwaccel_device:
+            return {}
+        return {"hwaccel": "vaapi", "hwaccel_device": self._hwaccel_device, "hwaccel_output_format": "vaapi"}
+
     def _spawn_args(self) -> dict:
         """Output args for a new reader, including any source-side decimation.
 
@@ -328,24 +360,47 @@ class FfmpegImageProvider(ImageProvider):
         construction is honoured, and so reconnect() rebuilds against the current one.
         """
         args = dict(self._ffmpeg_args)
-        if self._decimate_interval <= 0:
-            return args
-        # `select`, not `fps`: the fps filter pads as well as drops, so a source slower
-        # than the ceiling — an event-only feed, a camera that only sends during motion
-        # — would have its frames duplicated up to the target rate, which is the
-        # opposite of the point. `select` only ever drops, so an intermittent source
-        # passes through untouched and only a fast one is thinned.
-        #
-        # The comma is escaped for ffmpeg's filtergraph parser, which would otherwise
-        # read it as a filter separator. No shell is involved, so the backslash is a
-        # literal argv byte — which is exactly what the parser wants.
-        args["vf"] = f"select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{self._decimate_interval})'"
-        # Without this, a CFR rawvideo output re-pads the decimated stream back up to
-        # the input rate and undoes the whole thing. `-vsync 0` rather than
-        # `-fps_mode passthrough` because this image ships ffmpeg 4.4, which predates
-        # fps_mode.
-        args["vsync"] = "0"
+        filters = []
+        if self._decimate_interval > 0:
+            # `select`, not `fps`: the fps filter pads as well as drops, so a source slower
+            # than the ceiling — an event-only feed, a camera that only sends during motion
+            # — would have its frames duplicated up to the target rate, which is the
+            # opposite of the point. `select` only ever drops, so an intermittent source
+            # passes through untouched and only a fast one is thinned.
+            #
+            # The comma is escaped for ffmpeg's filtergraph parser, which would otherwise
+            # read it as a filter separator. No shell is involved, so the backslash is a
+            # literal argv byte — which is exactly what the parser wants.
+            filters.append(f"select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{self._decimate_interval})'")
+            # Without this, a CFR rawvideo output re-pads the decimated stream back up to
+            # the input rate and undoes the whole thing. `-vsync 0` rather than
+            # `-fps_mode passthrough` because this image ships ffmpeg 4.4, which predates
+            # fps_mode.
+            args["vsync"] = "0"
+        if self._hwaccel_device:
+            # After `select`, so only the frames it keeps are copied out of GPU memory.
+            filters += ["hwdownload", "format=nv12"]
+        if filters:
+            args["vf"] = ",".join(filters)
         return args
+
+    def _fall_back_to_cpu_decode(self) -> bool:
+        """Decode on the CPU from now on if hardware decode has never produced a frame.
+
+        Only a reader that reported geometry counts against the GPU: it reached the
+        source and failed in decode. A reader without geometry never connected.
+        Returns True when it switched, so the caller must build a new reader.
+        """
+        if not self._hwaccel_device or self._has_delivered_frame:
+            return False
+        if self._stream is None or not self._stream.metadata_ready():
+            return False
+        logger.warning(
+            f"VAAPI decode on {self._hwaccel_device} produced no frames for {self._video_path}; "
+            "decoding it on the CPU instead"
+        )
+        self._hwaccel_device = ""
+        return True
 
     async def _renew_lease_forever(self) -> None:
         """Heartbeat the relay for as long as this provider is reading.
@@ -489,6 +544,7 @@ class FfmpegImageProvider(ImageProvider):
 
             if frame_bytes:
                 self._restart_count = 0  # a successful frame clears cumulative restart history
+                self._has_delivered_frame = True
 
                 if self._min_capture_interval > 0:
                     self._next_capture_time = self._now() + self._min_capture_interval
@@ -499,6 +555,13 @@ class FfmpegImageProvider(ImageProvider):
                 return ImageWithProviderMetadata(
                     image, metadata=ImageProviderMetadata(source=self.source_name, frame_idx=frame_idx)
                 )
+
+            if self._fall_back_to_cpu_decode():
+                await self._stream.astop()
+                self._stream = self._new_reader(self._stream_url)
+                await self._stream.astart()
+                self._buffer = b""
+                continue
 
             if not self._loop:
                 return None

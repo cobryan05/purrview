@@ -1,0 +1,30 @@
+# AMD GPU (VAAPI) stream-decode overlay for the services that read cameras.
+#
+#   COMPOSE_FILE=docker-compose.yaml:docker-compose.vaapi.yaml
+#   VAAPI_DRIVERS=1                                       # build arg: Mesa VAAPI drivers
+#   VAAPI_DEVICE=/dev/dri/by-path/pci-0000:0b:00.0-render  # host render node of the AMD GPU
+#   VAAPI_GID=44                                          # group owning that node on the host
+#
+# setup.sh detects the GPU and writes all four. VAAPI_DEVICE is the by-path name
+# because renderD numbers are assigned per boot. Inside the container the node is
+# always /dev/dri/vaapi, clear of the NVIDIA nodes the GPU runtime injects.
+#
+# Requires the host's amdgpu driver to be bound to the GPU (a kernel booted with
+# `nomodeset` needs `amdgpu.modeset=1` as well).
+x-vaapi: &vaapi
+  devices:
+    # Long form: the by-path name itself contains colons.
+    - source: ${VAAPI_DEVICE:?VAAPI_DEVICE must name the AMD render node; run ./setup.sh}
+      target: /dev/dri/vaapi
+      permissions: rwm
+  group_add:
+    - "${VAAPI_GID:-44}"
+  environment:
+    STREAM_HWACCEL: vaapi
+    STREAM_HWACCEL_DEVICE: /dev/dri/vaapi
+
+services:
+  app: *vaapi
+  app-dev: *vaapi
+  mono: *vaapi
+  mono-dev: *vaapi

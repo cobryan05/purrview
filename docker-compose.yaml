@@ -83,6 +83,7 @@ x-build-args: &build-args
   ORT_REQUIREMENTS: ${ORT_REQUIREMENTS:-requirements-cpu.txt}
   APPUSER_UID: ${APPUSER_UID:-1000}
   APPUSER_GID: ${APPUSER_GID:-1000}
+  VAAPI_DRIVERS: ${VAAPI_DRIVERS:-0}
 
 # Container-stdout cap. Almost nothing reaches the container log — supervisord
 # redirects every service to its own rotated file under ./logs — but the
