@@ -64,6 +64,9 @@ class FfmpegImageProvider(ImageProvider):
     # stops yielding data (EOF, dead source, etc.) can't spin astop()/astart() forever.
     _MAX_STREAM_RESTARTS = 3
     _RESTART_BACKOFF = 0.5
+    # Consecutive VAAPI readers that exit after reporting geometry and before any frame,
+    # after which the provider decodes on the CPU. One such exit can be a network drop.
+    _HWACCEL_FAILURES_BEFORE_CPU = 2
 
     # How long a freshly-started reader is allowed to be silent before it counts as
     # broken rather than still connecting.
@@ -147,10 +150,16 @@ class FfmpegImageProvider(ImageProvider):
         #: only ever tells ffmpeg to send less, which costs the caller nothing.
         self._decimate_interval: float = min_capture_interval
         #: VAAPI render node this provider's readers decode on; "" decodes on the CPU.
-        #: Cleared for the provider's lifetime by `_fall_back_to_cpu_decode()`.
+        #: Cleared for the provider's lifetime by `_count_hwaccel_failure()`.
         self._hwaccel_device: str = configured_hwaccel_device()
         #: Whether any reader of this provider has delivered a frame.
         self._has_delivered_frame: bool = False
+        #: VAAPI readers counted as failed by `_count_hwaccel_failure()`.
+        self._hwaccel_failures: int = 0
+        #: Incremented by every `_start_reader()`; identifies the current reader.
+        self._reader_generation: int = 0
+        #: `_reader_generation` of the last reader counted as a VAAPI failure.
+        self._counted_generation: int = -1
         self._next_capture_time: float = 0.0
         self._frame_idx: int = 0
         self._restart_count: int = 0
@@ -232,10 +241,7 @@ class FfmpegImageProvider(ImageProvider):
                 # Kept so reconnect() can rebuild the reader without re-running the
                 # whole lease handshake to rediscover where to read from.
                 self._stream_url = stream_url
-                self._stream = self._new_reader(stream_url)
-
-                self._stream_started_at = self._now()
-                await self._stream.astart()
+                await self._start_reader(stream_url)
             except BaseException:
                 await self._release_lease_quietly()
                 raise
@@ -245,10 +251,7 @@ class FfmpegImageProvider(ImageProvider):
             return
 
         self._stream_url = self._video_path
-        self._stream = self._new_reader(self._video_path)
-
-        self._stream_started_at = self._now()
-        await self._stream.astart()
+        await self._start_reader(self._video_path)
 
     async def reconnect(self) -> None:
         """Rebuild the ffmpeg reader, keeping the relay lease.
@@ -277,7 +280,7 @@ class FfmpegImageProvider(ImageProvider):
         if self.is_connecting():
             return
 
-        self._fall_back_to_cpu_decode()
+        self._count_hwaccel_failure()
         if self._stream is not None:
             stream, self._stream = self._stream, None
             await stream.astop()
@@ -290,10 +293,7 @@ class FfmpegImageProvider(ImageProvider):
             await self.start()
             return
 
-        self._stream = self._new_reader(self._stream_url)
-
-        self._stream_started_at = self._now()
-        await self._stream.astart()
+        await self._start_reader(self._stream_url)
         self._buffer = b""
         # Re-read on the new stream rather than trusting the old geometry: a camera can
         # come back at a different resolution, and a stale frame size silently
@@ -344,8 +344,12 @@ class FfmpegImageProvider(ImageProvider):
         """
         self._decimate_interval = 1.0 / fps if fps > 0 else 0.0
 
-    def _new_reader(self, source: str) -> FFmpegStreamerIn:
-        return FFmpegStreamerIn(source, input_args=self._spawn_input_args(), output_args=self._spawn_args())
+    async def _start_reader(self, source: str) -> None:
+        """Replace `_stream` with a new reader on *source*, built from the current settings."""
+        self._stream = FFmpegStreamerIn(source, input_args=self._spawn_input_args(), output_args=self._spawn_args())
+        self._reader_generation += 1
+        self._stream_started_at = self._now()
+        await self._stream.astart()
 
     def _spawn_input_args(self) -> dict:
         """Decoder args for a new reader: VAAPI decode into GPU memory, or none for CPU."""
@@ -384,22 +388,29 @@ class FfmpegImageProvider(ImageProvider):
             args["vf"] = ",".join(filters)
         return args
 
-    def _fall_back_to_cpu_decode(self) -> bool:
-        """Decode on the CPU from now on if hardware decode has never produced a frame.
+    def _count_hwaccel_failure(self) -> bool:
+        """Count the current reader as a VAAPI failure, switching to CPU decode at
+        `_HWACCEL_FAILURES_BEFORE_CPU`. Returns True if it counted.
 
-        Only a reader that reported geometry counts against the GPU: it reached the
-        source and failed in decode. A reader without geometry never connected.
-        Returns True when it switched, so the caller must build a new reader.
+        Counts only a reader that reported geometry and then exited without a frame,
+        and only once per reader. A reader without geometry never reached the source;
+        one still running may be waiting on a quiet camera.
         """
         if not self._hwaccel_device or self._has_delivered_frame:
             return False
-        if self._stream is None or not self._stream.metadata_ready():
+        stream = self._stream
+        if stream is None or not stream.metadata_ready() or not stream.reader_exited():
             return False
-        logger.warning(
-            f"VAAPI decode on {self._hwaccel_device} produced no frames for {self._video_path}; "
-            "decoding it on the CPU instead"
-        )
-        self._hwaccel_device = ""
+        if self._counted_generation == self._reader_generation:
+            return False
+        self._counted_generation = self._reader_generation
+        self._hwaccel_failures += 1
+        if self._hwaccel_failures >= self._HWACCEL_FAILURES_BEFORE_CPU:
+            logger.warning(
+                f"VAAPI decode on {self._hwaccel_device} produced no frames for {self._video_path} "
+                f"in {self._hwaccel_failures} attempts; decoding it on the CPU instead"
+            )
+            self._hwaccel_device = ""
         return True
 
     async def _renew_lease_forever(self) -> None:
@@ -556,12 +567,12 @@ class FfmpegImageProvider(ImageProvider):
                     image, metadata=ImageProviderMetadata(source=self.source_name, frame_idx=frame_idx)
                 )
 
-            if self._fall_back_to_cpu_decode():
+            if self._count_hwaccel_failure():
                 await self._stream.astop()
-                self._stream = self._new_reader(self._stream_url)
-                await self._stream.astart()
+                await self._start_reader(self._stream_url)
                 self._buffer = b""
-                continue
+                self._frame_size = None
+                return await self.getNextImage()
 
             if not self._loop:
                 return None
