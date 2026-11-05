@@ -216,6 +216,9 @@ class Track:
     #: detector was confused between two names for one object, which is the calibrated
     #: "worth a human's time" signal — see AMBIGUITY_REVIEW_PLAN.md.
     observed_margin: Optional[float] = None
+    #: Smoothed box-centre velocity in pixels per second, from consecutive matches.
+    #: Only trackers that predict motion maintain it; zero means "no estimate".
+    velocity: Tuple[float, float] = (0.0, 0.0)
 
     def forget_observation(self) -> None:
         """Clear last frame's raw observation, before this frame's matching runs.

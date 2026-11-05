@@ -7,6 +7,21 @@ import pytest
 nest_asyncio.apply()
 
 
+@pytest.fixture(autouse=True)
+def _cpu_stream_decode(monkeypatch):
+    """Decode streams on the CPU unless a test configures VAAPI itself.
+
+    A container built with docker-compose.vaapi.yaml carries STREAM_HWACCEL=vaapi.
+    """
+    from apps.helpers.imageProviders.ffmpegImageProvider import configured_hwaccel_device
+
+    monkeypatch.delenv("STREAM_HWACCEL", raising=False)
+    monkeypatch.delenv("STREAM_HWACCEL_DEVICE", raising=False)
+    configured_hwaccel_device.cache_clear()
+    yield
+    configured_hwaccel_device.cache_clear()
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-smoke",

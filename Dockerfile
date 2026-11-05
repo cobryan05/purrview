@@ -179,6 +179,15 @@ ARG APPUSER_GID
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# 1 installs the Mesa VAAPI drivers, so ffmpeg can decode camera streams on an AMD GPU
+# (STREAM_HWACCEL=vaapi, wired by docker-compose.vaapi.yaml). 0 leaves them out.
+ARG VAAPI_DRIVERS=0
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    if [ "$VAAPI_DRIVERS" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends mesa-va-drivers; \
+    fi
+
 WORKDIR /app
 
 # Created before anything is copied in, so every COPY below can set ownership as it
