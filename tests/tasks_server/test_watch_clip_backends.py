@@ -948,6 +948,7 @@ class TestOverlappingEventsDoNotEvictEachOthersFrames:
         task._frame_rings["src-1"] = ring
         task._wallclock_offset = 0.0
         task._max_preroll_for = lambda _uuid: preroll
+        task._actions = [_clip_row(rules=["r1"])]
         return task, pipeline
 
     def test_the_floor_follows_the_earliest_open_event(self):
@@ -1008,6 +1009,17 @@ class TestOverlappingEventsDoNotEvictEachOthersFrames:
 
         held = ring.frames_between(0.0, last + 1.0)
         assert held[0][0] >= last - 20.0, "age eviction must resume once nothing is open"
+
+    def test_an_event_no_clip_records_does_not_hold_the_ring(self):
+        """A state rule with no clip action can stay open for hours; holding the ring for
+        it keeps (and spools) every frame of that span for nothing."""
+        ring = FrameRing(max_seconds=20.0, max_mb=32.0)
+        task, pipeline = self._task_with_ring(ring, [{"startedAt": 100.0, "ruleUuid": "state-rule"}])
+        task._service_ring_hold(pipeline)
+        last = self._fill(ring, 100.0, 180)
+
+        held = ring.frames_between(0.0, last + 1.0)
+        assert held[0][0] >= last - 20.0, f"held back to {held[0][0]} for an event nothing records"
 
     def test_a_source_with_no_ring_is_left_alone(self):
         """Buffered cameras cut from the relay and never allocate a ring; servicing one
@@ -1353,6 +1365,7 @@ class TestTheSpoolStopsAtTheLongestOpenClip:
         task._wallclock_offset = 0.0
         task._max_preroll_for = lambda _uuid: preroll
         task._max_clip_length_for = lambda _uuid: max_length
+        task._actions = [_clip_row(rules=["r1"])]
         return task, pipeline
 
     def test_frames_past_the_cap_are_not_spooled(self, tmp_path):
@@ -1506,10 +1519,25 @@ class TestAnOnDemandCameraIsHeldAwakeWhileAnEventIsOpen:
 
     def test_an_open_event_holds_the_camera_awake(self):
         pipeline, holds = self._pipeline_with([{"ruleUuid": "r1", "startedAt": 100.0}])
+        task = _task([pipeline])
+        task._actions = [_clip_row(rules=["r1"])]
 
-        _task([pipeline])._service_live_hold(pipeline)
+        task._service_live_hold(pipeline)
 
         assert holds == [True]
+
+    def test_an_open_event_no_clip_records_lets_the_camera_sleep(self):
+        """A long state rule with no clip action ("package on porch") must not pin the
+        camera live: held for half an hour, a Ring session's recorder discards every
+        sample and the clip rules that do fire meanwhile get no footage.
+        """
+        pipeline, holds = self._pipeline_with([{"ruleUuid": "state-rule", "startedAt": 100.0}])
+        task = _task([pipeline])
+        task._actions = [_clip_row(rules=["other-rule"])]
+
+        task._service_live_hold(pipeline)
+
+        assert holds == []
 
     def test_no_open_event_lets_the_camera_sleep(self):
         """The whole point of de-escalating: an awake Ring camera raises no motion at all,

@@ -1129,25 +1129,6 @@ class StreamWatcherTask(Task):
             instance_id=recording.instance_id,
         )
 
-    def _open_event_starts(self, pipeline: WatchPipeline) -> List[float]:
-        """Monotonic start of everything currently recording this source.
-
-        A manual recording is not one of the engine's events, so it is absent from
-        `open_events()` — and every per-pass service keyed off that list (the drain, the
-        ring hold, the live hold) would treat a camera recording by hand as idle: the
-        chunks are discarded, the ring's floor is released and an on-demand camera is
-        allowed to sleep, taking its MediaMTX path and buffer with it.
-        """
-        starts = [e["startedAt"] for e in pipeline.engine.open_events() if e.get("startedAt") is not None]
-        # getattr, as everywhere else that reads this: the tests build the class with
-        # `__new__`, and the live-preview endpoint reaches it during the PENDING window
-        # before `__init__` has run.
-        open_recordings: Dict[str, ManualRecording] = getattr(self, "_manual_open", None) or {}
-        recording = open_recordings.get(pipeline.source_uuid or "")
-        if recording is not None:
-            starts.append(recording.started_at)
-        return starts
-
     def _service_ring_hold(self, pipeline: WatchPipeline) -> None:
         """Hold the frame ring open across every event currently recording this source.
 
@@ -1173,7 +1154,7 @@ class StreamWatcherTask(Task):
         ring = self._frame_rings.get(pipeline.source_uuid or "")
         if ring is None:
             return
-        starts = self._open_event_starts(pipeline)
+        starts = self._clip_chunk_event_starts(pipeline)
         if not starts:
             ring.hold_from(None)
             return
@@ -1204,9 +1185,12 @@ class StreamWatcherTask(Task):
         awake forever — which costs far more here than a held ring, because an awake
         Ring camera raises no motion events at all. A rule's `max_duration_s` cap is
         what bounds a stuck event, and the hold expires with it.
+
+        Only events a clip will be cut from count: an event no clip action names has no
+        footage to lose, and a long one would keep the camera live for its whole length.
         """
         hold = getattr(pipeline.provider, "hold_live", None)
-        if hold is None or not self._open_event_starts(pipeline):
+        if hold is None or not self._clip_chunk_event_starts(pipeline):
             return
         hold()
 
@@ -1263,15 +1247,13 @@ class StreamWatcherTask(Task):
     def _clip_chunk_event_starts(self, pipeline: WatchPipeline) -> List[float]:
         """Monotonic starts of the open events a clip could actually be cut from.
 
-        Only these may arm the drain, and only these may set its window. An event whose
-        rule no clip action names is not entitled to chunks, so draining for it spools
-        full-rate video that is written, held for the life of the event and deleted
-        unread. A timelapse rule is the case that bites: `context.clip_chunks` is read by
-        the clip action alone, and timelapse events are the long ones — so one static
-        false positive becomes unbounded disk.
+        The one list every per-pass hold keys off: the drain, the ring hold and the live
+        hold. An event whose rule no clip action names has no footage to keep, and the
+        events no clip records are the long ones (state and timelapse rules), so holding
+        for them costs unbounded disk, memory, or an on-demand camera kept live.
 
-        A manual recording counts even though it is nobody's rule, for the same reason it
-        does in `_open_event_starts`: it cuts a real clip and needs the chunks.
+        A manual recording counts even though it is nobody's rule: it cuts a real clip,
+        and is absent from `open_events()`.
         """
         starts = [
             event["startedAt"]
