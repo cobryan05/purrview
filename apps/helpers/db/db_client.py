@@ -7676,6 +7676,28 @@ class DbClient:
             selectinload(WatchProfile.label_lifetimes),
         )
 
+    async def _with_stored_lists(self, uuid: str, data: WatchProfileUpdate) -> WatchProfileUpdate:
+        """`data` with each child list it omits filled from the stored profile.
+
+        An omitted list is left unchanged by the update, so the lists that were sent must
+        be checked against it: a rule's zones against the stored sources, an action's
+        rules against the stored rules. Returned unchanged when no list was sent, or the
+        profile does not exist.
+        """
+        lists = ("sources", "rules", "actions")
+        if all(getattr(data, name) is None for name in lists):
+            return data
+        stored = await self.get_watch_profile(uuid)
+        if stored is None:
+            return data
+        models = {"sources": WatchProfileSourceWrite, "rules": InteractionRuleWrite, "actions": WatchActionWrite}
+        fill = {
+            name: [models[name].model_validate(row.model_dump()) for row in getattr(stored, name)]
+            for name in lists
+            if getattr(data, name) is None
+        }
+        return data.model_copy(update=fill)
+
     async def _validate_watch_profile(self, data) -> None:
         """Cross-entity checks the per-model validators cannot see.
 
@@ -7921,7 +7943,7 @@ class DbClient:
             return self._wp_to_read(result.one())
 
     async def update_watch_profile(self, uuid: str, data: WatchProfileUpdate) -> Optional[WatchProfileRead]:
-        await self._validate_watch_profile(data)
+        await self._validate_watch_profile(await self._with_stored_lists(uuid, data))
         async with self._async_session_maker() as session:
             result = await session.exec(select(WatchProfile).where(WatchProfile.uuid == uuid))
             profile = result.one_or_none()

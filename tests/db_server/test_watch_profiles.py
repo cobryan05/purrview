@@ -347,6 +347,47 @@ class TestNestedWrites:
         assert len(updated["sources"]) == 1
         assert len(updated["rules"]) == 1
 
+    async def _zone_profile(self, http_client) -> dict:
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        return (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid}],
+                rules=[_rule()],
+                actions=[{"kind": "record_clip", "ruleUuidsJson": [_rule()["uuid"]]}],
+            )
+        )["profile"]
+
+    async def test_rules_alone_are_checked_against_the_stored_sources(self, http_client):
+        """An omitted list is unchanged, so a zone it holds is still drawn."""
+        profile = await self._zone_profile(http_client)
+
+        r = await http_client.patch(f"/api/watch-profiles/{profile['uuid']}", json={"rules": [_rule(name="renamed")]})
+
+        assert r.json()["status"] == "success", r.json()
+        assert r.json()["profile"]["rules"][0]["name"] == "renamed"
+
+    async def test_actions_alone_are_checked_against_the_stored_rules(self, http_client):
+        profile = await self._zone_profile(http_client)
+
+        r = await http_client.patch(
+            f"/api/watch-profiles/{profile['uuid']}",
+            json={"actions": [{"kind": "record_clip", "name": "clip", "ruleUuidsJson": [_rule()["uuid"]]}]},
+        )
+
+        assert r.json()["status"] == "success", r.json()
+
+    async def test_a_partial_update_still_rejects_a_zone_no_stored_source_draws(self, http_client):
+        profile = await self._zone_profile(http_client)
+
+        r = await http_client.patch(
+            f"/api/watch-profiles/{profile['uuid']}", json={"rules": [_rule(subjectBRef="no-such-zone")]}
+        )
+
+        assert r.json()["status"] == "failure"
+
     async def test_empty_list_removes_all(self, http_client):
         source_uuid = await _make_source(http_client)
         await _set_regions(http_client, source_uuid, [_zone()])
