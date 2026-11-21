@@ -59,6 +59,7 @@ class FakeFfmpegStreamer:
 
     def __init__(self, frames: list[bytes]) -> None:
         self._frames = list(frames)
+        self.last_read_arrived_at = None
         self.astart_calls = 0
         self.astop_calls = 0
 

@@ -25,7 +25,8 @@
  *
  * Samples are held until the next one, because the watcher analyses at a few frames a
  * second while the video plays at the camera's full rate — without the hold, boxes would
- * strobe. The hold is bounded by the sidecar's own `maxStalenessS`: past that the
+ * strobe. A box the next sample also found glides towards it (`boxesAtTime`) rather
+ * than sitting where the subject was a second ago. The hold is bounded by the sidecar's own `maxStalenessS`: past that the
  * watcher was not analysing, and drawing a gap is honest where drawing a frozen box
  * would invent a detection that never happened.
  */
@@ -118,6 +119,55 @@ export function sampleAt(doc, t) {
   }
   if (!found) return null;
   return t - found.t <= maxStale ? found : null;
+}
+
+/**
+ * Farthest, in normalised frame units, a box's centre may move between two samples and
+ * still be read as the same object. Past it the pair is two objects, and gliding one
+ * into the other would draw a box sweeping across empty frame.
+ */
+const MAX_GLIDE = 0.5;
+
+/**
+ * The boxes to draw at `t`, moved part-way towards where the next sample found them.
+ *
+ * Held boxes sit where the subject *was* at the last sample, so at the watcher's ~1 fps
+ * a walking cat leads its box by up to a second. A box in the previous sample is paired
+ * with the nearest same-label box in the next one and placed proportionally between
+ * them. Unpaired boxes, and samples further apart than `maxStalenessS` (the watcher was
+ * not analysing in between), are held exactly as `sampleAt` holds them.
+ *
+ * @param {Object} doc
+ * @param {number} t
+ * @returns {Array<Object>}
+ */
+export function boxesAtTime(doc, t) {
+  const prev = sampleAt(doc, t);
+  if (!prev) return [];
+  const frames = doc.frames;
+  const next = frames[frames.indexOf(prev) + 1];
+  const maxStale = Number.isFinite(doc.maxStalenessS) ? doc.maxStalenessS : DEFAULT_STALENESS_S;
+  const span = next ? next.t - prev.t : 0;
+  if (!next || span <= 0 || span > maxStale) return prev.boxes || [];
+
+  const f = Math.min(1, Math.max(0, (t - prev.t) / span));
+  const centre = (b) => [b.x + b.w / 2, b.y + b.h / 2];
+  const unpaired = [...(next.boxes || [])];
+  return (prev.boxes || []).map((a) => {
+    const [ax, ay] = centre(a);
+    let best = -1;
+    let bestDist = MAX_GLIDE;
+    unpaired.forEach((b, i) => {
+      if (b.labelUuid !== a.labelUuid) return;
+      const [bx, by] = centre(b);
+      const dist = Math.hypot(bx - ax, by - ay);
+      if (dist <= bestDist) { best = i; bestDist = dist; }
+    });
+    if (best < 0) return a;
+    const [b] = unpaired.splice(best, 1);
+    const lerp = (key) => a[key] + (b[key] - a[key]) * f;
+    return { ...a, x: lerp('x'), y: lerp('y'), w: lerp('w'), h: lerp('h') };
+  });
 }
 
 /**
@@ -315,8 +365,7 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
       if (name) drawTag(ctx, `● ${name}`, rect.left + EVENT_FRAME_WIDTH + 4, rect.top + EVENT_FRAME_WIDTH + 4, '#ef4444');
     }
 
-    const sample = sampleAt(doc, t);
-    for (const box of sample?.boxes || []) {
+    for (const box of boxesAtTime(doc, t)) {
       const colour = labelColours.get(box.labelUuid) || '#38bdf8';
       const x = rect.left + box.x * rect.width;
       const y = rect.top + box.y * rect.height;
@@ -433,7 +482,7 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
      * annotations into the training set.
      */
     boxesAt(t) {
-      return sampleAt(doc, t - lead)?.boxes || [];
+      return boxesAtTime(doc, t - lead);
     },
     /** Seconds of untrimmed head this browser is playing; 0 when it honoured the trim. */
     leadSeconds() {

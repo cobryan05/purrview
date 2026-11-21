@@ -36,11 +36,11 @@ class _Recorder:
         self.stamps.append(at)
 
 
-def _frame():
+def _frame(captured_at=None):
     """One provided frame. `image` only needs a `.shape` and to survive prepare_frame."""
     import numpy as np
 
-    return SimpleNamespace(image=np.zeros((4, 4, 3), dtype=np.uint8), encoded_b64=None)
+    return SimpleNamespace(image=np.zeros((4, 4, 3), dtype=np.uint8), encoded_b64=None, captured_at=captured_at)
 
 
 class _Provider:
@@ -163,3 +163,18 @@ class TestOverlayTimeBase:
 
         assert after - before >= INFERENCE_DELAY_S  # the delay really happened
         assert track.stamps[0] < before + INFERENCE_DELAY_S
+
+    async def test_a_frame_that_queued_is_filed_under_when_it_arrived(self, monkeypatch):
+        """A buffering reader holds the newest frame until the loop asks for it — up to a
+        whole source interval at 1 fps. Stamping it when it was *read* dates the boxes
+        that much past the picture, in the ring and the overlay alike.
+        """
+        task, pipeline, ring, track = _harness()
+        monkeypatch.setattr(StreamWatcherTask, "_record_source_failure", lambda *a, **k: None, raising=False)
+        queued_since = time.monotonic() - 0.8
+        pipeline.provider._frames = [_frame(captured_at=queued_since)]
+
+        await task._service_source(pipeline, inference_api=None)
+
+        assert ring.stamps == [queued_since + task._wallclock_offset]
+        assert track.stamps == [queued_since + task._wallclock_offset]

@@ -1567,7 +1567,7 @@ class TestBufferFactsAreReReadEveryFrame:
 
         async def getNextImage(self):
             self.frames += 1
-            return SimpleNamespace(image=np.zeros((4, 4, 3), dtype=np.uint8), encoded_b64=None)
+            return SimpleNamespace(image=np.zeros((4, 4, 3), dtype=np.uint8), encoded_b64=None, captured_at=None)
 
     def _task_for(self, pipeline):
         task = _task([pipeline])

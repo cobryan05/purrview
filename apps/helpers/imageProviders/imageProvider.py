@@ -30,6 +30,9 @@ class ImageWithProviderMetadata:
     metadata: ImageProviderMetadata = field(default_factory=ImageProviderMetadata)
     encoded_b64: Optional[str] = None
     image_phash: Optional[str] = None  # pre-computed by prefetch worker when pre_phash=True
+    #: `time.monotonic()` when the frame reached this process, for providers that buffer
+    #: frames before they are asked for one. None means "now" is as good as it gets.
+    captured_at: Optional[float] = None
 
 
 class ImageProvider:

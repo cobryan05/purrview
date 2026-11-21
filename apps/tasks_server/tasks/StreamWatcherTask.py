@@ -2464,15 +2464,13 @@ class StreamWatcherTask(Task):
         # its own inference reuses this rather than re-encoding last_full_frame.
         pipeline.last_analysis_base64 = base64_img
 
-        # A fresh reading, not the `now` from before the fetch: a slow camera can make
-        # that stale by seconds, and these timestamps are what the clip window indexes.
-        #
-        # Kept, rather than re-read, because the detection track is stamped with it too
-        # (further down, after inference has run). It is the closest thing this loop has
-        # to "when this picture existed", and the boxes have to be filed against the
-        # same instant as the frame they describe — stamping them after inference would
-        # date every one of them by however long the model took.
-        arrived_at = time.monotonic()
+        # When the picture existed, which is what the clip window indexes and what the
+        # detection track is stamped with further down (after inference — stamping then
+        # would date every box by the model's latency). A buffering provider says when
+        # the frame came off the wire; it may have queued for a whole source interval
+        # since. Otherwise a fresh reading: the `now` from before the fetch can be
+        # seconds stale on a slow camera.
+        arrived_at = provided.captured_at if provided.captured_at is not None else time.monotonic()
         self._push_to_ring(pipeline, base64_img, arrived_at, full_res=provided.encoded_b64)
 
         # analysed.shape is (h, w, c); the detections must land in the same pixel

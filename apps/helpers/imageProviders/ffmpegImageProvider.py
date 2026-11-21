@@ -564,7 +564,9 @@ class FfmpegImageProvider(ImageProvider):
                 frame_idx = self._frame_idx
                 self._frame_idx += 1
                 return ImageWithProviderMetadata(
-                    image, metadata=ImageProviderMetadata(source=self.source_name, frame_idx=frame_idx)
+                    image,
+                    metadata=ImageProviderMetadata(source=self.source_name, frame_idx=frame_idx),
+                    captured_at=self._stream.last_read_arrived_at,
                 )
 
             if self._count_hwaccel_failure():

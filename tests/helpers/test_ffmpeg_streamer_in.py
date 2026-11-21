@@ -358,3 +358,24 @@ class TestStderrIsDrainedForTheLifeOfTheProcess:
         streamer._pump_stderr()  # must not raise
 
         await asyncio.wait_for(streamer.wait_for_metadata(), timeout=1.0)
+
+
+class TestArrivalStamp:
+    async def test_a_read_reports_when_the_frame_arrived_not_when_it_was_read(self, monkeypatch):
+        """The watcher files boxes under this stamp; a frame that sat in the queue must not
+        be dated by the moment someone got round to reading it."""
+        import apps.helpers.streams.ffmpegStreamerIn as mod
+
+        clock = [100.0]
+        monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+        streamer = FFmpegStreamerIn("rtsp://fake", max_queued_frames=2)
+
+        await streamer._put_dropping_oldest(b"old")
+        clock[0] = 101.0
+        await streamer._put_dropping_oldest(b"new")
+        clock[0] = 101.9
+
+        assert streamer.read_nowait() == b"old"
+        assert streamer.last_read_arrived_at == 100.0
+        assert await streamer.read_async(timeout=1.0) == b"new"
+        assert streamer.last_read_arrived_at == 101.0

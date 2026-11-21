@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from subprocess import Popen
 from typing import Any, Dict, Optional, Tuple
@@ -150,7 +151,13 @@ class FFmpegStreamerIn:
         self._fps: Optional[float] = None
         self._frame_size: Optional[int] = None
         self._process: Optional[Popen] = None
-        self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=max_queued_frames)
+        #: Items are `(arrived_at, data)`: `time.monotonic()` when the data came off
+        #: ffmpeg's stdout, and the data.
+        self._frame_queue: asyncio.Queue[Tuple[float, bytes]] = asyncio.Queue(maxsize=max_queued_frames)
+        #: When the item most recently returned by a read came off the pipe. A frame can
+        #: queue for up to one source interval before it is read, so this — not the
+        #: reader's clock — is when the picture existed.
+        self.last_read_arrived_at: Optional[float] = None
         self._stop_event: asyncio.Event = asyncio.Event()
         self._metadata_event: asyncio.Event = asyncio.Event()
         #: Whether a banner actually parsed, as opposed to the stderr reader merely
@@ -229,8 +236,9 @@ class FFmpegStreamerIn:
 
     async def read_async(self, timeout: Optional[float] = None) -> Optional[bytes]:
         """Returns the next frame from the queue"""
-        item = await asyncio.wait_for(self._frame_queue.get(), timeout=timeout)
+        arrived_at, item = await asyncio.wait_for(self._frame_queue.get(), timeout=timeout)
         self._frame_queue.task_done()
+        self.last_read_arrived_at = arrived_at
         return item
 
     def read(self, timeout: Optional[float] = None) -> Optional[bytes]:
@@ -245,17 +253,19 @@ class FFmpegStreamerIn:
     def read_nowait(self) -> Optional[bytes]:
         """Non-blocking read of the next queued item; returns None if the queue is empty."""
         try:
-            item = self._frame_queue.get_nowait()
+            arrived_at, item = self._frame_queue.get_nowait()
         except asyncio.QueueEmpty:
             return None
         self._frame_queue.task_done()
+        self.last_read_arrived_at = arrived_at
         return item
 
     async def _put_dropping_oldest(self, item: bytes) -> None:
         """Enqueue item, dropping the oldest queued item if full. Never blocks."""
+        stamped = (time.monotonic(), item)
         while True:
             try:
-                self._frame_queue.put_nowait(item)
+                self._frame_queue.put_nowait(stamped)
                 return
             except asyncio.QueueFull:
                 try:
