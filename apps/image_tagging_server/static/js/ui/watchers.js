@@ -1840,6 +1840,8 @@ function buildRuleRow(rule, ctx) {
     for (const field of marginField) field.hidden = !usesMargin;
     // Sensitivity is meaningless without pixels to difference.
     for (const field of sensitivityField) field.hidden = !isMotion;
+    // Motion has no boxes to hold still.
+    for (const field of stillField) field.hidden = isMotion;
     // Nothing to drag for `present`, and nothing to *draw* for motion: the preview
     // modal is two boxes and a score, and motion has neither.
     previewBtn.hidden = isUnary;
@@ -1872,7 +1874,9 @@ function buildRuleRow(rule, ctx) {
   // exactly as long as its subject is there. See the caption's tooltip.
   const maxDuration = numberInput(rule.maxDurationS ?? 300, { step: '10', min: 0 });
   maxDuration.dataset.testid = 'watch-rule-max-duration';
-  for (const input of [threshold, margin, sensitivity, minDuration, rearm, maxDuration]) {
+  const still = numberInput(rule.stationaryIgnoreAfterS ?? 0, { step: '60', min: 0 });
+  still.dataset.testid = 'watch-rule-stationary-ignore';
+  for (const input of [threshold, margin, sensitivity, minDuration, rearm, maxDuration, still]) {
     input.addEventListener('input', ctx.onAnyChange);
   }
   const tuningFields = [
@@ -1928,9 +1932,14 @@ function buildRuleRow(rule, ctx) {
       + '0 means use the default (0.1).',
     ],
   ];
+  const stillHelp = 'Seconds a detected box may stay in one spot before this rule stops seeing it there, '
+    + 'so a coat rack mistaken for a person stops recording. Boxes anywhere else still '
+    + 'count, and the spot is forgotten once nothing has been seen there for as long. '
+    + 'A real subject standing still that long is ignored too. 0 never ignores.';
   const marginField = [];
   const sensitivityField = [];
   const maxDurationField = [];
+  const stillField = [];
   let thresholdField = null;
   let thresholdLabel = null;
   for (const [label, input, title] of tuningFields) {
@@ -2011,6 +2020,12 @@ function buildRuleRow(rule, ctx) {
   // numbers whose interaction nothing stated.
   const summary = el('div', 'watch-rule-summary');
   summary.append(ruleTrigger, ruleGranularity);
+  const stillWrap = el('label', 'watch-rule-summary__still');
+  stillWrap.append('ignore still after', still, 's');
+  stillWrap.title = stillHelp;
+  stillWrap.dataset.testid = 'watch-rule-stationary-ignore-field';
+  stillField.push(stillWrap);
+  summary.append(stillWrap);
   const summaryText = el('span', 'watch-rule-summary__text');
   summaryText.dataset.testid = 'watch-rule-summary';
   summary.append(summaryText);
@@ -2136,6 +2151,8 @@ function buildRuleRow(rule, ctx) {
         // 0 is a real value here ("never expire"), so it must not be coerced to the
         // default — `num` only falls back on a blank or unparseable field.
         maxDurationS: num(maxDuration, 300),
+        // Zero under motion, where the field is hidden — see `syncArity`.
+        stationaryIgnoreAfterS: isMotion ? 0 : num(still, 0),
       };
     },
   };

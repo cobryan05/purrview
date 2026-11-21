@@ -781,6 +781,25 @@ class TestRuleMargin:
         assert body["status"] == "success", body
 
 
+class TestRuleStationaryIgnore:
+    async def test_the_ignore_time_round_trips(self, http_client):
+        body = await _create_profile(
+            http_client,
+            "Indoor cams",
+            rules=[_rule(relation="present", subjectBKind="none", subjectBRef=None, stationaryIgnoreAfterS=3600)],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["stationaryIgnoreAfterS"] == 3600
+
+    async def test_a_negative_ignore_time_is_rejected(self, http_client):
+        body = await _create_profile(
+            http_client,
+            "Indoor cams",
+            rules=[_rule(relation="present", subjectBKind="none", subjectBRef=None, stationaryIgnoreAfterS=-1)],
+        )
+        assert body["status"] == "failure"
+
+
 class TestRegionValidation:
     """Regions are written through their own endpoint now, so geometry is validated there."""
 

@@ -2421,6 +2421,41 @@ class TestAnUncappedRule:
         assert saved["rules"][0]["maxDurationS"] == 0, saved["rules"][0]
 
 
+class TestTheStationaryIgnoreTimeSurvivesASave:
+    """Rules save as a whole-list replace, so a value the editor does not send is reset."""
+
+    def _open(self, page: Page, base_url: str, rule_overrides: dict, saved: dict):
+        profile = copy.deepcopy(FAKE_PROFILE)
+        profile["rules"][0].update(rule_overrides)
+        _mock_watch_apis(page, profiles=[profile], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_an_unrelated_edit_keeps_the_stored_value(self, page: Page, base_url: str):
+        saved: dict = {}
+        self._open(page, base_url, {"stationaryIgnoreAfterS": 3600.0}, saved)
+
+        page.locator("[data-testid='watcher-name']").fill("Renamed")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")), "the save never reached the API")
+        assert saved["rules"][0]["stationaryIgnoreAfterS"] == 3600, saved["rules"][0]
+
+    def test_a_motion_rule_hides_the_field_and_sends_zero(self, page: Page, base_url: str):
+        saved: dict = {}
+        self._open(page, base_url, {"stationaryIgnoreAfterS": 3600.0}, saved)
+        field = page.locator("[data-testid='watch-rule-stationary-ignore-field']").first
+        expect(field).to_be_visible()
+
+        page.locator("[data-testid='watch-rule-row'] select").filter(has_text="motion").first.select_option("motion")
+        expect(field).to_be_hidden()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")), "the save never reached the API")
+        assert saved["rules"][0]["stationaryIgnoreAfterS"] == 0, saved["rules"][0]
+
+
 class TestTheActionNoteIsLegible:
     """The note is free-text prose in the narrowest field on the row.
 

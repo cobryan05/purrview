@@ -2155,6 +2155,11 @@ class InteractionRule(SQLModel, table=True):
     # change — a noisy IR camera needs a higher sensitivity *and* the same area, and one
     # number cannot say both. 0 means "use the default" (see `watch.motion`).
     motion_sensitivity: float = Field(default=0.0)
+    # Seconds a subject box may sit in one spot before the rule stops seeing it there;
+    # 0 disables. See `apps.helpers.watch.stationary`.
+    stationary_ignore_after_s: float = Field(
+        default=0.0, sa_column=Column(sa.Float(), nullable=False, server_default=sa.text("0"))
+    )
     # Whether the event spans the predicate or is an impulse at one of its edges. See
     # `RuleTrigger`; `server_default` so the created and migrated schemas agree, and so
     # every rule written before this column existed keeps the only behaviour it had.
@@ -2748,6 +2753,7 @@ class InteractionRuleRead(OrmModel):
     threshold: float = 0.5
     margin: float = 0.0
     motion_sensitivity: float = 0.0
+    stationary_ignore_after_s: float = 0.0
     trigger: str = RuleTrigger.WHILE.value
     event_granularity: str = EventGranularity.SUBJECT.value
     min_duration_s: float = 2.0
@@ -2782,6 +2788,7 @@ class InteractionRuleWrite(ApiModel):
     # mean something. 1.0 demands a full black-to-white swing on a pixel and can never
     # fire; 0 is not "most sensitive" but "use the default", so the floor is above it.
     motion_sensitivity: float = Field(default=0.0, ge=0.0, le=1.0)
+    stationary_ignore_after_s: float = Field(default=0.0, ge=0.0)
     trigger: RuleTrigger = RuleTrigger.WHILE
     event_granularity: EventGranularity = EventGranularity.SUBJECT
     min_duration_s: float = 2.0

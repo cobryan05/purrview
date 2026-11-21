@@ -169,6 +169,9 @@ class RuleSpec:
     #: A rule that is `enabled=False` has no HA representation at all, so it can never be
     #: armed or disarmed from there; arming only ever narrows what an enabled rule does.
     armed: bool = True
+    #: Seconds a subject box may stay in one spot before this rule stops seeing it there.
+    #: 0 disables. See `stationary.StationaryFilter`.
+    stationary_ignore_after_s: float = 0.0
 
     @property
     def active(self) -> bool:
@@ -203,6 +206,7 @@ class RuleSpec:
             enabled=get("enabled", True),
             event_label=get("event_label"),
             source_uuids=[str(s) for s in (get("source_uuids_json") or [])],
+            stationary_ignore_after_s=get("stationary_ignore_after_s", 0.0) or 0.0,
         )
 
     def narrowed(self, subject_a_ref: Optional[str], subject_b_ref: Optional[str]) -> "RuleSpec":

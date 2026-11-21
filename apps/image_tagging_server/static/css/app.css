@@ -8655,6 +8655,24 @@ progress.progress-indeterminate:indeterminate {
   background-size: 0.6rem auto;
 }
 
+/* One line, like the selects beside it: a stacked label would make the summary line
+   taller than the density tests allow. */
+.watch-rule-summary__still {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  margin: 0;
+  font-size: var(--text-xs);
+}
+.watch-rule-summary__still[hidden] { display: none; }
+.watch-rule-summary__still input {
+  width: 3.6rem;
+  margin: 0;
+  padding: 0 0.3rem;
+  height: auto;
+  font-size: var(--text-xs);
+}
+
 /* The `(?)` beside a trigger whose list is constrained by the action kind. */
 .watch-action-trigger-help {
   display: inline-flex;

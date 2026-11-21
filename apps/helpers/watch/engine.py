@@ -20,6 +20,7 @@ from .geometry import Zone
 from .motion import MotionField
 from .rules import TRIGGER_ON_ENTER, TRIGGER_ON_EXIT, RuleMachine, RuleSpec, evaluate_predicate
 from .scoping import rule_applies_to_source
+from .stationary import StationaryFilter
 
 #: Which machine a transition belongs to: the rule, plus any slot member the rule was
 #: narrowed to. `None` in a position means that slot is not split on — which, for the
@@ -68,6 +69,16 @@ def _slot_refs(kind: str, refs: Sequence[str]) -> List[Optional[str]]:
     return list(refs)
 
 
+def _subject_test(spec: RuleSpec):
+    """Which tracks fill a rule's subject slot, for its stationary filter."""
+    if spec.subject_a_kind == "any":
+        return lambda track: True
+    if spec.subject_a_kind == "label":
+        refs = frozenset(spec.subject_a_refs)
+        return lambda track: track.label_uuid in refs
+    return lambda track: False
+
+
 class WatchEngine:
     """Evaluates a profile's rules against one source's tracks."""
 
@@ -94,6 +105,8 @@ class WatchEngine:
         # status panel, the tuning hints and `close_all` all read the machine map, and a
         # dormant machine would show up in every one of them.
         self._machines: Dict[SlotKey, RuleMachine] = {}
+        self._stationary: Dict[SlotKey, StationaryFilter] = {}
+        groups: Dict[str, str] = dict(label_groups or {})
         for rule in rules:
             if not rule_applies_to_source(rule.source_uuids, source_uuid):
                 continue
@@ -104,6 +117,12 @@ class WatchEngine:
                     source_uuid=source_uuid,
                     label_groups=label_groups,
                 )
+                if rule.stationary_ignore_after_s > 0:
+                    self._stationary[key] = StationaryFilter(
+                        rule.stationary_ignore_after_s,
+                        is_subject=_subject_test(self._machines[key].spec),
+                        group_of=lambda label, g=groups: g.get(label or "", label or ""),
+                    )
         self.frame_width = frame_width
         self.frame_height = frame_height
 
@@ -162,10 +181,11 @@ class WatchEngine:
         being differenced.
         """
         signals: List[WatchEventSignal] = []
-        for machine in self._machines.values():
+        for key, machine in self._machines.items():
+            stationary = self._stationary.get(key)
             result = evaluate_predicate(
                 machine.spec,
-                tracks,
+                stationary.apply(tracks, now) if stationary is not None else tracks,
                 self._zones,
                 self.frame_width,
                 self.frame_height,
